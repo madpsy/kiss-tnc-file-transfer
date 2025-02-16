@@ -801,8 +801,7 @@ function processRangeAck(ackContent) {
   if (currentPacketIndex >= totalPackets &&
     highestPacketSentSoFar >= totalPackets &&
     missingPackets.length === 0) {
-    updateStatus("Final ACK received. Sending FIN-ACK immediately.");
-    sendFinalFinAck(currentFileId);
+    updateStatus("Final ACK received.");
     finalizeTransfer();
     return;
   }
@@ -874,7 +873,7 @@ function startFinAckWaitLoop() {
   
   waitingForFinAck = true;
   console.log("Sender: Sending FIN-ACK and starting final wait period of " + finalAckTimeout + " ms.");
-  sendFinalFinAck();
+  sendFinalFinAck(currentFileId);
   
   // Instead of retrying, wait for a single timeout period and then finish.
   finalAckRetryTimer = setTimeout(() => {
@@ -896,7 +895,7 @@ function startFinAckWaitLoop() {
       finalAckRetryTimer = setTimeout(() => {
         if (!waitingForFinAck) return;
         console.log("Sender: FIN-ACK timeout reached, resending FIN-ACK...");
-        sendFinalFinAck();
+        sendFinalFinAck(currentFileId);
         scheduleNextFinAckAttempt();
       }, finalAckTimeout);
     }
