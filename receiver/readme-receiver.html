@@ -1,0 +1,208 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <title>AX.25 Receiver Documentation</title>
+  <style>
+    body { font-family: Arial, sans-serif; margin: 2em; line-height: 1.6; }
+    h1, h2, h3 { color: #333; }
+    code { background-color: #f4f4f4; padding: 2px 4px; border-radius: 4px; }
+    pre { background-color: #f4f4f4; padding: 1em; overflow-x: auto; }
+    table { border-collapse: collapse; margin-bottom: 1em; }
+    th, td { border: 1px solid #ddd; padding: 8px; }
+    th { background-color: #eee; }
+  </style>
+</head>
+<body>
+  <h1>AX.25 Receiver Documentation</h1>
+  <p>
+    The Receiver is part of the AX.25 file‑transfer suite. It connects to a TNC (using either a TCP or serial connection), listens for KISS‑framed file data, reassembles the packets into a complete file, verifies its integrity via an MD5 checksum, and either saves or (optionally) executes the file.
+  </p>
+
+  <h2>Table of Contents</h2>
+  <ul>
+    <li><a href="#overview">Overview</a></li>
+    <li><a href="#installation">Installation &amp; Build</a></li>
+    <li><a href="#options">Command‑Line Options</a></li>
+    <li><a href="#examples">Examples</a></li>
+    <li><a href="#notes">Additional Notes</a></li>
+    <li><a href="#support">Contact &amp; Support</a></li>
+  </ul>
+
+  <h2 id="overview">Overview</h2>
+  <p>
+    The Receiver program is designed to accept incoming file transfers sent using AX.25 KISS framing. It continuously reads from the underlying TNC connection, extracts and unescapes KISS frames, and parses packets.
+  </p>
+  <ul>
+    <li>
+      <strong>File Transfer Assembly:</strong> A header packet (with sequence number 1) initiates a transfer by providing metadata (such as filename, sizes, checksum, encoding, and compression flags). Subsequent packets carry file data.
+    </li>
+    <li>
+      <strong>Integrity Check:</strong> Once all data packets have been received, the program reassembles the file, decompresses and/or Base64‑decodes if needed, and verifies the file using an MD5 checksum.
+    </li>
+    <li>
+      <strong>Execution Option:</strong> If specified via command‑line, the Receiver can execute the received file using <code>bash</code> instead of saving it.
+    </li>
+    <li>
+      <strong>Auto‑ACK Mechanism:</strong> The Receiver sends cumulative ACK packets back to the sender to confirm receipt of packets and manage retries.
+    </li>
+  </ul>
+
+  <h2 id="installation">Installation &amp; Build</h2>
+  <p>
+    To build the Receiver, ensure that you have <a href="https://golang.org/">Go</a> installed and that you have installed the required packages (such as <code>go.bug.st/serial</code>). Then compile the program:
+  </p>
+  <pre>
+go build -o ax25receiver receiver.go
+  </pre>
+
+  <h2 id="options">Command‑Line Options</h2>
+  <p>The table below lists all available command‑line options for the Receiver along with descriptions and default values:</p>
+  <table>
+    <tr>
+      <th>Flag</th>
+      <th>Description</th>
+      <th>Default Value</th>
+    </tr>
+    <tr>
+      <td><code>--my-callsign</code></td>
+      <td>
+        Your own callsign (required). This identifies you as the receiver.
+      </td>
+      <td><em>none</em></td>
+    </tr>
+    <tr>
+      <td><code>--connection</code></td>
+      <td>
+        Connection type to the TNC. Must be either <code>tcp</code> or <code>serial</code>.
+      </td>
+      <td><code>tcp</code></td>
+    </tr>
+    <tr>
+      <td><code>--debug</code></td>
+      <td>
+        Enable verbose debug output.
+      </td>
+      <td><code>false</code></td>
+    </tr>
+    <tr>
+      <td><code>--host</code></td>
+      <td>
+        TCP host to connect to (used if <code>--connection</code> is set to <code>tcp</code>).
+      </td>
+      <td><code>127.0.0.1</code></td>
+    </tr>
+    <tr>
+      <td><code>--port</code></td>
+      <td>
+        TCP port to connect to (used if <code>--connection</code> is set to <code>tcp</code>).
+      </td>
+      <td><code>9001</code></td>
+    </tr>
+    <tr>
+      <td><code>--serial-port</code></td>
+      <td>
+        Serial port device (e.g., <code>/dev/ttyUSB0</code> or <code>COM3</code>). Required if using serial connection.
+      </td>
+      <td><em>empty</em></td>
+    </tr>
+    <tr>
+      <td><code>--baud</code></td>
+      <td>
+        Baud rate for the serial connection.
+      </td>
+      <td><code>115200</code></td>
+    </tr>
+    <tr>
+      <td><code>--one-file</code></td>
+      <td>
+        Exit after successfully receiving one file.
+      </td>
+      <td><code>false</code></td>
+    </tr>
+    <tr>
+      <td><code>--execute</code></td>
+      <td>
+        Instead of saving the received file, if the filename matches this value the file is executed with bash.
+      </td>
+      <td><em>empty</em></td>
+    </tr>
+    <tr>
+      <td><code>--replace</code></td>
+      <td>
+        Overwrite existing files if a file with the same name is received.
+      </td>
+      <td><code>false</code></td>
+    </tr>
+    <tr>
+      <td><code>--only-from</code></td>
+      <td>
+        Only accept files sent from the specified callsign.
+      </td>
+      <td><em>empty</em></td>
+    </tr>
+    <tr>
+      <td><code>--execute-timeout</code></td>
+      <td>
+        Maximum number of seconds to allow an executed file to run (0 means no timeout).
+      </td>
+      <td><code>0</code></td>
+    </tr>
+  </table>
+
+  <h2 id="examples">Examples</h2>
+  <h3>Example 1: TCP Connection, Save File</h3>
+  <p>
+    The following command starts the Receiver using a TCP connection to the TNC at <code>127.0.0.1:9001</code> and saves any received file.
+    Your callsign is set to <code>N0CALL</code>.
+  </p>
+  <pre>
+go run receiver.go --my-callsign=N0CALL --connection=tcp --host=127.0.0.1 --port=9001
+  </pre>
+
+  <h3>Example 2: Serial Connection, Debug Mode</h3>
+  <p>
+    This command uses a serial connection on <code>/dev/ttyUSB0</code> with a baud rate of 115200. Debug logging is enabled.
+  </p>
+  <pre>
+go run receiver.go --my-callsign=N0CALL --connection=serial --serial-port=/dev/ttyUSB0 --baud=115200 --debug
+  </pre>
+
+  <h3>Example 3: Execute Received File</h3>
+  <p>
+    In this example, if the received file’s name matches <code>runme.sh</code>, the Receiver will execute the file with bash instead of saving it.
+  </p>
+  <pre>
+go run receiver.go --my-callsign=N0CALL --connection=tcp --host=127.0.0.1 --port=9001 --execute=runme.sh
+  </pre>
+
+  <h3>Example 4: Overwrite Existing Files and Exit After One File</h3>
+  <p>
+    This command will overwrite an existing file if a new file with the same name is received and exit after a single successful transfer.
+  </p>
+  <pre>
+go run receiver.go --my-callsign=N0CALL --connection=tcp --host=127.0.0.1 --port=9001 --replace --one-file
+  </pre>
+
+  <h2 id="notes">Additional Notes</h2>
+  <ul>
+    <li>
+      The Receiver requires that <code>--my-callsign</code> is specified. If using a serial connection, <code>--serial-port</code> is also mandatory.
+    </li>
+    <li>
+      The file transfer begins with a header packet (sequence 1) that contains metadata including the encoding method (binary or Base64) and compression flag.
+    </li>
+    <li>
+      The Receiver sends cumulative ACK packets back to the sender. If the final confirmation (FIN-ACK) is not received after the specified retries, the transfer will be abandoned.
+    </li>
+    <li>
+      If the <code>--execute</code> flag is used, the received file will be temporarily saved, executed with <code>bash</code> (with an optional timeout), and then removed.
+    </li>
+  </ul>
+
+  <h2 id="support">Contact &amp; Support</h2>
+  <p>
+    For further assistance, bug reports, or feature requests, please contact the project maintainer or visit the project repository.
+  </p>
+</body>
+</html>

@@ -1,0 +1,181 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <title>AX.25 WebSockets Gateway Documentation</title>
+  <style>
+    body { font-family: Arial, sans-serif; margin: 2em; line-height: 1.6; }
+    h1, h2, h3 { color: #333; }
+    code { background-color: #f4f4f4; padding: 2px 4px; border-radius: 4px; }
+    pre { background-color: #f4f4f4; padding: 1em; overflow-x: auto; }
+    table { border-collapse: collapse; margin-bottom: 1em; }
+    th, td { border: 1px solid #ddd; padding: 8px; }
+    th { background-color: #eee; }
+  </style>
+</head>
+<body>
+  <h1>AX.25 WebSockets Gateway Documentation</h1>
+  <p>
+    This program serves as a WebSockets and raw TCP gateway for AX.25 KISS data.
+    It establishes a connection to an underlying device (using either a serial port or a TCP connection)
+    and then forwards complete KISS frames to connected clients via Socket.IO as well as raw TCP connections.
+    Additionally, events from an active Socket.IO client are relayed back to the device.
+  </p>
+
+  <h2>Table of Contents</h2>
+  <ul>
+    <li><a href="#overview">Overview</a></li>
+    <li><a href="#installation">Installation &amp; Build</a></li>
+    <li><a href="#options">Command‑Line Options</a></li>
+    <li><a href="#examples">Examples</a></li>
+    <li><a href="#notes">Additional Notes</a></li>
+  </ul>
+
+  <h2 id="overview">Overview</h2>
+  <p>
+    The WebSockets Gateway is designed to integrate with an AX.25 KISS device. It opens a connection to the device using either a serial port or a TCP connection, reads KISS-framed data, and:
+  </p>
+  <ul>
+    <li>
+      Broadcasts complete KISS frames to all connected Socket.IO clients via the <code>raw_kiss_frame</code> event.
+    </li>
+    <li>
+      Forwards the frames to raw TCP clients that connect on a port one higher than the HTTP server port.
+    </li>
+    <li>
+      Forwards events from the active Socket.IO client back to the device.
+    </li>
+  </ul>
+
+  <h2 id="installation">Installation &amp; Build</h2>
+  <p>
+    To build the WebSockets Gateway, ensure you have <a href="https://golang.org/">Go</a> installed.
+    Then compile the program:
+  </p>
+  <pre>
+go build -o ax25ws websockets.go
+  </pre>
+
+  <h2 id="options">Command‑Line Options</h2>
+  <p>The table below lists all available command‑line options along with their descriptions and default values:</p>
+  <table>
+    <tr>
+      <th>Flag</th>
+      <th>Description</th>
+      <th>Default Value</th>
+    </tr>
+    <tr>
+      <td><code>-connection</code></td>
+      <td>
+        Type of connection to the device. Must be either <code>serial</code> or <code>tcp</code>.
+      </td>
+      <td><em>none</em></td>
+    </tr>
+    <tr>
+      <td><code>-serial-port</code></td>
+      <td>
+        Device file for the serial connection (e.g. <code>/dev/ttyUSB0</code> or <code>COM3</code>). Required when using serial.
+      </td>
+      <td><em>empty</em></td>
+    </tr>
+    <tr>
+      <td><code>-baud</code></td>
+      <td>
+        Baud rate for the serial connection.
+      </td>
+      <td><code>115200</code></td>
+    </tr>
+    <tr>
+      <td><code>-host</code></td>
+      <td>
+        TCP host or IP to connect to when <code>-connection</code> is set to <code>tcp</code>.
+      </td>
+      <td><em>empty</em></td>
+    </tr>
+    <tr>
+      <td><code>-port</code></td>
+      <td>
+        TCP port to connect to when <code>-connection</code> is set to <code>tcp</code>.
+      </td>
+      <td><em>0</em></td>
+    </tr>
+    <tr>
+      <td><code>-listen-ip</code></td>
+      <td>
+        IP address on which to bind the HTTP server (which serves the Socket.IO endpoint and static files).
+      </td>
+      <td><code>0.0.0.0</code></td>
+    </tr>
+    <tr>
+      <td><code>-listen-port</code></td>
+      <td>
+        Port on which to bind the HTTP server. The raw TCP server will bind on this port + 1.
+      </td>
+      <td><code>5000</code></td>
+    </tr>
+    <tr>
+      <td><code>-debug</code></td>
+      <td>
+        Enable verbose debug logging.
+      </td>
+      <td><code>false</code></td>
+    </tr>
+  </table>
+
+  <h2 id="examples">Examples</h2>
+  <h3>Example 1: Using a Serial Connection</h3>
+  <p>
+    This command opens a serial connection to the device on <code>/dev/ttyUSB0</code> with a baud rate of 115200,
+    and starts the HTTP server on port 5000 (with raw TCP on port 5001).
+  </p>
+  <pre>
+go run websockets.go -connection=serial -serial-port=/dev/ttyUSB0 -baud=115200
+  </pre>
+
+  <h3>Example 2: Using a TCP Connection</h3>
+  <p>
+    This command connects to the device over TCP at <code>192.168.1.50:8000</code> and starts the HTTP server on port 5000.
+  </p>
+  <pre>
+go run websockets.go -connection=tcp -host=192.168.1.50 -port=8000
+  </pre>
+
+  <h3>Example 3: Custom HTTP Server Binding</h3>
+  <p>
+    The following command runs the gateway with a TCP connection to the device, but binds the HTTP server to IP <code>127.0.0.1</code>
+    on port <code>8080</code> (raw TCP will then listen on port <code>8081</code>):
+  </p>
+  <pre>
+go run websockets.go -connection=tcp -host=192.168.1.50 -port=8000 -listen-ip=127.0.0.1 -listen-port=8080
+  </pre>
+
+  <h3>Example 4: Enabling Debug Logging</h3>
+  <p>
+    To enable verbose output for troubleshooting, use the <code>-debug</code> flag:
+  </p>
+  <pre>
+go run websockets.go -connection=serial -serial-port=COM3 -baud=115200 -debug
+  </pre>
+
+  <h2 id="notes">Additional Notes</h2>
+  <ul>
+    <li>
+      When using a serial connection, ensure that you have permission to access the device file (e.g. add your user to the appropriate group on Unix systems).
+    </li>
+    <li>
+      The HTTP server not only serves the Socket.IO endpoint at <code>/socket.io/</code> but also serves static files (an <code>index.html</code> file is expected in the working directory).
+    </li>
+    <li>
+      Raw TCP connections are accepted on the port equal to <code>-listen-port + 1</code>. These clients will receive complete KISS frames directly.
+    </li>
+    <li>
+      Only events from the most recently connected (active) Socket.IO client are forwarded to the device.
+    </li>
+  </ul>
+
+  <h2>Contact &amp; Support</h2>
+  <p>
+    For further questions, suggestions, or to report issues, please contact the project maintainer or visit the project's repository.
+  </p>
+</body>
+</html>

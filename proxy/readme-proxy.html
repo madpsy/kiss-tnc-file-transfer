@@ -1,0 +1,221 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <title>AX.25 KISS Proxy Documentation</title>
+  <style>
+    body { font-family: Arial, sans-serif; margin: 2em; line-height: 1.6; }
+    h1, h2, h3 { color: #333; }
+    code { background-color: #f4f4f4; padding: 2px 4px; border-radius: 4px; }
+    pre { background-color: #f4f4f4; padding: 1em; overflow-x: auto; }
+    table { border-collapse: collapse; margin-bottom: 1em; }
+    th, td { border: 1px solid #ddd; padding: 8px; }
+    th { background-color: #eee; }
+  </style>
+</head>
+<body>
+  <h1>AX.25 KISS Proxy Documentation</h1>
+  <p>
+    This proxy application is designed to facilitate file transfers over AX.25 KISS connections while also allowing for pass‑through access via separate TCP ports.
+    In non‑loop mode the proxy connects to TNC1 and TNC2 (using TCP or serial) for file‑transfer processing and additionally listens for pass‑through connections on dedicated TCP ports.
+    In loop mode the application simply listens on the specified ports and echoes data.
+  </p>
+
+  <h2>Table of Contents</h2>
+  <ul>
+    <li><a href="#overview">Overview</a></li>
+    <li><a href="#installation">Installation &amp; Build</a></li>
+    <li><a href="#options">Command‑Line Options</a></li>
+    <li><a href="#examples">Examples</a></li>
+  </ul>
+
+  <h2 id="overview">Overview</h2>
+  <p>
+    The proxy is intended for environments where AX.25 file transfers need to be monitored or shared with additional clients.
+    It supports two main modes:
+  </p>
+  <ul>
+    <li>
+      <strong>Loop Mode:</strong> When enabled using <code>--loop</code>, the application will listen on the configured pass‑through ports (default 5010 and 5011) and act as a loopback.
+    </li>
+    <li>
+      <strong>Normal Mode:</strong> In normal (non‑loop) mode the proxy establishes connections to two TNC devices (TNC1 and TNC2) via TCP or serial. Additionally, it starts pass‑through listeners on dedicated TCP ports so that other clients can share the TNC data.
+    </li>
+  </ul>
+
+  <h2 id="installation">Installation &amp; Build</h2>
+  <p>
+    To build the application, ensure you have <a href="https://golang.org/">Go</a> installed.
+    Then compile the program:
+  </p>
+  <pre>
+go build -o ax25proxy proxy.go
+  </pre>
+
+  <h2 id="options">Command‑Line Options</h2>
+  <p>The following table lists all available command‑line options along with their descriptions and default values:</p>
+  <table>
+    <tr>
+      <th>Flag</th>
+      <th>Description</th>
+      <th>Default Value</th>
+    </tr>
+    <tr>
+      <td><code>--tnc1-connection-type</code></td>
+      <td>Connection type for TNC1 (<code>tcp</code> or <code>serial</code>).</td>
+      <td><code>tcp</code></td>
+    </tr>
+    <tr>
+      <td><code>--tnc1-host</code></td>
+      <td>TCP host for TNC1.</td>
+      <td><code>127.0.0.1</code></td>
+    </tr>
+    <tr>
+      <td><code>--tnc1-port</code></td>
+      <td>TCP port for TNC1 file‑transfer connection.</td>
+      <td><code>9001</code></td>
+    </tr>
+    <tr>
+      <td><code>--tnc1-serial-port</code></td>
+      <td>Serial port for TNC1 (if using serial connection, e.g. <code>/dev/ttyUSB0</code> or <code>COM3</code>).</td>
+      <td><em>empty</em></td>
+    </tr>
+    <tr>
+      <td><code>--tnc1-baud</code></td>
+      <td>Baud rate for TNC1 serial connection.</td>
+      <td><code>115200</code></td>
+    </tr>
+    <tr>
+      <td><code>--tnc2-connection-type</code></td>
+      <td>Connection type for TNC2 (<code>tcp</code> or <code>serial</code>).</td>
+      <td><code>tcp</code></td>
+    </tr>
+    <tr>
+      <td><code>--tnc2-host</code></td>
+      <td>TCP host for TNC2.</td>
+      <td><code>127.0.0.1</code></td>
+    </tr>
+    <tr>
+      <td><code>--tnc2-port</code></td>
+      <td>TCP port for TNC2 file‑transfer connection.</td>
+      <td><code>9002</code></td>
+    </tr>
+    <tr>
+      <td><code>--tnc2-serial-port</code></td>
+      <td>Serial port for TNC2.</td>
+      <td><em>empty</em></td>
+    </tr>
+    <tr>
+      <td><code>--tnc2-baud</code></td>
+      <td>Baud rate for TNC2 serial connection.</td>
+      <td><code>115200</code></td>
+    </tr>
+    <tr>
+      <td><code>--tnc1-passthrough-port</code></td>
+      <td>TCP port for TNC1 pass‑through clients. Used for both loop mode and non‑loop pass‑through.</td>
+      <td><code>5010</code></td>
+    </tr>
+    <tr>
+      <td><code>--tnc2-passthrough-port</code></td>
+      <td>TCP port for TNC2 pass‑through clients. Used for both loop mode and non‑loop pass‑through.</td>
+      <td><code>5011</code></td>
+    </tr>
+    <tr>
+      <td><code>--callsigns</code></td>
+      <td>
+        Optional comma‑delimited list of valid sender/receiver callsigns.
+        When empty, all callsigns are allowed.
+      </td>
+      <td><em>empty</em></td>
+    </tr>
+    <tr>
+      <td><code>--debug</code></td>
+      <td>Enable debug logging.</td>
+      <td><code>false</code></td>
+    </tr>
+    <tr>
+      <td><code>--save-files</code></td>
+      <td>
+        Save all files seen by the proxy (prepending <code>&lt;SENDER&gt;_&lt;RECEIVER&gt;_</code> to the filename).
+      </td>
+      <td><code>false</code></td>
+    </tr>
+    <tr>
+      <td><code>--loop</code></td>
+      <td>
+        Enable loopback mode.
+        In loop mode the application uses the pass‑through ports for TNC1 and TNC2 and does not use the TNC1/TNC2 file‑transfer options.
+      </td>
+      <td><code>false</code></td>
+    </tr>
+  </table>
+
+  <h2 id="examples">Examples</h2>
+  <h3>Example 1: TCP File‑Transfer with Default Pass‑Through</h3>
+  <p>
+    The following command will run the proxy in non‑loop mode using TCP connections for both TNCs on the default ports.
+    The pass‑through listeners will be available on ports <code>5010</code> and <code>5011</code>.
+  </p>
+  <pre>
+go run proxy.go
+  </pre>
+
+  <h3>Example 2: TCP File‑Transfer with Custom Pass‑Through Ports</h3>
+  <p>
+    This command configures TNC1 and TNC2 for file‑transfer on the default host/port options and overrides the pass‑through ports.
+  </p>
+  <pre>
+go run proxy.go --tnc1-passthrough-port=6000 --tnc2-passthrough-port=6001
+  </pre>
+
+  <h3>Example 3: Using Serial for TNC1 and TCP for TNC2</h3>
+  <p>
+    In this example, TNC1 uses a serial connection (e.g. <code>/dev/ttyUSB0</code>) and TNC2 uses a TCP connection.
+    Pass‑through clients will still connect on the default ports.
+  </p>
+  <pre>
+go run proxy.go --tnc1-connection-type=serial --tnc1-serial-port=/dev/ttyUSB0 --tnc1-baud=115200 --tnc2-connection-type=tcp --tnc2-host=127.0.0.1 --tnc2-port=9002
+  </pre>
+
+  <h3>Example 4: Loopback Mode</h3>
+  <p>
+    Loopback mode is activated with the <code>--loop</code> flag.
+    In this mode, TNC1 and TNC2 are not used for file‑transfer; instead, the application listens on the pass‑through ports.
+    Here you can also override the ports if desired.
+  </p>
+  <pre>
+go run proxy.go --loop --tnc1-passthrough-port=7000 --tnc2-passthrough-port=7001
+  </pre>
+
+  <h3>Example 5: Restricting to Specific Callsigns and Enabling Debug Logging</h3>
+  <p>
+    The following command restricts file transfers to the callsigns <code>N0CALL</code> and <code>W1AW</code>
+    and turns on debug logging.
+  </p>
+  <pre>
+go run proxy.go --callsigns=N0CALL,W1AW --debug
+  </pre>
+
+  <h2>Additional Notes</h2>
+  <ul>
+    <li>
+      When using <strong>serial</strong> connections, ensure that you have the appropriate permissions
+      and that the device path (e.g. <code>/dev/ttyUSB0</code> on Unix or <code>COM3</code> on Windows)
+      is specified correctly.
+    </li>
+    <li>
+      The <code>--loop</code> mode is mutually exclusive with the TNC1/TNC2 file‑transfer options. When in loop mode,
+      the pass‑through ports are used to accept client connections directly.
+    </li>
+    <li>
+      Pass‑through clients receive a copy of every KISS frame received from the configured TNCs.
+      If a client sends data, that data is forwarded directly to the corresponding TNC.
+    </li>
+  </ul>
+
+  <h2>Contact &amp; Support</h2>
+  <p>
+    For further questions or to report issues, please contact the project maintainer or consult the source repository.
+  </p>
+</body>
+</html>

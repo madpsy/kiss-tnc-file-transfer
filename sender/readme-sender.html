@@ -1,0 +1,225 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <title>AX.25 Sender Documentation</title>
+  <style>
+    body { font-family: Arial, sans-serif; margin: 2em; line-height: 1.6; }
+    h1, h2, h3 { color: #333; }
+    code { background-color: #f4f4f4; padding: 2px 4px; border-radius: 4px; }
+    pre { background-color: #f4f4f4; padding: 1em; overflow-x: auto; }
+    table { border-collapse: collapse; margin-bottom: 1em; }
+    th, td { border: 1px solid #ddd; padding: 8px; }
+    th { background-color: #eee; }
+  </style>
+</head>
+<body>
+  <h1>AX.25 Sender Documentation</h1>
+  <p>
+    The Sender is a core component of the AX.25 file‑transfer suite. It takes one or more files and transmits them as a series of AX.25 KISS‑framed packets.
+    The Sender supports both file‑mode (sending a comma‑delimited list of files) and directory‑monitoring mode (watching a directory for new files to send).
+    It features configurable window (burst) size, optional compression, and optional Base64 encoding of the payload.
+  </p>
+
+  <h2>Table of Contents</h2>
+  <ul>
+    <li><a href="#overview">Overview</a></li>
+    <li><a href="#installation">Installation &amp; Build</a></li>
+    <li><a href="#options">Command‑Line Options</a></li>
+    <li><a href="#examples">Examples</a></li>
+    <li><a href="#notes">Additional Notes</a></li>
+    <li><a href="#support">Contact &amp; Support</a></li>
+  </ul>
+
+  <h2 id="overview">Overview</h2>
+  <p>
+    The Sender reads file data, optionally compresses it (compression is enabled by default), and – if requested – encodes the payload in Base64.
+    It then splits the file data into chunks and constructs an initial header packet (with metadata such as the filename, sizes, MD5 checksum, file ID, encoding method, and compression flag) followed by a series of data packets.
+  </p>
+  <p>
+    A sliding‐window (burst) protocol is implemented to allow multiple packets to be sent before waiting for cumulative ACKs. The window size can be set manually or allowed to adjust automatically.
+    In addition, the program can monitor a directory for new files (using <code>fsnotify</code>) instead of sending a fixed list of files.
+  </p>
+
+  <h2 id="installation">Installation &amp; Build</h2>
+  <p>
+    To build the Sender, make sure you have <a href="https://golang.org/">Go</a> installed along with the required packages (<code>fsnotify</code> and <code>go.bug.st/serial</code>).
+    Then compile the program:
+  </p>
+  <pre>
+go build -o ax25sender sender.go
+  </pre>
+
+  <h2 id="options">Command‑Line Options</h2>
+  <p>The table below details all available command‑line options along with descriptions and default values:</p>
+  <table>
+    <tr>
+      <th>Flag</th>
+      <th>Description</th>
+      <th>Default Value</th>
+    </tr>
+    <tr>
+      <td><code>--my-callsign</code></td>
+      <td>Your callsign (required).</td>
+      <td><em>none</em></td>
+    </tr>
+    <tr>
+      <td><code>--receiver-callsign</code></td>
+      <td>Receiver's callsign (required).</td>
+      <td><em>none</em></td>
+    </tr>
+    <tr>
+      <td><code>--window-size</code></td>
+      <td>
+        Window (burst) size as an integer or the string "auto". Allowed values are 1, 2, 4, 6, 8, 10.
+        When set to "auto" the sender adjusts the window dynamically. 
+      </td>
+      <td><code>auto</code></td>
+    </tr>
+    <tr>
+      <td><code>--connection</code></td>
+      <td>Connection type: <code>tcp</code> or <code>serial</code>.</td>
+      <td><code>tcp</code></td>
+    </tr>
+    <tr>
+      <td><code>--debug</code></td>
+      <td>Enable debug output.</td>
+      <td><code>false</code></td>
+    </tr>
+    <tr>
+      <td><code>--host</code></td>
+      <td>TCP host for the connection (used if <code>--connection</code> is <code>tcp</code>).</td>
+      <td><code>127.0.0.1</code></td>
+    </tr>
+    <tr>
+      <td><code>--port</code></td>
+      <td>TCP port for the connection (used if <code>--connection</code> is <code>tcp</code>).</td>
+      <td><code>9001</code></td>
+    </tr>
+    <tr>
+      <td><code>--serial-port</code></td>
+      <td>Serial port device (e.g. <code>/dev/ttyUSB0</code> or <code>COM3</code>). Required when using a serial connection.</td>
+      <td><em>empty</em></td>
+    </tr>
+    <tr>
+      <td><code>--baud</code></td>
+      <td>Baud rate for the serial connection.</td>
+      <td><code>115200</code></td>
+    </tr>
+    <tr>
+      <td><code>--file</code></td>
+      <td>
+        Comma‑delimited list of files to send. (Mutually exclusive with <code>--file-directory</code>.)
+      </td>
+      <td><em>empty</em></td>
+    </tr>
+    <tr>
+      <td><code>--file-directory</code></td>
+      <td>
+        Directory to monitor for files to send. (Mutually exclusive with <code>--file</code>.)
+      </td>
+      <td><em>empty</em></td>
+    </tr>
+    <tr>
+      <td><code>--file-directory-retries</code></td>
+      <td>
+        Number of retries for sending a file from the directory.
+      </td>
+      <td><code>0</code></td>
+    </tr>
+    <tr>
+      <td><code>--file-directory-existing</code></td>
+      <td>
+        When set to true, queue existing files in the monitored directory.
+      </td>
+      <td><code>false</code></td>
+    </tr>
+    <tr>
+      <td><code>--no-compress</code></td>
+      <td>
+        Disable compression. (By default, compression is enabled.)
+      </td>
+      <td><code>false</code></td>
+    </tr>
+    <tr>
+      <td><code>--timeout-seconds</code></td>
+      <td>
+        Timeout in seconds for waiting for ACKs (applied per burst).
+      </td>
+      <td><code>10</code></td>
+    </tr>
+    <tr>
+      <td><code>--timeout-retries</code></td>
+      <td>
+        Number of timeout retries before giving up on a transfer.
+      </td>
+      <td><code>5</code></td>
+    </tr>
+    <tr>
+      <td><code>--base64</code></td>
+      <td>
+        When set to true, encode the file payload in Base64 (applied on each chunk after compression).
+      </td>
+      <td><code>false</code></td>
+    </tr>
+  </table>
+
+  <h2 id="examples">Examples</h2>
+  <h3>Example 1: Sending Files Over TCP</h3>
+  <p>
+    The following command sends a comma‑delimited list of files to a receiver at <code>127.0.0.1:9001</code>.
+    The sender’s callsign is <code>N0CALL</code> and the receiver’s callsign is <code>W1AW</code>. Window size is auto‑adjusted.
+  </p>
+  <pre>
+go run sender.go --my-callsign=N0CALL --receiver-callsign=W1AW --connection=tcp --host=127.0.0.1 --port=9001 --file="file1.txt,file2.txt"
+  </pre>
+
+  <h3>Example 2: Sending Files Over Serial with Base64 Encoding</h3>
+  <p>
+    This command sends a file using a serial connection on <code>/dev/ttyUSB0</code> at 115200 baud.
+    The file payload will be compressed and then Base64‑encoded.
+  </p>
+  <pre>
+go run sender.go --my-callsign=N0CALL --receiver-callsign=W1AW --connection=serial --serial-port=/dev/ttyUSB0 --baud=115200 --file="document.pdf" --base64
+  </pre>
+
+  <h3>Example 3: Directory Monitoring Mode</h3>
+  <p>
+    The following command monitors the directory <code>/path/to/files</code> for new files.
+    Any new (or existing, if <code>--file-directory-existing</code> is set) file in that directory will be sent.
+    The sender will retry sending a file 3 times before giving up.
+  </p>
+  <pre>
+go run sender.go --my-callsign=N0CALL --receiver-callsign=W1AW --connection=tcp --host=127.0.0.1 --port=9001 --file-directory="/path/to/files" --file-directory-retries=3 --file-directory-existing
+  </pre>
+
+  <h3>Example 4: Using a Static Window Size and Disabling Compression</h3>
+  <p>
+    In this example, the sender uses a fixed window size of 6 packets and disables compression.
+  </p>
+  <pre>
+go run sender.go --my-callsign=N0CALL --receiver-callsign=W1AW --connection=tcp --host=127.0.0.1 --port=9001 --file="image.jpg" --window-size=6 --no-compress
+  </pre>
+
+  <h2 id="notes">Additional Notes</h2>
+  <ul>
+    <li>
+      Exactly one of <code>--file</code> or <code>--file-directory</code> must be specified. They are mutually exclusive.
+    </li>
+    <li>
+      Compression is enabled by default. To disable it, use the <code>--no-compress</code> flag.
+    </li>
+    <li>
+      The <code>--base64</code> flag applies Base64 encoding to each data chunk after compression.
+    </li>
+    <li>
+      The window size may be set to "auto" (the default) for dynamic adjustment based on ACK feedback, or a fixed value may be chosen from 1, 2, 4, 6, 8, or 10.
+    </li>
+    <li>
+      When in file‑directory mode, a filesystem watcher (<code>fsnotify</code>) monitors the directory for new or modified files. Existing files can be queued by specifying <code>--file-directory-existing</code>.
+    </li>
+  </ul>
+
+  <h2 id="support">Contact &amp; Support</h2>
+  <p>
+    For further questions, bug reports, or feature requests, please contact the project maintainer or visit the projec

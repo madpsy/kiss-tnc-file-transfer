@@ -1,0 +1,236 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <title>AX.25 Combined Sender/Receiver Documentation</title>
+  <style>
+    body { font-family: Arial, sans-serif; margin: 2em; line-height: 1.6; }
+    h1, h2, h3 { color: #333; }
+    code { background-color: #f4f4f4; padding: 2px 4px; border-radius: 4px; }
+    pre { background-color: #f4f4f4; padding: 1em; overflow-x: auto; }
+    table { border-collapse: collapse; margin-bottom: 1em; }
+    th, td { border: 1px solid #ddd; padding: 8px; }
+    th { background-color: #eee; }
+  </style>
+</head>
+<body>
+  <h1>AX.25 Combined Sender/Receiver Documentation</h1>
+  <p>
+    This program is a simplified, combined version of the AX.25 Sender and Receiver. It supports both sending and receiving files using AX.25 KISS‑framed packets.
+    The program’s behavior is selected via the <code>--role</code> flag, which can be set to either <code>sender</code> or <code>receiver</code>.
+    In sender mode the program reads a file, optionally compresses and Base64‑encodes its contents, splits the data into chunks, and transmits the file along with a header packet.
+    In receiver mode it listens for incoming packets, reassembles them into a file, verifies the MD5 checksum, and saves the file.
+  </p>
+
+  <h2>Table of Contents</h2>
+  <ul>
+    <li><a href="#overview">Overview</a></li>
+    <li><a href="#installation">Installation &amp; Build</a></li>
+    <li><a href="#options">Command‑Line Options</a></li>
+    <li><a href="#examples">Usage Examples</a></li>
+    <li><a href="#notes">Additional Notes</a></li>
+    <li><a href="#support">Contact &amp; Support</a></li>
+  </ul>
+
+  <h2 id="overview">Overview</h2>
+  <p>
+    The combined program operates in one of two roles:
+  </p>
+  <ul>
+    <li>
+      <strong>Sender Mode:</strong> Reads a specified file, optionally compresses and encodes its contents, splits the data into chunks, builds a header packet (with metadata including file size, MD5 checksum, encoding method, etc.), and transmits the file using a sliding‑window (burst) protocol.
+    </li>
+    <li>
+      <strong>Receiver Mode:</strong> Listens for incoming AX.25 KISS‑framed packets, reassembles the header and data packets into a complete file, verifies the MD5 checksum, and saves the file.
+    </li>
+  </ul>
+  <p>
+    The program supports both TCP and serial connections, and the behavior is determined by the combination of flags provided.
+  </p>
+
+  <h2 id="installation">Installation &amp; Build</h2>
+  <p>
+    To build the combined program, ensure that you have <a href="https://golang.org/">Go</a> installed along with the required packages (<code>go.bug.st/serial</code>).
+    Then compile the program using:
+  </p>
+  <pre>
+go build -o ax25combined combined.go
+  </pre>
+
+  <h2 id="options">Command‑Line Options</h2>
+  <p>The table below lists the available command‑line options along with descriptions and default values. Note that some options apply only in sender mode.</p>
+  <table>
+    <tr>
+      <th>Flag</th>
+      <th>Description</th>
+      <th>Default Value</th>
+    </tr>
+    <tr>
+      <td><code>--role</code></td>
+      <td>
+        Role of the program. Must be either <code>sender</code> or <code>receiver</code> (required).
+      </td>
+      <td><em>none</em></td>
+    </tr>
+    <tr>
+      <td><code>--my-callsign</code></td>
+      <td>Your callsign (required).</td>
+      <td><em>none</em></td>
+    </tr>
+    <tr>
+      <td><code>--receiver-callsign</code></td>
+      <td>
+        Receiver's callsign (required in sender mode).
+      </td>
+      <td><em>none</em></td>
+    </tr>
+    <tr>
+      <td><code>--window-size</code></td>
+      <td>
+        Window (burst) size as an integer (allowed: 1, 2, 4, 6, 8, 10) or <code>auto</code> for automatic adjustment.
+      </td>
+      <td><code>auto</code></td>
+    </tr>
+    <tr>
+      <td><code>--connection</code></td>
+      <td>
+        Connection type: <code>tcp</code> or <code>serial</code>.
+      </td>
+      <td><code>tcp</code></td>
+    </tr>
+    <tr>
+      <td><code>--debug</code></td>
+      <td>Enable debug output.</td>
+      <td><code>false</code></td>
+    </tr>
+    <tr>
+      <td><code>--host</code></td>
+      <td>
+        TCP host for the connection (used when <code>--connection</code> is <code>tcp</code>).
+      </td>
+      <td><code>127.0.0.1</code></td>
+    </tr>
+    <tr>
+      <td><code>--port</code></td>
+      <td>
+        TCP port for the connection (used when <code>--connection</code> is <code>tcp</code>).
+      </td>
+      <td><code>9001</code></td>
+    </tr>
+    <tr>
+      <td><code>--serial-port</code></td>
+      <td>
+        Serial port device (e.g. <code>/dev/ttyUSB0</code> or <code>COM3</code>). Required for serial connections.
+      </td>
+      <td><em>empty</em></td>
+    </tr>
+    <tr>
+      <td><code>--baud</code></td>
+      <td>Baud rate for the serial connection.</td>
+      <td><code>115200</code></td>
+    </tr>
+    <tr>
+      <td><code>--file</code></td>
+      <td>
+        File to send. (Required in sender mode.)
+      </td>
+      <td><em>empty</em></td>
+    </tr>
+    <tr>
+      <td><code>--no-compress</code></td>
+      <td>
+        Disable compression (compression is enabled by default).
+      </td>
+      <td><code>false</code></td>
+    </tr>
+    <tr>
+      <td><code>--timeout-seconds</code></td>
+      <td>
+        Timeout in seconds for waiting for ACKs (sender mode only).
+      </td>
+      <td><code>10</code></td>
+    </tr>
+    <tr>
+      <td><code>--timeout-retries</code></td>
+      <td>
+        Number of timeout retries before giving up on a transfer (sender mode only).
+      </td>
+      <td><code>5</code></td>
+    </tr>
+    <tr>
+      <td><code>--one-file</code></td>
+      <td>
+        Exit after successfully receiving one file (receiver mode only).
+      </td>
+      <td><code>false</code></td>
+    </tr>
+    <tr>
+      <td><code>--base64</code></td>
+      <td>
+        When in sender mode, enable Base64 encoding of file data payloads (applied per chunk).
+      </td>
+      <td><code>false</code></td>
+    </tr>
+  </table>
+
+  <h2 id="examples">Usage Examples</h2>
+  <h3>Example 1: Sender Mode over TCP</h3>
+  <p>
+    The following command sends a file to a receiver at <code>127.0.0.1:9001</code> using a TCP connection.
+    The sender’s callsign is <code>N0CALL</code> and the receiver’s callsign is <code>W1AW</code>. Window size is set to auto.
+  </p>
+  <pre>
+go run combined.go --role=sender --my-callsign=N0CALL --receiver-callsign=W1AW --connection=tcp --host=127.0.0.1 --port=9001 --file="document.txt"
+  </pre>
+
+  <h3>Example 2: Sender Mode over Serial with Base64 Encoding</h3>
+  <p>
+    This command sends a file using a serial connection on <code>/dev/ttyUSB0</code> at 115200 baud.
+    Base64 encoding is enabled for the file data.
+  </p>
+  <pre>
+go run combined.go --role=sender --my-callsign=N0CALL --receiver-callsign=W1AW --connection=serial --serial-port=/dev/ttyUSB0 --baud=115200 --file="image.jpg" --base64
+  </pre>
+
+  <h3>Example 3: Receiver Mode over TCP</h3>
+  <p>
+    The following command starts the program in receiver mode, listening on a TCP connection at <code>127.0.0.1:9001</code>.
+    The receiver’s callsign is <code>N0CALL</code>.
+  </p>
+  <pre>
+go run combined.go --role=receiver --my-callsign=N0CALL --connection=tcp --host=127.0.0.1 --port=9001
+  </pre>
+
+  <h3>Example 4: Receiver Mode over Serial</h3>
+  <p>
+    This command starts the receiver using a serial connection on <code>COM3</code> (or <code>/dev/ttyUSB0</code> on Unix).
+  </p>
+  <pre>
+go run combined.go --role=receiver --my-callsign=N0CALL --connection=serial --serial-port=COM3 --baud=115200
+  </pre>
+
+  <h2 id="notes">Additional Notes</h2>
+  <ul>
+    <li>
+      The <code>--role</code> flag is required and must be set to either <code>sender</code> or <code>receiver</code>.
+    </li>
+    <li>
+      In sender mode, both <code>--my-callsign</code> and <code>--receiver-callsign</code> are required, as is the <code>--file</code> to send.
+    </li>
+    <li>
+      Compression is enabled by default. To disable compression, use the <code>--no-compress</code> flag.
+    </li>
+    <li>
+      The <code>--base64</code> option is only applicable in sender mode.
+    </li>
+    <li>
+      Timeout settings (<code>--timeout-seconds</code> and <code>--timeout-retries</code>) apply only when sending files.
+    </li>
+  </ul>
+
+  <h2 id="support">Contact &amp; Support</h2>
+  <p>
+    For further questions, bug reports, or feature requests, please contact the project maintainer or visit the project repository.
+  </p>
+</body>
+</html>
