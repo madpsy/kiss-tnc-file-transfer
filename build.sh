@@ -1,8 +1,23 @@
 #!/bin/bash
 set -e
 
+# Usage: ./build.sh [app]
+if [ "$#" -gt 1 ]; then
+  echo "Usage: $0 [app]"
+  exit 1
+fi
+
+# If an app name is provided as an argument, store it
+APP_FILTER=""
+if [ "$#" -eq 1 ]; then
+  APP_FILTER="$1"
+fi
+
 # Create output directory
 mkdir -p build
+
+# Variable to track if a matching app was found
+found=0
 
 # Iterate over each subdirectory, excluding the build directory
 for d in */ ; do
@@ -13,7 +28,13 @@ for d in */ ; do
   if [ "$APP_NAME" == "build" ]; then
     continue
   fi
-
+  
+  # If an app filter is specified, skip directories that don't match
+  if [ -n "$APP_FILTER" ] && [ "$APP_NAME" != "$APP_FILTER" ]; then
+    continue
+  fi
+  
+  found=1
   echo "=========================================="
   echo "Processing application: $APP_NAME"
   echo "=========================================="
@@ -56,5 +77,16 @@ for d in */ ; do
   
   # Return to the root directory
   popd > /dev/null
+  
+  # If an app filter was provided, we only want to build that one app
+  if [ -n "$APP_FILTER" ]; then
+    break
+  fi
 done
+
+# If an app was specified and no matching directory was found, exit with an error
+if [ -n "$APP_FILTER" ] && [ "$found" -eq 0 ]; then
+  echo "Error: No directory matching '$APP_FILTER' found."
+  exit 1
+fi
 
