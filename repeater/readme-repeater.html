@@ -1,0 +1,188 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <title>AX.25 KISS Repeater Documentation</title>
+  <style>
+    body { font-family: Arial, sans-serif; margin: 2em; line-height: 1.6; }
+    h1, h2, h3 { color: #333; }
+    code { background-color: #f4f4f4; padding: 2px 4px; border-radius: 4px; }
+    pre { background-color: #f4f4f4; padding: 1em; overflow-x: auto; }
+    table { border-collapse: collapse; margin-bottom: 1em; }
+    th, td { border: 1px solid #ddd; padding: 8px; }
+    th { background-color: #eee; }
+  </style>
+</head>
+<body>
+  <h1>AX.25 KISS Repeater Documentation</h1>
+  <p>
+    The AX.25 KISS Repeater is a specialized application designed for environments where a single TNC must be shared between a file‐transfer sender and receiver.
+    The repeater buffers and forwards complete bursts of KISS‑framed data between the sender and receiver while simultaneously offering two‑way pass‑through connectivity.
+    This two‑way pass‑through feature means that not only are all outgoing frames (sent to the TNC) broadcast to pass‑through clients, but any data received on the pass‑through port is also forwarded to the TNC.
+    Additionally, the application enforces allowed callsigns if desired.
+  </p>
+
+  <h2>Table of Contents</h2>
+  <ul>
+    <li><a href="#overview">Overview</a></li>
+    <li><a href="#installation">Installation &amp; Build</a></li>
+    <li><a href="#options">Command‑Line Options</a></li>
+    <li><a href="#examples">Examples</a></li>
+    <li><a href="#notes">Additional Notes</a></li>
+  </ul>
+
+  <h2 id="overview">Overview</h2>
+  <p>
+    The repeater operates with a single TNC connection (via TCP or serial) and uses a state machine to buffer and forward data packets between a sender and receiver.
+    When a header packet is received (with detailed header fields such as filename, timeout, original/compressed size, MD5 hash, etc.),
+    its details are logged – with the encoding method translated (0 = binary, 1 = base64).
+    Once the sender’s burst of data packets is complete, the entire burst is immediately forwarded to the receiver.
+  </p>
+  <p>
+    In addition, the repeater supports two‑way pass‑through connections:
+    <strong>Outgoing</strong>: Every KISS frame sent to the TNC is also broadcast to all connected pass‑through clients.
+    <strong>Incoming</strong>: Any data received on the pass‑through port from a client is forwarded to the TNC.
+  </p>
+  <p>
+    An optional <code>--callsigns</code> filter allows you to restrict transfers to specific sender and receiver callsigns.
+  </p>
+
+  <h2 id="installation">Installation &amp; Build</h2>
+  <p>
+    To build the application, ensure you have <a href="https://golang.org/">Go</a> installed.
+    Then compile the program:
+  </p>
+  <pre>
+go build -o ax25repeater repeater.go
+  </pre>
+  <p>
+    This produces an executable named <code>ax25repeater</code>.
+  </p>
+
+  <h2 id="options">Command‑Line Options</h2>
+  <p>The following table lists all available command‑line options along with their descriptions and default values:</p>
+  <table>
+    <tr>
+      <th>Flag</th>
+      <th>Description</th>
+      <th>Default Value</th>
+    </tr>
+    <tr>
+      <td><code>--tnc-connection-type</code></td>
+      <td>
+        Connection type for the TNC. Use <code>tcp</code> for a TCP connection or <code>serial</code> for a serial connection.
+      </td>
+      <td><code>tcp</code></td>
+    </tr>
+    <tr>
+      <td><code>--tnc-host</code></td>
+      <td>
+        TCP host address of the TNC (used when <code>--tnc-connection-type=tcp</code>).
+      </td>
+      <td><code>127.0.0.1</code></td>
+    </tr>
+    <tr>
+      <td><code>--tnc-port</code></td>
+      <td>
+        TCP port number for the TNC connection (used when <code>--tnc-connection-type=tcp</code>).
+      </td>
+      <td><code>9000</code></td>
+    </tr>
+    <tr>
+      <td><code>--tnc-serial-port</code></td>
+      <td>
+        Serial port for the TNC (e.g. <code>/dev/ttyUSB0</code> or <code>COM3</code>). Used when <code>--tnc-connection-type=serial</code>.
+      </td>
+      <td><em>empty</em></td>
+    </tr>
+    <tr>
+      <td><code>--tnc-baud</code></td>
+      <td>
+        Baud rate for the TNC serial connection.
+      </td>
+      <td><code>115200</code></td>
+    </tr>
+    <tr>
+      <td><code>--passthrough-port</code></td>
+      <td>
+        TCP port for pass‑through clients. This repeater supports two‑way pass‑through:
+        <em>Outgoing</em>: All KISS frames sent to the TNC are broadcast to these clients.
+        <em>Incoming</em>: Any data received on this port is forwarded to the TNC.
+      </td>
+      <td><code>5010</code></td>
+    </tr>
+    <tr>
+      <td><code>--callsigns</code></td>
+      <td>
+        Optional comma‑delimited list of valid sender/receiver callsigns.
+        When set, only packets whose both sender and receiver appear in this list are processed.
+        Otherwise, all callsigns are allowed.
+      </td>
+      <td><em>empty</em></td>
+    </tr>
+    <tr>
+      <td><code>--debug</code></td>
+      <td>
+        Enable verbose debug logging for detailed state and packet processing information.
+      </td>
+      <td><code>false</code></td>
+    </tr>
+  </table>
+
+  <h2 id="examples">Examples</h2>
+  <h3>Example 1: TCP Repeater with Default Settings</h3>
+  <p>
+    The following command runs the repeater using a TCP connection to the TNC at <code>127.0.0.1:9000</code>.
+    Pass‑through clients can connect on port <code>5010</code>.
+  </p>
+  <pre>
+go run ax25repeater.go
+  </pre>
+
+  <h3>Example 2: Serial Repeater with Two‑Way Pass‑Through</h3>
+  <p>
+    This command uses a serial connection for the TNC (e.g. <code>/dev/ttyUSB0</code> at 115200 baud)
+    and allows two‑way communication on the pass‑through port (<code>5010</code>).
+  </p>
+  <pre>
+go run ax25repeater.go --tnc-connection-type=serial --tnc-serial-port=/dev/ttyUSB0 --tnc-baud=115200
+  </pre>
+
+  <h3>Example 3: Restricting Transfers to Specific Callsigns</h3>
+  <p>
+    The following command restricts transfers to the callsigns <code>N0CALL</code> and <code>W1AW</code>
+    and enables debug logging.
+  </p>
+  <pre>
+go run ax25repeater.go --callsigns=N0CALL,W1AW --debug
+  </pre>
+
+  <h2 id="notes">Additional Notes</h2>
+  <ul>
+    <li>
+      The repeater establishes a single TNC connection (via TCP or serial) for file‑transfer processing.
+    </li>
+    <li>
+      When a header packet (sequence 1) is received, its payload is parsed and logged.
+      The header details include fields such as filename, timeout parameters, original/compressed size, MD5 hash, total packets, and encoding method (translated as <code>binary</code> or <code>base64</code>).
+    </li>
+    <li>
+      The state machine buffers data packets until a complete burst is received, then immediately forwards the burst to the receiver.
+    </li>
+    <li>
+      <strong>Two‑Way Pass‑Through:</strong> 
+      All KISS frames sent to the TNC are broadcast to any pass‑through clients connected on the specified port.
+      In addition, any data received on the pass‑through port from a client is forwarded to the TNC.
+    </li>
+    <li>
+      If the <code>--callsigns</code> flag is not provided, all callsigns are accepted.
+      Otherwise, only packets with both sender and receiver matching one of the allowed callsigns (case‑insensitive) are processed.
+    </li>
+  </ul>
+
+  <h2>Contact &amp; Support</h2>
+  <p>
+    For additional questions, issue reports, or support, please contact the project maintainer or visit the source repository.
+  </p>
+</body>
+</html>

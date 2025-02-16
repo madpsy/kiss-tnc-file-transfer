@@ -23,14 +23,14 @@ import (
 // -----------------------------------------------------------------------------
 
 var (
-	tncConnType   = flag.String("tnc-connection-type", "tcp", "Connection type for TNC: tcp or serial")
-	tncHost       = flag.String("tnc-host", "127.0.0.1", "TCP host for TNC")
-	tncPort       = flag.Int("tnc-port", 9000, "TCP port for TNC")
-	tncSerialPort = flag.String("tnc-serial-port", "", "Serial port for TNC (e.g. COM3 or /dev/ttyUSB0)")
-	tncBaud       = flag.Int("tnc-baud", 115200, "Baud rate for TNC serial connection")
+	tncConnType     = flag.String("tnc-connection-type", "tcp", "Connection type for TNC: tcp or serial")
+	tncHost         = flag.String("tnc-host", "127.0.0.1", "TCP host for TNC")
+	tncPort         = flag.Int("tnc-port", 9000, "TCP port for TNC")
+	tncSerialPort   = flag.String("tnc-serial-port", "", "Serial port for TNC (e.g. COM3 or /dev/ttyUSB0)")
+	tncBaud         = flag.Int("tnc-baud", 115200, "Baud rate for TNC serial connection")
 	passthroughPort = flag.Int("passthrough-port", 5010, "TCP port for pass‑through clients")
-	callsigns     = flag.String("callsigns", "", "Comma delimited list of valid sender/receiver callsigns (optional)")
-	debug         = flag.Bool("debug", false, "Enable extra debug logging")
+	callsigns       = flag.String("callsigns", "", "Comma delimited list of valid sender/receiver callsigns (optional)")
+	debug           = flag.Bool("debug", false, "Enable extra debug logging")
 )
 
 // allowedCalls is a global map of allowed callsigns (uppercase).
@@ -314,7 +314,7 @@ func logHeaderDetails(payload []byte, fileID, sender, receiver string) {
 }
 
 // -----------------------------------------------------------------------------
-// Pass‑Through Support
+// Pass‑Through Support (Two‑Way)
 // -----------------------------------------------------------------------------
 
 var (
@@ -340,8 +340,32 @@ func broadcastToClients(data []byte, lock *sync.Mutex, conns *[]net.Conn) {
 	}
 }
 
+// handlePassThroughRead reads data from a pass‑through client and forwards it to the TNC.
+func handlePassThroughRead(client net.Conn, tncConn KISSConnection) {
+	defer client.Close()
+	buf := make([]byte, 1024)
+	for {
+		n, err := client.Read(buf)
+		if err != nil {
+			if err != io.EOF {
+				log.Printf("Pass‑through read error from %s: %v", client.RemoteAddr(), err)
+			}
+			return
+		}
+		if n > 0 {
+			debugf("Pass‑through received %d bytes from %s: % X", n, client.RemoteAddr(), buf[:n])
+			// Forward the received data to the TNC.
+			if err := tncConn.SendFrame(buf[:n]); err != nil {
+				log.Printf("Error sending data from pass‑through client to TNC: %v", err)
+				return
+			}
+		}
+	}
+}
+
 // startPassThroughListener starts a TCP listener for pass‑through clients.
-func startPassThroughListener(port int) {
+// It now spawns a goroutine for each client to handle incoming data (two‑way).
+func startPassThroughListener(port int, tncConn KISSConnection) {
 	addr := fmt.Sprintf("0.0.0.0:%d", port)
 	ln, err := net.Listen("tcp", addr)
 	if err != nil {
@@ -358,6 +382,7 @@ func startPassThroughListener(port int) {
 		ptLock.Lock()
 		ptConns = append(ptConns, client)
 		ptLock.Unlock()
+		go handlePassThroughRead(client, tncConn)
 	}
 }
 
@@ -410,7 +435,7 @@ func (t *tcpKISSConnection) SendFrame(frame []byte) error {
 		broadcastToClients(frame, &ptLock, &ptConns)
 		return err
 	}
-	// Server mode.
+	// For server mode.
 	for {
 		holder := t.atomicConn.Load().(*connHolder)
 		if holder.conn == nil {
@@ -796,9 +821,6 @@ func main() {
 		log.Printf("--callsigns not set; allowing any callsign.")
 	}
 
-	// Start pass‑through listener.
-	go startPassThroughListener(*passthroughPort)
-
 	var tncConn KISSConnection
 	var err error
 
@@ -820,6 +842,9 @@ func main() {
 		log.Fatalf("Invalid TNC connection type: %s", *tncConnType)
 	}
 	defer tncConn.Close()
+
+	// Start two‑way pass‑through listener (clients both receive and can send data)
+	go startPassThroughListener(*passthroughPort, tncConn)
 
 	frameChan := make(chan []byte, 100)
 	fr := NewFrameReader(tncConn, frameChan)
