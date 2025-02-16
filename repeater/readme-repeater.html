@@ -34,7 +34,7 @@
   <h2 id="overview">Overview</h2>
   <p>
     The repeater operates with a single TNC connection (via TCP or serial) and uses a state machine to buffer and forward data packets between a sender and receiver.
-    When a header packet is received (with detailed header fields such as filename, timeout, original/compressed size, MD5 hash, etc.),
+    When a header packet is received (with detailed header fields such as filename, timeout, original/compressed size, MD5 hash, total packets, etc.),
     its details are logged – with the encoding method translated (0 = binary, 1 = base64).
     Once the sender’s burst of data packets is complete, the entire burst is immediately forwarded to the receiver.
   </p>
@@ -45,6 +45,7 @@
   </p>
   <p>
     An optional <code>--callsigns</code> filter allows you to restrict transfers to specific sender and receiver callsigns.
+    Additionally, when the <code>--save-files</code> option is enabled, the repeater will reassemble received file transfers (decoding and decompressing the data as needed) and save them locally.
   </p>
 
   <h2 id="installation">Installation &amp; Build</h2>
@@ -127,6 +128,14 @@ go build -o ax25repeater repeater.go
       </td>
       <td><code>false</code></td>
     </tr>
+    <tr>
+      <td><code>--save-files</code></td>
+      <td>
+        When enabled, the repeater will reassemble received file transfers from their data packets.
+        The application decodes (if base64‑encoded) and decompresses (if compressed) the file data, then saves the resulting file locally using a unique filename.
+      </td>
+      <td><code>false</code></td>
+    </tr>
   </table>
 
   <h2 id="examples">Examples</h2>
@@ -157,6 +166,16 @@ go run ax25repeater.go --tnc-connection-type=serial --tnc-serial-port=/dev/ttyUS
 go run ax25repeater.go --callsigns=N0CALL,W1AW --debug
   </pre>
 
+  <h3>Example 4: Enabling File Saving</h3>
+  <p>
+    To enable the saving of received files, simply add the <code>--save-files</code> flag.
+    When enabled, the repeater reassembles the file transfer by decoding and decompressing the data as needed,
+    then saves it locally with a filename that includes the sender, receiver, and file ID.
+  </p>
+  <pre>
+go run ax25repeater.go --save-files
+  </pre>
+
   <h2 id="notes">Additional Notes</h2>
   <ul>
     <li>
@@ -177,6 +196,14 @@ go run ax25repeater.go --callsigns=N0CALL,W1AW --debug
     <li>
       If the <code>--callsigns</code> flag is not provided, all callsigns are accepted.
       Otherwise, only packets with both sender and receiver matching one of the allowed callsigns (case‑insensitive) are processed.
+    </li>
+    <li>
+      <strong>File Saving:</strong>
+      When the <code>--save-files</code> flag is enabled, the repeater accumulates data packets for each file transfer.
+      Once all packets for a transfer have been received, the application reassembles the file in order.
+      If the transfer was base64‑encoded, each packet is decoded.
+      If compression was used, the reassembled data is decompressed via zlib before being saved.
+      The file is then stored locally using a unique filename based on the sender, receiver, file ID, and original filename.
     </li>
   </ul>
 
