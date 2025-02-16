@@ -3,11 +3,15 @@ package main
 
 import (
 	"bytes"
+	"compress/zlib"
+	"encoding/base64"
 	"flag"
 	"fmt"
 	"io"
+	"io/ioutil"
 	"log"
 	"net"
+	"os"
 	"sort"
 	"strconv"
 	"strings"
@@ -18,10 +22,10 @@ import (
 	"go.bug.st/serial"
 )
 
-// -----------------------------------------------------------------------------
-// Command-line Flags for TNC Connection, Pass‑Through, and Allowed Callsigns
-// -----------------------------------------------------------------------------
-
+//
+// Command‑line Flags for TNC Connection, Pass‑Through, Allowed Callsigns,
+// and saving files.
+//
 var (
 	tncConnType     = flag.String("tnc-connection-type", "tcp", "Connection type for TNC: tcp or serial")
 	tncHost         = flag.String("tnc-host", "127.0.0.1", "TCP host for TNC")
@@ -31,22 +35,21 @@ var (
 	passthroughPort = flag.Int("passthrough-port", 5010, "TCP port for pass‑through clients")
 	callsigns       = flag.String("callsigns", "", "Comma delimited list of valid sender/receiver callsigns (optional)")
 	debug           = flag.Bool("debug", false, "Enable extra debug logging")
+	// New flag to save files locally.
+	saveFiles = flag.Bool("save-files", false, "Save received files locally (reassemble from data packets)")
 )
 
-// allowedCalls is a global map of allowed callsigns (uppercase).
 var allowedCalls map[string]bool
 
-// debugf logs debug messages when debug is enabled.
 func debugf(format string, v ...interface{}) {
 	if *debug {
 		log.Printf("[DEBUG] "+format, v...)
 	}
 }
 
-// -----------------------------------------------------------------------------
+//
 // KISS / AX.25 Constants and Helper Functions
-// -----------------------------------------------------------------------------
-
+//
 const (
 	KISS_FLAG     = 0xC0
 	KISS_CMD_DATA = 0x00
@@ -116,11 +119,9 @@ func extractKISSFrames(data []byte) ([][]byte, []byte) {
 	return frames, data
 }
 
-// -----------------------------------------------------------------------------
+//
 // Packet Parsing: Structures and Functions
-// -----------------------------------------------------------------------------
-
-// Packet represents a parsed packet.
+//
 type Packet struct {
 	Type           string // "data" or "ack"
 	Sender         string
@@ -128,13 +129,12 @@ type Packet struct {
 	FileID         string
 	Seq            int    // sequence number (first 4 hex digits)
 	BurstTo        int    // expected highest sequence number for the burst (last 4 hex digits)
-	Payload        []byte // inner payload (could be header info, data, or FIN marker)
+	Payload        []byte // inner payload (header info, file data, or FIN marker)
 	RawInfo        string // raw info field (for logging)
 	Ack            string // for ACK packets
 	EncodingMethod byte   // parsed for completeness (not used here)
 }
 
-// parsePacket extracts a packet from raw (unescaped) bytes.
 func parsePacket(packet []byte) *Packet {
 	debugf("Parsing packet: % X", packet)
 	if len(packet) < 16 {
@@ -267,12 +267,9 @@ func min(a, b int) int {
 	return b
 }
 
-// -----------------------------------------------------------------------------
+//
 // Header Logging Helper
-// -----------------------------------------------------------------------------
-
-// logHeaderDetails parses the header payload (assumed to be pipe-delimited)
-// and logs the header details, translating the encoding method (0=binary, 1=base64).
+//
 func logHeaderDetails(payload []byte, fileID, sender, receiver string) {
 	headerStr := string(payload)
 	fields := strings.Split(headerStr, "|")
@@ -280,20 +277,16 @@ func logHeaderDetails(payload []byte, fileID, sender, receiver string) {
 		log.Printf("[Repeater] HEADER for fileID %s from %s->%s: insufficient header fields: %s", fileID, sender, receiver, headerStr)
 		return
 	}
-
-	// Example parsing—adjust field indices as needed.
 	timeoutSec := fields[0]
 	timeoutRetries := fields[1]
 	filename := fields[2]
 	origSize := fields[3]
 	compSize := fields[4]
 	md5Hash := fields[5]
-	// Field 6 is unused.
 	encodingMethod := fields[7]
 	compFlag := fields[8]
 	totalPackets := fields[9]
 
-	// Translate encodingMethod: 0 = binary, 1 = base64.
 	encodingStr := encodingMethod
 	if encodingMethod == "0" {
 		encodingStr = "binary"
@@ -313,20 +306,17 @@ func logHeaderDetails(payload []byte, fileID, sender, receiver string) {
 	log.Printf("           Encoding Method: %s", encodingStr)
 }
 
-// -----------------------------------------------------------------------------
+//
 // Pass‑Through Support (Two‑Way)
-// -----------------------------------------------------------------------------
-
+//
 var (
 	ptConns []net.Conn
 	ptLock  sync.Mutex
 )
 
-// broadcastToClients sends data to all connected pass‑through clients.
 func broadcastToClients(data []byte, lock *sync.Mutex, conns *[]net.Conn) {
 	lock.Lock()
 	defer lock.Unlock()
-	// Iterate in reverse order so removals don't affect indices.
 	for i := len(*conns) - 1; i >= 0; i-- {
 		conn := (*conns)[i]
 		if conn != nil {
@@ -340,7 +330,6 @@ func broadcastToClients(data []byte, lock *sync.Mutex, conns *[]net.Conn) {
 	}
 }
 
-// handlePassThroughRead reads data from a pass‑through client and forwards it to the TNC.
 func handlePassThroughRead(client net.Conn, tncConn KISSConnection) {
 	defer client.Close()
 	buf := make([]byte, 1024)
@@ -354,7 +343,6 @@ func handlePassThroughRead(client net.Conn, tncConn KISSConnection) {
 		}
 		if n > 0 {
 			debugf("Pass‑through received %d bytes from %s: % X", n, client.RemoteAddr(), buf[:n])
-			// Forward the received data to the TNC.
 			if err := tncConn.SendFrame(buf[:n]); err != nil {
 				log.Printf("Error sending data from pass‑through client to TNC: %v", err)
 				return
@@ -363,8 +351,6 @@ func handlePassThroughRead(client net.Conn, tncConn KISSConnection) {
 	}
 }
 
-// startPassThroughListener starts a TCP listener for pass‑through clients.
-// It now spawns a goroutine for each client to handle incoming data (two‑way).
 func startPassThroughListener(port int, tncConn KISSConnection) {
 	addr := fmt.Sprintf("0.0.0.0:%d", port)
 	ln, err := net.Listen("tcp", addr)
@@ -386,24 +372,21 @@ func startPassThroughListener(port int, tncConn KISSConnection) {
 	}
 }
 
-// -----------------------------------------------------------------------------
+//
 // KISSConnection Interface and Implementations
-// -----------------------------------------------------------------------------
-
-// KISSConnection abstracts a connection that can send/receive KISS frames.
+//
 type KISSConnection interface {
 	SendFrame(frame []byte) error
 	RecvData(timeout time.Duration) ([]byte, error)
 	Close() error
 }
 
+//
 // --- TCP Connection Implementation ---
-
+//
 type tcpKISSConnection struct {
-	conn     net.Conn
-	isServer bool
-
-	// For server mode.
+	conn       net.Conn
+	isServer   bool
 	listener   net.Listener
 	atomicConn atomic.Value // stores *connHolder
 	lock       sync.Mutex
@@ -435,7 +418,6 @@ func (t *tcpKISSConnection) SendFrame(frame []byte) error {
 		broadcastToClients(frame, &ptLock, &ptConns)
 		return err
 	}
-	// For server mode.
 	for {
 		holder := t.atomicConn.Load().(*connHolder)
 		if holder.conn == nil {
@@ -473,7 +455,6 @@ func (t *tcpKISSConnection) RecvData(timeout time.Duration) ([]byte, error) {
 		debugf("Received %d bytes from TCP client", n)
 		return buf[:n], nil
 	}
-	// Server mode.
 	start := time.Now()
 	for {
 		holder := t.atomicConn.Load().(*connHolder)
@@ -516,8 +497,9 @@ func (t *tcpKISSConnection) Close() error {
 	return nil
 }
 
+//
 // --- Serial Connection Implementation ---
-
+//
 type serialKISSConnection struct {
 	ser  serial.Port
 	lock sync.Mutex
@@ -562,10 +544,9 @@ func (s *serialKISSConnection) Close() error {
 	return s.ser.Close()
 }
 
-// -----------------------------------------------------------------------------
+//
 // FrameReader: Reads raw data and extracts KISS frames
-// -----------------------------------------------------------------------------
-
+//
 type FrameReader struct {
 	conn    KISSConnection
 	outChan chan []byte
@@ -615,10 +596,9 @@ func (fr *FrameReader) Stop() {
 	fr.running = false
 }
 
-// -----------------------------------------------------------------------------
+//
 // Transfer State Machine
-// -----------------------------------------------------------------------------
-
+//
 type TransferState int
 
 const (
@@ -629,6 +609,7 @@ const (
 )
 
 // Transfer holds the state and buffers for one file transfer session.
+// Extended below with fields for file saving.
 type Transfer struct {
 	Sender        string
 	Receiver      string
@@ -638,6 +619,13 @@ type Transfer struct {
 	ExpectedBurst int            // Expected highest seq number for the burst.
 	LastSeq       int            // Highest sequence number seen.
 	State         TransferState
+	// --- Fields for file saving ---
+	Filename       string
+	TotalPackets   int            // Total packet count (header included)
+	EncodingMethod byte           // 0 = binary, 1 = base64
+	Compress       bool           // true if file is compressed
+	PacketData     map[int][]byte // Data packets (seq > 1) keyed by sequence
+	FileSaved      bool
 	sync.Mutex
 }
 
@@ -656,7 +644,6 @@ func canonicalKey(sender, receiver, fileID string) string {
 	return fmt.Sprintf("%s|%s|%s", r, s, fid)
 }
 
-// forwardBurst immediately forwards the buffered burst in order.
 func forwardBurst(tr *Transfer, conn KISSConnection) {
 	var seqs []int
 	for seq := range tr.BurstBuffer {
@@ -671,13 +658,11 @@ func forwardBurst(tr *Transfer, conn KISSConnection) {
 			log.Printf("[Repeater] Forwarded data packet seq %d for fileID %s.", seq, tr.FileID)
 		}
 	}
-	// Clear the buffer and reset counter.
 	tr.BurstBuffer = make(map[int][]byte)
 	tr.LastSeq = 1
 }
 
-// processPacket is the main state machine.
-// It buffers packets and forwards duplicates immediately.
+// processPacket is the main state machine. It buffers packets and forwards duplicates immediately.
 func processPacket(pkt []byte, conn KISSConnection) {
 	packet := parsePacket(pkt)
 	if packet == nil {
@@ -685,7 +670,6 @@ func processPacket(pkt []byte, conn KISSConnection) {
 		return
 	}
 
-	// If allowed callsigns are configured, drop packets with unauthorized callsigns.
 	if *callsigns != "" {
 		srcAllowed := allowedCalls[strings.ToUpper(strings.TrimSpace(packet.Sender))]
 		dstAllowed := allowedCalls[strings.ToUpper(strings.TrimSpace(packet.Receiver))]
@@ -699,7 +683,6 @@ func processPacket(pkt []byte, conn KISSConnection) {
 	transfersLock.Lock()
 	tr, exists := transfers[key]
 	if !exists {
-		// Create a new transfer if this is a header packet from the sender.
 		if packet.Type == "data" && packet.Seq == 1 {
 			tr = &Transfer{
 				Sender:        packet.Sender,
@@ -711,9 +694,25 @@ func processPacket(pkt []byte, conn KISSConnection) {
 				State:         WaitHeaderAck,
 				LastSeq:       1,
 			}
+			// If saving files is enabled, parse header info.
+			if *saveFiles {
+				headerParts := strings.Split(string(packet.Payload), "|")
+				if len(headerParts) >= 10 {
+					tr.Filename = headerParts[2]
+					if tot, err := strconv.Atoi(headerParts[9]); err == nil {
+						tr.TotalPackets = tot
+					} else {
+						log.Printf("[Repeater] Error parsing total packets from header for fileID %s: %v", packet.FileID, err)
+					}
+					if enc, err := strconv.Atoi(headerParts[7]); err == nil {
+						tr.EncodingMethod = byte(enc)
+					}
+					tr.Compress = headerParts[8] == "1"
+				}
+				tr.PacketData = make(map[int][]byte)
+			}
 			transfers[key] = tr
 			log.Printf("[Repeater] Received HEADER from %s (fileID %s). Forwarding header to receiver.", packet.Sender, packet.FileID)
-			// Log header details.
 			logHeaderDetails(packet.Payload, packet.FileID, packet.Sender, packet.Receiver)
 			if err := conn.SendFrame(buildKISSFrame(pkt)); err != nil {
 				log.Printf("[Repeater] Error sending HEADER: %v", err)
@@ -729,14 +728,12 @@ func processPacket(pkt []byte, conn KISSConnection) {
 	tr.Lock()
 	defer tr.Unlock()
 
-	// Determine packet direction.
 	isFromSender := (packet.Sender == tr.Sender)
 	isFromReceiver := (packet.Sender == tr.Receiver)
 	debugf("Processing packet in state %d from %s", tr.State, packet.Sender)
 
 	switch tr.State {
 	case WaitHeaderAck:
-		// In this state, forward header packets from sender and ACKs from receiver.
 		if isFromSender && packet.Type == "data" && packet.Seq == 1 {
 			log.Printf("[Repeater] Resent HEADER from sender for fileID %s. Forwarding header to receiver.", tr.FileID)
 			conn.SendFrame(buildKISSFrame(pkt))
@@ -750,7 +747,6 @@ func processPacket(pkt []byte, conn KISSConnection) {
 			conn.SendFrame(buildKISSFrame(pkt))
 		}
 	case WaitBurst:
-		// Buffer data packets; forward duplicates immediately.
 		if isFromSender && packet.Type == "data" && packet.Seq > 1 {
 			if _, exists := tr.BurstBuffer[packet.Seq]; exists {
 				log.Printf("[Repeater] Duplicate data packet seq %d for fileID %s. Forwarding immediately.", packet.Seq, tr.FileID)
@@ -762,7 +758,6 @@ func processPacket(pkt []byte, conn KISSConnection) {
 				}
 				log.Printf("[Repeater] Buffered data packet seq %d for fileID %s.", packet.Seq, tr.FileID)
 			}
-			// If the burst is complete, immediately forward it.
 			if tr.LastSeq >= packet.BurstTo {
 				log.Printf("[Repeater] Burst complete for fileID %s. Forwarding burst to receiver.", tr.FileID)
 				forwardBurst(tr, conn)
@@ -777,7 +772,6 @@ func processPacket(pkt []byte, conn KISSConnection) {
 			conn.SendFrame(buildKISSFrame(pkt))
 		}
 	case WaitBurstAck:
-		// In WaitBurstAck, if receiver sends an ACK, forward it and return to WaitBurst.
 		if isFromReceiver && packet.Type == "ack" {
 			log.Printf("[Repeater] Received burst ACK from receiver for fileID %s. Forwarding burst ACK to sender.", tr.FileID)
 			conn.SendFrame(buildKISSFrame(pkt))
@@ -798,16 +792,89 @@ func processPacket(pkt []byte, conn KISSConnection) {
 		log.Printf("[Repeater] Transfer finished for fileID %s; forwarding packet from %s.", tr.FileID, packet.Sender)
 		conn.SendFrame(buildKISSFrame(pkt))
 	}
+
+	// --- File-saving logic ---
+	if *saveFiles && isFromSender && packet.Type == "data" && packet.Seq > 1 {
+		if tr.PacketData == nil {
+			tr.PacketData = make(map[int][]byte)
+		}
+		if _, exists := tr.PacketData[packet.Seq]; !exists {
+			tr.PacketData[packet.Seq] = packet.Payload
+		}
+		// Check if header specified a total packet count and if all data packets have arrived.
+		if tr.TotalPackets > 0 && !tr.FileSaved && len(tr.PacketData) == (tr.TotalPackets - 1) {
+			var buf bytes.Buffer
+			complete := true
+			// Reassemble packets in order (from seq 2 onward).
+			for i := 2; i <= tr.TotalPackets; i++ {
+				data, ok := tr.PacketData[i]
+				if !ok {
+					complete = false
+					log.Printf("[Repeater] Missing packet seq %d for fileID %s; cannot reassemble file.", i, tr.FileID)
+					break
+				}
+				// If encodingMethod==1, decode base64.
+				if tr.EncodingMethod == 1 {
+					decoded, err := ioutil.ReadAll(base64.NewDecoder(base64.StdEncoding, bytes.NewReader(data)))
+					if err != nil {
+						log.Printf("[Repeater] Error decoding base64 on packet seq %d for fileID %s: %v", i, tr.FileID, err)
+						complete = false
+						break
+					}
+					buf.Write(decoded)
+				} else {
+					buf.Write(data)
+				}
+			}
+			if complete {
+				fileData := buf.Bytes()
+				// If compression is enabled, decompress the assembled data.
+				if tr.Compress {
+					b := bytes.NewReader(fileData)
+					zr, err := zlib.NewReader(b)
+					if err != nil {
+						log.Printf("[Repeater] Error decompressing file for fileID %s: %v", tr.FileID, err)
+						complete = false
+					} else {
+						decompressed, err := ioutil.ReadAll(zr)
+						zr.Close()
+						if err != nil {
+							log.Printf("[Repeater] Error reading decompressed data for fileID %s: %v", tr.FileID, err)
+							complete = false
+						} else {
+							fileData = decompressed
+						}
+					}
+				}
+				if complete {
+					newFilename := fmt.Sprintf("%s_%s_%s_%s", strings.ToUpper(tr.Sender), strings.ToUpper(tr.Receiver), tr.FileID, tr.Filename)
+					finalFilename := newFilename
+					// Ensure unique filename.
+					for i := 1; ; i++ {
+						if _, err := os.Stat(finalFilename); os.IsNotExist(err) {
+							break
+						}
+						finalFilename = fmt.Sprintf("%s_%d", newFilename, i)
+					}
+					err := ioutil.WriteFile(finalFilename, fileData, 0644)
+					if err != nil {
+						log.Printf("[Repeater] Error saving file %s: %v", finalFilename, err)
+					} else {
+						log.Printf("[Repeater] Saved file as %s", finalFilename)
+					}
+					tr.FileSaved = true
+				}
+			}
+		}
+	}
 }
 
-// -----------------------------------------------------------------------------
+//
 // Main: TNC Connection Setup, Pass‑Through Listener, and Processing Loop
-// -----------------------------------------------------------------------------
-
+//
 func main() {
 	flag.Parse()
 
-	// If callsigns flag is provided, create the allowedCalls map.
 	allowedCalls = make(map[string]bool)
 	if *callsigns != "" {
 		for _, cs := range strings.Split(*callsigns, ",") {
@@ -843,7 +910,6 @@ func main() {
 	}
 	defer tncConn.Close()
 
-	// Start two‑way pass‑through listener (clients both receive and can send data)
 	go startPassThroughListener(*passthroughPort, tncConn)
 
 	frameChan := make(chan []byte, 100)
