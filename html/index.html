@@ -389,54 +389,67 @@ function waitForHeaderAck() {
       container.innerHTML = html;
     }
     
-    function updateSenderProgressUI() {
-      const container = document.getElementById('senderProgress');
-      if (!fileTransferInProgress || totalPackets === 0) {
-        container.innerHTML = "<p>No file being sent.</p>";
-        return;
-      }
-      const now = Date.now();
-      const elapsed = (now - sentFileStats.startTime) / 1000;
-      const progressPercent = Math.floor((currentPacketIndex / totalPackets) * 100);
-      let eta = "N/A";
-      if (progressPercent > 0) {
-        let estimatedTotal = elapsed / (progressPercent / 100);
-        eta = (estimatedTotal - elapsed).toFixed(2) + " s";
-      }
-      const transferRate = elapsed > 0 ? sentFileStats.bytesSent / elapsed : 0;
-      const retriesSoFar = totalRetries + currentRetries;
-      const retryPercent = totalPackets ? Math.round(retriesSoFar / totalPackets * 100) : 0;
-      
-      let statusText = "";
-      if (ackTimer || (senderState === "Awaiting ACK" && (now - senderStateTimestamp < 1000))) {
-        statusText = '<span style="color: orange; font-weight: bold;">Awaiting ACK</span>';
-      } else {
-        senderState = "Sending";
-        statusText = '<span style="color: red; font-weight: bold;">Sending</span>';
-      }
-      
-      container.innerHTML = `
-        <h5>To ${sentFileStats.receiver} – ${sentFileStats.fileName} (ID: ${sentFileStats.fileId})<br>
-          (${currentPacketIndex}/${totalPackets} packets sent)
-        </h5>
-        <p>Original Size: ${sentFileStats.originalSize} bytes; Compressed Size: ${sentFileStats.compressedSize} bytes</p>
-        <div class="progress mb-2">
-          <div class="progress-bar" role="progressbar" style="width: ${progressPercent}%;" 
-            aria-valuenow="${progressPercent}" aria-valuemin="0" aria-valuemax="100">
-            ${progressPercent}%
-          </div>
-        </div>
-        <p>
-          ${statusText}<br>
-          Elapsed time: ${elapsed.toFixed(2)} s; ETA: ${eta} 
-          (${transferRate.toFixed(0)} bytes/sec); Retries: ${retriesSoFar} (${retryPercent}%)
-        </p>
-        <div style="margin-top: 0.5rem;">
-          <button class="btn btn-danger btn-sm" onclick="cancelSenderTransfer()">Cancel</button>
-        </div>
-      `;
-    }
-    
+  function updateSenderProgressUI() {
+  const container = document.getElementById('senderProgress');
+  if (!fileTransferInProgress || totalPackets === 0) {
+    container.innerHTML = "<p>No file being sent.</p>";
+    return;
+  }
+  const now = Date.now();
+  const elapsed = (now - sentFileStats.startTime) / 1000;
+  
+  // Calculate the percentage of packets acked and sent
+  const ackedPercent = Math.floor((currentPacketIndex / totalPackets) * 100);
+  const sentPercent = Math.floor((highestPacketSentSoFar / totalPackets) * 100);
+  const orangePercent = sentPercent - ackedPercent; // sent but not yet acked
+  
+  let eta = "N/A";
+  if (ackedPercent > 0) {
+    let estimatedTotal = elapsed / (ackedPercent / 100);
+    eta = (estimatedTotal - elapsed).toFixed(2) + " s";
+  }
+  const transferRate = elapsed > 0 ? sentFileStats.bytesSent / elapsed : 0;
+  const retriesSoFar = totalRetries + currentRetries;
+  const retryPercent = totalPackets ? Math.round((retriesSoFar / totalPackets) * 100) : 0;
+  
+  let statusText = "";
+  if (ackTimer || (senderState === "Awaiting ACK" && (now - senderStateTimestamp < 1000))) {
+    statusText = '<span style="color: orange; font-weight: bold;">Awaiting ACK</span>';
+  } else {
+    senderState = "Sending";
+    statusText = '<span style="color: red; font-weight: bold;">Sending</span>';
+  }
+  
+  container.innerHTML = `
+    <h5>To ${sentFileStats.receiver} – ${sentFileStats.fileName} (ID: ${sentFileStats.fileId})<br>
+      (Acked: ${currentPacketIndex} / ${totalPackets}, Sent: ${highestPacketSentSoFar} / ${totalPackets})
+    </h5>
+    <p>Original Size: ${sentFileStats.originalSize} bytes; Compressed Size: ${sentFileStats.compressedSize} bytes</p>
+    <div class="progress mb-2" style="height: 20px;">
+      <!-- Blue progress for acked packets -->
+      <div class="progress-bar bg-primary" role="progressbar" 
+           style="width: ${ackedPercent}%;" aria-valuenow="${ackedPercent}" 
+           aria-valuemin="0" aria-valuemax="100">
+           ${ackedPercent}%
+      </div>
+      <!-- Orange progress for packets sent but not yet acked -->
+      <div class="progress-bar bg-warning" role="progressbar" 
+           style="width: ${orangePercent}%;" aria-valuenow="${orangePercent}" 
+           aria-valuemin="0" aria-valuemax="100">
+           ${orangePercent > 0 ? orangePercent + '%' : ''}
+      </div>
+    </div>
+    <p>
+      ${statusText}<br>
+      Elapsed time: ${elapsed.toFixed(2)} s; ETA: ${eta} 
+      (${transferRate.toFixed(0)} bytes/sec); Retries: ${retriesSoFar} (${retryPercent}%)
+    </p>
+    <div style="margin-top: 0.5rem;">
+      <button class="btn btn-danger btn-sm" onclick="cancelSenderTransfer()">Cancel</button>
+    </div>
+  `;
+}
+
 
 function finalizeTransfer() {
   updateStatus("File transfer complete.");
