@@ -251,7 +251,7 @@
       }
       let html = `<table class="table table-striped"><thead>
         <tr><th>Date/Time</th><th>Sender</th><th>File Name</th>
-        <th>Original Size</th><th>Compressed Size</th><th>Size (decompressed)</th>
+        <th>Original Size</th><th>Compressed Size</th>
         <th>Elapsed Time (s)</th><th>Speed (Bytes/s)</th>
         <th>Duplicates</th><th>Checksum</th><th>Download</th><th>Delete</th></tr>
         </thead><tbody>`;
@@ -267,7 +267,6 @@
           <td>${file.fileName}</td>
           <td>${file.originalSize} bytes</td>
           <td>${file.compressedSize} bytes</td>
-          <td>${file.size} bytes</td>
           <td>${elapsedSec.toFixed(2)}</td>
           <td>${speed}</td>
           <td>${file.duplicates} (${dupPercent}%)</td>
