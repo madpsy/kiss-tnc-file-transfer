@@ -12,6 +12,7 @@ import (
 	"log"
 	"net"
 	"os"
+	"path/filepath"
 	"sort"
 	"strconv"
 	"strings"
@@ -33,7 +34,7 @@ var (
 	tncSerialPort   = flag.String("tnc-serial-port", "", "Serial port for TNC (e.g. COM3 or /dev/ttyUSB0)")
 	tncBaud         = flag.Int("tnc-baud", 115200, "Baud rate for TNC serial connection")
 	passthroughPort = flag.Int("passthrough-port", 5010, "TCP port for pass‑through clients")
-	callsigns       = flag.String("callsigns", "", "Comma delimited list of valid sender/receiver callsigns (optional)")
+	callsigns       = flag.String("callsigns", "", "Comma delimited list of valid sender/receiver callsigns (optional; supports wildcards, e.g. MM5NDH-*,*-15)")
 	debug           = flag.Bool("debug", false, "Enable extra debug logging")
 	// New flag to save files locally.
 	saveFiles = flag.Bool("save-files", false, "Save received files locally (reassemble from data packets)")
@@ -41,7 +42,8 @@ var (
 	repeaterDelay = flag.Int("repeater-delay", 0, "Delay in milliseconds before forwarding ACK packets and the start of a data burst")
 )
 
-var allowedCalls map[string]bool
+// Instead of a map for allowed callsigns, we now use a slice of patterns.
+var allowedCallsigns []string
 
 func debugf(format string, v ...interface{}) {
 	if *debug {
@@ -671,11 +673,9 @@ func processPacket(rawFrame []byte, conn KISSConnection) {
 	}
 	// --- End logging improvements ---
 
-	// If callsigns filtering is enabled.
+	// If callsigns filtering is enabled, check against allowed patterns.
 	if *callsigns != "" {
-		srcAllowed := allowedCalls[strings.ToUpper(strings.TrimSpace(packet.Sender))]
-		dstAllowed := allowedCalls[strings.ToUpper(strings.TrimSpace(packet.Receiver))]
-		if !srcAllowed || !dstAllowed {
+		if !callsignAllowed(packet.Sender) || !callsignAllowed(packet.Receiver) {
 			log.Printf("[Repeater] Dropping packet for fileID %s from %s -> %s: callsign not allowed",
 				packet.FileID, packet.Sender, packet.Receiver)
 			return
@@ -886,20 +886,33 @@ func processPacket(rawFrame []byte, conn KISSConnection) {
 }
 
 //
+// callsignAllowed returns true if the given callsign matches any of the allowed patterns.
+// The matching is case‑insensitive.
+func callsignAllowed(callsign string) bool {
+	cs := strings.ToUpper(strings.TrimSpace(callsign))
+	for _, pattern := range allowedCallsigns {
+		if match, err := filepath.Match(pattern, cs); err == nil && match {
+			return true
+		}
+	}
+	return false
+}
+
+//
 // Main: TNC Connection Setup, Pass‑Through Listener, and Processing Loop with Auto‑Reconnect
 //
 func main() {
 	flag.Parse()
 
-	allowedCalls = make(map[string]bool)
+	// Build allowed callsign patterns from the provided comma‑delimited list.
 	if *callsigns != "" {
 		for _, cs := range strings.Split(*callsigns, ",") {
 			cs = strings.ToUpper(strings.TrimSpace(cs))
 			if cs != "" {
-				allowedCalls[cs] = true
+				allowedCallsigns = append(allowedCallsigns, cs)
 			}
 		}
-		log.Printf("Allowed callsigns: %v", allowedCalls)
+		log.Printf("Allowed callsign patterns: %v", allowedCallsigns)
 	} else {
 		log.Printf("--callsigns not set; allowing any callsign.")
 	}

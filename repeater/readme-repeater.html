@@ -44,7 +44,7 @@
     <strong>Incoming</strong>: Any data received on the pass‑through port from a client is forwarded to the TNC.
   </p>
   <p>
-    An optional <code>--callsigns</code> filter allows you to restrict transfers to specific sender and receiver callsigns.
+    An optional <code>--callsigns</code> filter allows you to restrict transfers to specific sender and receiver callsigns. Supports wildcards and a comma-delimited list. Example: "MM3NDH-14,MM5NDH-*,*-15"
     Additionally, when the <code>--save-files</code> option is enabled, the repeater will reassemble received file transfers (decoding and decompressing the data as needed) and save them locally.
   </p>
 
@@ -115,8 +115,8 @@ go build -o ax25repeater repeater.go
     <tr>
       <td><code>--callsigns</code></td>
       <td>
-        Optional comma‑delimited list of valid sender/receiver callsigns.
-        When set, only packets whose both sender and receiver appear in this list are processed.
+        Optional comma‑delimited list of valid sender/receiver callsigns with support for wildcards.
+        When set, only packets whose both sender and receiver callsigns appear in this list are processed.
         Otherwise, all callsigns are allowed.
       </td>
       <td><em>empty</em></td>
@@ -167,11 +167,11 @@ go run ax25repeater.go --tnc-connection-type=serial --tnc-serial-port=/dev/ttyUS
 
   <h3>Example 3: Restricting Transfers to Specific Callsigns</h3>
   <p>
-    The following command restricts transfers to the callsigns <code>N0CALL</code> and <code>W1AW</code>
+    The following command restricts transfers to the callsigns <code>N0CALL</code> and any SSID matching <code>*-R</code>
     and enables debug logging.
   </p>
   <pre>
-go run ax25repeater.go --callsigns=N0CALL,W1AW --debug
+go run ax25repeater.go --callsigns=N0CALL,*-R --debug
   </pre>
 
   <h3>Example 4: Enabling File Saving</h3>
@@ -203,7 +203,7 @@ go run ax25repeater.go --save-files
     </li>
     <li>
       If the <code>--callsigns</code> flag is not provided, all callsigns are accepted.
-      Otherwise, only packets with both sender and receiver matching one of the allowed callsigns (case‑insensitive) are processed.
+      Otherwise, only packets with both sender and receiver matching one of the allowed callsigns or wildcard matches are processed.
     </li>
     <li>
       <strong>File Saving:</strong>

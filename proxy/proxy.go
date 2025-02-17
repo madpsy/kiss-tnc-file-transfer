@@ -13,6 +13,7 @@ import (
 	"math/rand"
 	"net"
 	"os"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"sync"
@@ -642,7 +643,8 @@ type Transfer struct {
 var (
 	transfers     = make(map[string]*Transfer)
 	transfersLock sync.Mutex
-	allowedCalls  = make(map[string]bool)
+	// Instead of a map of exact callsigns, we use a slice of allowed callsign patterns.
+	allowedCallsigns []string
 )
 
 // -----------------------------------------------------------------------------
@@ -650,26 +652,42 @@ var (
 // -----------------------------------------------------------------------------
 
 var (
-	tnc1ConnType   = flag.String("tnc1-connection-type", "tcp", "Connection type for TNC1: tcp or serial")
-	tnc1Host       = flag.String("tnc1-host", "127.0.0.1", "TCP host for TNC1")
-	tnc1Port       = flag.Int("tnc1-port", 9001, "TCP port for TNC1")
-	tnc1SerialPort = flag.String("tnc1-serial-port", "", "Serial port for TNC1 (e.g., COM3 or /dev/ttyUSB0)")
-	tnc1Baud       = flag.Int("tnc1-baud", 115200, "Baud rate for TNC1 serial connection")
-	tnc2ConnType   = flag.String("tnc2-connection-type", "tcp", "Connection type for TNC2: tcp or serial")
-	tnc2Host       = flag.String("tnc2-host", "127.0.0.1", "TCP host for TNC2")
-	tnc2Port       = flag.Int("tnc2-port", 9002, "TCP port for TNC2")
-	tnc2SerialPort = flag.String("tnc2-serial-port", "", "Serial port for TNC2")
-	tnc2Baud       = flag.Int("tnc2-baud", 115200, "Baud rate for TNC2 serial connection")
+	tnc1ConnType        = flag.String("tnc1-connection-type", "tcp", "Connection type for TNC1: tcp or serial")
+	tnc1Host            = flag.String("tnc1-host", "127.0.0.1", "TCP host for TNC1")
+	tnc1Port            = flag.Int("tnc1-port", 9001, "TCP port for TNC1")
+	tnc1SerialPort      = flag.String("tnc1-serial-port", "", "Serial port for TNC1 (e.g., COM3 or /dev/ttyUSB0)")
+	tnc1Baud            = flag.Int("tnc1-baud", 115200, "Baud rate for TNC1 serial connection")
+	tnc2ConnType        = flag.String("tnc2-connection-type", "tcp", "Connection type for TNC2: tcp or serial")
+	tnc2Host            = flag.String("tnc2-host", "127.0.0.1", "TCP host for TNC2")
+	tnc2Port            = flag.Int("tnc2-port", 9002, "TCP port for TNC2")
+	tnc2SerialPort      = flag.String("tnc2-serial-port", "", "Serial port for TNC2")
+	tnc2Baud            = flag.Int("tnc2-baud", 115200, "Baud rate for TNC2 serial connection")
 	tnc1PassthroughPort = flag.Int("tnc1-passthrough-port", 5010, "TCP port for TNC1 pass‑through")
 	tnc2PassthroughPort = flag.Int("tnc2-passthrough-port", 5011, "TCP port for TNC2 pass‑through")
 )
 
 var (
-	callsigns = flag.String("callsigns", "", "Comma delimited list of valid sender/receiver callsigns (optional)")
+	callsigns = flag.String("callsigns", "", "Comma delimited list of valid sender/receiver callsigns (optional; supports wildcards)")
 	debug     = flag.Bool("debug", false, "Enable debug logging")
 	saveFiles = flag.Bool("save-files", false, "Save all files seen by the proxy (prepending <SENDER>_<RECEIVER>_ to filename)")
 	loop      = flag.Bool("loop", false, "Enable loopback mode. In this mode, TNC1 listens on the pass‑through port and TNC2 on the corresponding port. Mutually exclusive with TNC1/TNC2 options.")
 )
+
+// -----------------------------------------------------------------------------
+// Wildcard Matching for Callsigns
+// -----------------------------------------------------------------------------
+
+// callsignAllowed returns true if the given callsign matches any of the allowed patterns.
+// Matching is case‑insensitive.
+func callsignAllowed(callsign string) bool {
+	cs := strings.ToUpper(strings.TrimSpace(callsign))
+	for _, pattern := range allowedCallsigns {
+		if match, err := filepath.Match(pattern, cs); err == nil && match {
+			return true
+		}
+	}
+	return false
+}
 
 // -----------------------------------------------------------------------------
 // Packet Processing and Forwarding Logic
@@ -685,10 +703,9 @@ func processAndForwardPacket(pkt []byte, dstConn KISSConnection, direction strin
 	}
 
 	key := canonicalKey(packet.Sender, packet.Receiver, packet.FileID)
-	if packet.Type != "ack" && len(allowedCalls) > 0 {
-		srcAllowed := allowedCalls[strings.ToUpper(strings.TrimSpace(packet.Sender))]
-		dstAllowed := allowedCalls[strings.ToUpper(strings.TrimSpace(packet.Receiver))]
-		if !srcAllowed || !dstAllowed {
+	// Use wildcard matching if allowedCallsigns are specified.
+	if packet.Type != "ack" && len(allowedCallsigns) > 0 {
+		if !callsignAllowed(packet.Sender) || !callsignAllowed(packet.Receiver) {
 			log.Printf("[%s] [FileID: %s] [From: %s To: %s] Dropping packet: callsign not allowed",
 				direction, packet.FileID, packet.Sender, packet.Receiver)
 			return
@@ -963,14 +980,15 @@ ForwardPacket:
 func main() {
 	flag.Parse()
 
+	// Build allowed callsign patterns from the provided comma‑delimited list.
 	if *callsigns != "" {
 		for _, s := range strings.Split(*callsigns, ",") {
 			s = strings.ToUpper(strings.TrimSpace(s))
 			if s != "" {
-				allowedCalls[s] = true
+				allowedCallsigns = append(allowedCallsigns, s)
 			}
 		}
-		log.Printf("Allowed callsigns: %v", allowedCalls)
+		log.Printf("Allowed callsign patterns: %v", allowedCallsigns)
 	} else {
 		log.Printf("--callsigns not set, allowing any callsigns.")
 	}
