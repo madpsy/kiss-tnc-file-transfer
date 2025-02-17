@@ -16,7 +16,7 @@
 <body>
   <h1>AX.25 Receiver Documentation</h1>
   <p>
-    The Receiver is part of the AX.25 file‑transfer suite. It connects to a TNC (using either a TCP or serial connection), listens for KISS‑framed file data, reassembles the packets into a complete file, verifies its integrity via an MD5 checksum, and either saves or (optionally) executes the file.
+    The Receiver is part of the AX.25 file‑transfer suite. It connects to a TNC (using either a TCP or serial connection), listens for KISS‑framed file data, reassembles the packets into a complete file, verifies its integrity via an MD5 checksum, and either saves, executes, or outputs the file to standard output.
   </p>
 
   <h2>Table of Contents</h2>
@@ -42,6 +42,9 @@
     </li>
     <li>
       <strong>Execution Option:</strong> If specified via command‑line, the Receiver can execute the received file using <code>bash</code> instead of saving it.
+    </li>
+    <li>
+      <strong>Output to STDOUT:</strong> With the <code>--stdout</code> option, the file contents are sent directly to standard output instead of being saved to disk (the filename is only used in log messages). It may be desirable to also specify the -one-file option when using this feature.
     </li>
     <li>
       <strong>Auto‑ACK Mechanism:</strong> The Receiver sends cumulative ACK packets back to the sender to confirm receipt of packets and manage retries.
@@ -148,6 +151,13 @@ go build -o ax25receiver receiver.go
       </td>
       <td><code>0</code></td>
     </tr>
+    <tr>
+      <td><code>--stdout</code></td>
+      <td>
+        If set, the received file is output directly to standard output instead of being saved to disk. The filename is used only in log messages.
+      </td>
+      <td><code>false</code></td>
+    </tr>
   </table>
 
   <h2 id="examples">Examples</h2>
@@ -176,7 +186,15 @@ go run receiver.go --my-callsign=N0CALL --connection=serial --serial-port=/dev/t
 go run receiver.go --my-callsign=N0CALL --connection=tcp --host=127.0.0.1 --port=9001 --execute=runme.sh
   </pre>
 
-  <h3>Example 4: Overwrite Existing Files and Exit After One File</h3>
+  <h3>Example 4: Output File to STDOUT</h3>
+  <p>
+    With the <code>--stdout</code> option, the received file will be output directly to standard output rather than being saved. This example will exit after one file has been received.
+  </p>
+  <pre>
+go run receiver.go --my-callsign=N0CALL --connection=tcp --host=127.0.0.1 --port=9001 --stdout --one-file
+  </pre>
+
+  <h3>Example 5: Overwrite Existing Files and Exit After One File</h3>
   <p>
     This command will overwrite an existing file if a new file with the same name is received and exit after a single successful transfer.
   </p>
@@ -197,6 +215,9 @@ go run receiver.go --my-callsign=N0CALL --connection=tcp --host=127.0.0.1 --port
     </li>
     <li>
       If the <code>--execute</code> flag is used, the received file will be temporarily saved, executed with <code>bash</code> (with an optional timeout), and then removed.
+    </li>
+    <li>
+      When the <code>--stdout</code> flag is used, the file content is written to standard output. This option is useful for piping the output to another program or command.
     </li>
   </ul>
 

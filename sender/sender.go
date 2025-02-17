@@ -10,7 +10,7 @@ import (
 	"flag"
 	"fmt"
 	"github.com/fsnotify/fsnotify" // go get github.com/fsnotify/fsnotify
-	"go.bug.st/serial" // go get go.bug.st/serial
+	"go.bug.st/serial"             // go get go.bug.st/serial
 	"io"
 	"io/ioutil"
 	"log"
@@ -113,23 +113,54 @@ func padCallsign(cs string) string {
 }
 
 // encodeAX25Address encodes an AX.25 address field for the given callsign.
+// Now it extracts the SSID (if provided) and encodes it in the 7th byte.
 func encodeAX25Address(callsign string, isLast bool) []byte {
-	parts := strings.Split(strings.ToUpper(callsign), "-")
-	call := parts[0]
+	// Split the callsign on "-" to separate the base and SSID.
+	parts := strings.Split(callsign, "-")
+	call := strings.ToUpper(parts[0])
 	if len(call) < 6 {
 		call = call + strings.Repeat(" ", 6-len(call))
 	} else if len(call) > 6 {
 		call = call[:6]
 	}
+	ssid := 0
+	if len(parts) > 1 {
+		var err error
+		ssid, err = strconv.Atoi(parts[1])
+		if err != nil {
+			ssid = 0
+		}
+	}
 	addr := make([]byte, 7)
 	for i := 0; i < 6; i++ {
 		addr[i] = call[i] << 1
 	}
-	addr[6] = 0x60
+	// The 7th byte: bits 1-4 store the SSID, shifted left by one, and bits 5-7 are set as per AX.25.
+	addr[6] = byte(((ssid & 0x0F) << 1) | 0x60)
 	if isLast {
 		addr[6] |= 0x01
 	}
 	return addr
+}
+
+// decodeAX25Address decodes a 7‑byte AX.25 address into its full callsign,
+// including the SSID if non‑zero.
+func decodeAX25Address(addr []byte) string {
+	if len(addr) < 7 {
+		return ""
+	}
+	var call string
+	for i := 0; i < 6; i++ {
+		// Each character is stored shifted left by 1; shift right to decode.
+		call += string(addr[i] >> 1)
+	}
+	call = strings.TrimSpace(call)
+	// Decode SSID from bits 1-4 of the 7th byte.
+	ssid := (addr[6] >> 1) & 0x0F
+	if ssid != 0 {
+		call = fmt.Sprintf("%s-%d", call, ssid)
+	}
+	return call
 }
 
 // buildAX25Header builds an AX.25 header using the source and destination callsigns.
@@ -196,6 +227,10 @@ func parsePacket(packet []byte) *Packet {
 	if len(packet) < 16 {
 		return nil
 	}
+
+	// Extract sender from the AX.25 header (bytes 7-13 contain the source callsign)
+	senderCallsign := decodeAX25Address(packet[7:14])
+
 	infoAndPayload := packet[16:]
 	// Look for ACK indication.
 	prefix := string(infoAndPayload[:min(50, len(infoAndPayload))])
@@ -204,8 +239,16 @@ func parsePacket(packet []byte) *Packet {
 		parts := strings.Split(fullInfo, "ACK:")
 		if len(parts) >= 2 {
 			ackVal := strings.Trim(strings.Trim(parts[1], ":"), " ")
+			// Attempt to extract fileID from the info field.
+			infoParts := strings.Split(fullInfo, ":")
+			fileID := ""
+			if len(infoParts) > 1 {
+				fileID = strings.TrimSpace(infoParts[1])
+			}
 			return &Packet{
 				Type:    "ack",
+				Sender:  senderCallsign,
+				FileID:  fileID,
 				Ack:     ackVal,
 				RawInfo: fullInfo,
 			}
@@ -278,7 +321,7 @@ func parsePacket(packet []byte) *Packet {
 	}
 	return &Packet{
 		Type:           "data",
-		Sender:         sender,
+		Sender:         sender, // or senderCallsign (both should be equivalent)
 		Receiver:       receiver,
 		FileID:         fileID,
 		Seq:            seq,
@@ -382,7 +425,6 @@ type SerialKISSConnection struct {
 	lock sync.Mutex
 }
 
-// Update the newSerialKISSConnection function:
 func newSerialKISSConnection(portName string, baud int) (*SerialKISSConnection, error) {
 	mode := &serial.Mode{
 		BaudRate: baud,
@@ -485,23 +527,25 @@ func (fr *FrameReader) Stop() {
 
 // Arguments holds the command‑line arguments for the sender.
 type Arguments struct {
-	MyCallsign            string  // Your callsign (required)
-	ReceiverCallsign      string  // Receiver's callsign (required)
-	WindowSize            string  // "auto" or an integer (allowed: 1,2,4,6,8,10)
-	Connection            string  // "tcp" or "serial"
-	Debug                 bool    // Enable debug output
-	Host                  string  // TCP host
-	Port                  int     // TCP port
-	SerialPort            string  // Serial port (e.g. COM3 or /dev/ttyUSB0)
-	Baud                  int     // Baud rate for serial
-	File                  string  // File(s) to send (comma delimited)
-	Compress              bool    // Enable compression (default true)
-	TimeoutSeconds        int     // Timeout in seconds now an integer (default 10)
-	TimeoutRetries        int     // Number of timeout retries (default 5)
-	FileDirectory         string  // Directory to monitor for files to send (mutually exclusive with -file)
-	FileDirectoryRetries  int     // Number of retries for sending a file from the directory (default 0)
-	FileDirectoryExisting bool    // When true, queue existing files in the directory (default false)
-	Base64                bool    // when true, encode payload as Base64 after compression
+	MyCallsign            string // Your callsign (required)
+	ReceiverCallsign      string // Receiver's callsign (required)
+	WindowSize            string // "auto" or an integer (allowed: 1,2,4,6,8,10)
+	Connection            string // "tcp" or "serial"
+	Debug                 bool   // Enable debug output
+	Host                  string // TCP host
+	Port                  int    // TCP port
+	SerialPort            string // Serial port (e.g. COM3 or /dev/ttyUSB0)
+	Baud                  int    // Baud rate for serial
+	File                  string // File(s) to send (comma delimited)
+	Compress              bool   // Enable compression (default true)
+	TimeoutSeconds        int    // Timeout in seconds now an integer (default 10)
+	TimeoutRetries        int    // Number of timeout retries (default 5)
+	FileDirectory         string // Directory to monitor for files to send (mutually exclusive with -file)
+	FileDirectoryRetries  int    // Number of retries for sending a file from the directory (default 0)
+	FileDirectoryExisting bool   // When true, queue existing files in the directory (default false)
+	Base64                bool   // when true, encode payload as Base64 after compression
+	Stdin                 bool   // When true, read file to send from standard input (mutually exclusive with -file and -file-directory)
+	FileName              string // Name to use as the file name in the header when reading from stdin
 }
 
 func parseArguments() *Arguments {
@@ -523,16 +567,21 @@ func parseArguments() *Arguments {
 	flag.IntVar(&args.TimeoutSeconds, "timeout-seconds", 10, "Timeout in seconds")
 	flag.IntVar(&args.TimeoutRetries, "timeout-retries", 5, "Number of timeout retries")
 	flag.BoolVar(&args.Base64, "base64", false, "Encode file payload in base64 after compression")
+	flag.BoolVar(&args.Stdin, "stdin", false, "Read file to send from standard input (mutually exclusive with -file and -file-directory)")
+	flag.StringVar(&args.FileName, "file-name", "", "Name to use as the file name in the header when reading from stdin (required with -stdin)")
 	flag.Parse()
 
 	args.Compress = !(*noCompress)
 
-	// Ensure mutually exclusive file vs file-directory
-	if args.File != "" && args.FileDirectory != "" {
-		log.Fatalf("Specify either -file or -file-directory, not both.")
+	// Ensure mutually exclusive options.
+	if args.Stdin && (args.File != "" || args.FileDirectory != "") {
+		log.Fatalf("Cannot specify -stdin together with -file or -file-directory.")
 	}
-	if args.File == "" && args.FileDirectory == "" {
-		log.Fatalf("Either -file or -file-directory must be specified.")
+	if !args.Stdin && args.File == "" && args.FileDirectory == "" {
+		log.Fatalf("Either -stdin, -file, or -file-directory must be specified.")
+	}
+	if args.Stdin && args.FileName == "" {
+		log.Fatalf("When using -stdin, you must specify -file-name.")
 	}
 	// In file-directory mode, we ignore the -file value.
 	return args
@@ -593,7 +642,6 @@ func sendFile(args *Arguments) error {
 	totalIncludingHeader := dataPacketCount + 1
 
 	// Build header string.
-	// Note: The header info field includes the encoding method as part of the header payload.
 	headerStr := fmt.Sprintf("%d|%d|%s|%d|%d|%s|%s|%d|%d|%d",
 		args.TimeoutSeconds, args.TimeoutRetries, filepath.Base(args.File),
 		originalSize, compressedSize, md5Hash, fileID, encodingMethod, boolToInt(args.Compress), totalIncludingHeader)
@@ -681,7 +729,7 @@ func sendFile(args *Arguments) error {
 			burstTo = 1
 			pkt := buildPacket(args.MyCallsign, args.ReceiverCallsign, seq, totalIncludingHeader-1, chunks[seq-1], fileID, burstTo, encodingMethod)
 			if args.Debug {
-			    log.Printf("Header Sent:\n%s", string(pkt))
+				log.Printf("Header Sent:\n%s", string(pkt))
 			}
 			frame := buildKISSFrame(pkt)
 			conn.SendFrame(frame)
@@ -881,8 +929,366 @@ func sendFile(args *Arguments) error {
 		case ackPkt := <-frameChan:
 			parsedAck := parsePacket(ackPkt)
 			if parsedAck != nil && parsedAck.Type == "ack" && strings.Contains(parsedAck.Ack, "-") {
-				log.Printf("Re-received cumulative ACK from receiver, re-sending final confirmation FIN-ACK.")
-				conn.SendFrame(finalFrame)
+				// Only resend if the ACK is from the expected receiver and the fileID matches.
+				if strings.TrimSpace(parsedAck.Sender) == padCallsign(args.ReceiverCallsign) &&
+					strings.TrimSpace(parsedAck.FileID) == fileID {
+					log.Printf("Re-received cumulative ACK from expected receiver, re-sending final confirmation FIN-ACK.")
+					conn.SendFrame(finalFrame)
+				} else {
+					log.Printf("Ignored ACK from unexpected sender (%s) or mismatched fileID (expected: %s, got: %s).",
+						parsedAck.Sender, fileID, parsedAck.FileID)
+				}
+			}
+		case <-time.After(500 * time.Millisecond):
+		}
+	}
+	reader.Stop()
+	conn.Close()
+	return nil
+}
+
+// sendStdin handles transferring data read from standard input.
+func sendStdin(args *Arguments) error {
+	// Read all data from stdin.
+	fileData, err := ioutil.ReadAll(os.Stdin)
+	if err != nil {
+		return fmt.Errorf("Error reading from stdin: %v", err)
+	}
+	originalSize := len(fileData)
+	var finalData []byte
+	if args.Compress {
+		var buf bytes.Buffer
+		zw, err := zlib.NewWriterLevel(&buf, zlib.BestCompression)
+		if err != nil {
+			return fmt.Errorf("Compression error: %v", err)
+		}
+		_, err = zw.Write(fileData)
+		if err != nil {
+			return fmt.Errorf("Compression error: %v", err)
+		}
+		zw.Close()
+		finalData = buf.Bytes()
+	} else {
+		finalData = fileData
+	}
+	compressedSize := len(finalData)
+	md5sum := md5.Sum(fileData)
+	md5Hash := hex.EncodeToString(md5sum[:])
+	fileID := generateFileID()
+	var encodingMethod byte = 0
+	if args.Base64 {
+		encodingMethod = 1
+	}
+	// Use args.FileName as the file name in the header.
+	headerStr := fmt.Sprintf("%d|%d|%s|%d|%d|%s|%s|%d|%d|%d",
+		args.TimeoutSeconds, args.TimeoutRetries, args.FileName,
+		originalSize, compressedSize, md5Hash, fileID, encodingMethod, boolToInt(args.Compress), 0) // totalIncludingHeader will be set later
+
+	// Determine chunk size.
+	chunkSize := CHUNK_SIZE
+	if args.Base64 {
+		chunkSize = (CHUNK_SIZE / 4) * 3
+		log.Printf("Base64 mode enabled; splitting stdin data into chunks of up to %d raw bytes.", chunkSize)
+	}
+	dataPacketCount := int(math.Ceil(float64(len(finalData)) / float64(chunkSize)))
+	totalIncludingHeader := dataPacketCount + 1
+
+	// Update header with totalIncludingHeader.
+	headerStr = fmt.Sprintf("%d|%d|%s|%d|%d|%s|%s|%d|%d|%d",
+		args.TimeoutSeconds, args.TimeoutRetries, args.FileName,
+		originalSize, compressedSize, md5Hash, fileID, encodingMethod, boolToInt(args.Compress), totalIncludingHeader)
+	headerPayload := []byte(headerStr)
+	log.Printf("STDIN Data: %d bytes", originalSize)
+	log.Printf("Compressed to %d bytes, split into %d data packets (total packets including header: %d)", compressedSize, dataPacketCount, totalIncludingHeader)
+	log.Printf("MD5: %s  File ID: %s", md5Hash, fileID)
+
+	// Build chunks.
+	chunks := make([][]byte, 0, totalIncludingHeader)
+	chunks = append(chunks, headerPayload)
+	for i := 0; i < len(finalData); i += chunkSize {
+		end := i + chunkSize
+		if end > len(finalData) {
+			end = len(finalData)
+		}
+		chunkData := finalData[i:end]
+		if args.Base64 {
+			encodedChunk := base64.StdEncoding.EncodeToString(chunkData)
+			chunkData = []byte(encodedChunk)
+		}
+		chunks = append(chunks, chunkData)
+	}
+
+	totalBytesToSend := len(finalData)
+	overallStart := time.Now()
+	totalBytesSent := 0
+	totalRetries := 0
+	allowedWindows := []int{1, 2, 4, 6, 8, 10}
+	var currentWindowIndex int
+	staticWindow := (args.WindowSize != "auto")
+	if staticWindow {
+		winVal, err := strconv.Atoi(args.WindowSize)
+		if err != nil {
+			log.Printf("Invalid window size argument. Defaulting to 4.")
+			currentWindowIndex = indexOf(allowedWindows, 4)
+		} else if idx := indexOf(allowedWindows, winVal); idx != -1 {
+			currentWindowIndex = idx
+		} else {
+			log.Printf("Provided window size %d is not allowed. Defaulting to 4.", winVal)
+			currentWindowIndex = indexOf(allowedWindows, 4)
+		}
+	} else {
+		currentWindowIndex = indexOf(allowedWindows, 4)
+	}
+	successfulBurstCount := 0
+	perPacketTimeout := 1.5
+
+	// Open connection.
+	var conn KISSConnection
+	if args.Connection == "tcp" {
+		c, err := newTCPKISSConnection(args.Host, args.Port, false)
+		if err != nil {
+			return fmt.Errorf("TCP connection error: %v", err)
+		}
+		conn = c
+	} else {
+		c, err := newSerialKISSConnection(args.SerialPort, args.Baud)
+		if err != nil {
+			return fmt.Errorf("Serial connection error: %v", err)
+		}
+		conn = c
+	}
+
+	// Set up frame reader to receive ACKs.
+	frameChan := make(chan []byte, 100)
+	reader := NewFrameReader(conn, frameChan)
+	go reader.Run()
+	currentPacket := 1
+
+	flushQueue := func() {
+		for {
+			select {
+			case <-frameChan:
+			default:
+				return
+			}
+		}
+	}
+
+	sendPacket := func(seq int) int {
+		var burstTo int
+		if seq == 1 {
+			burstTo = 1
+			pkt := buildPacket(args.MyCallsign, args.ReceiverCallsign, seq, totalIncludingHeader-1, chunks[seq-1], fileID, burstTo, encodingMethod)
+			if args.Debug {
+				log.Printf("Header Sent:\n%s", string(pkt))
+			}
+			frame := buildKISSFrame(pkt)
+			conn.SendFrame(frame)
+			log.Printf("Sent packet seq=%d, burst_to=%d.", seq, burstTo)
+			return 0
+		} else {
+			windowSize := allowedWindows[currentWindowIndex]
+			burstTo = currentPacket + windowSize - 1
+			if burstTo > totalIncludingHeader {
+				burstTo = totalIncludingHeader
+			}
+			pkt := buildPacket(args.MyCallsign, args.ReceiverCallsign, seq, totalIncludingHeader-1, chunks[seq-1], fileID, burstTo, encodingMethod)
+			frame := buildKISSFrame(pkt)
+			conn.SendFrame(frame)
+			log.Printf("Sent packet seq=%d, burst_to=%d.", seq, burstTo)
+			return len(chunks[seq-1])
+		}
+	}
+
+	waitForAck := func(numPackets int, isHeader bool) string {
+		retries := 0
+		overallTimeout := time.Duration(numPackets)*time.Duration(perPacketTimeout*float64(time.Second)) + time.Duration(args.TimeoutSeconds)*time.Second
+		for retries < args.TimeoutRetries {
+			deadline := time.Now().Add(overallTimeout)
+			for time.Now().Before(deadline) {
+				select {
+				case pktBytes := <-frameChan:
+					parsed := parsePacket(pktBytes)
+					if parsed == nil {
+						continue
+					}
+					if parsed.Type == "ack" {
+						return parsed.Ack
+					}
+				case <-time.After(100 * time.Millisecond):
+				}
+			}
+			retries++
+			totalRetries++
+			log.Printf("Timeout waiting for ACK (retry %d/%d).", retries, args.TimeoutRetries)
+			if isHeader {
+				log.Printf("Resending header packet (retry %d/%d).", retries, args.TimeoutRetries)
+				sendPacket(1)
+			}
+			overallTimeout = time.Duration(args.TimeoutSeconds*int(math.Pow(1.5, float64(retries)))) * time.Second
+		}
+		return ""
+	}
+
+	log.Printf("Sending header packet (seq=1) …")
+	headerStart := time.Now()
+	_ = sendPacket(1)
+	totalBytesSent += 0 // header not counted
+	ackVal := waitForAck(1, true)
+	headerAckDuration := time.Since(headerStart).Seconds()
+	if headerAckDuration > 0 {
+		perPacketTimeout = headerAckDuration / 2
+		log.Printf("Updated per-packet timeout to %.2f seconds based on header ACK timing.", perPacketTimeout)
+	} else {
+		perPacketTimeout = 1.5
+	}
+	log.Printf("Received ACK: %s", ackVal)
+	ackInt, err := strconv.ParseInt(ackVal, 16, 32)
+	if err != nil {
+		ackInt = 0
+	}
+	for int(ackInt) != 1 {
+		log.Printf("Unexpected header ACK %s; waiting for correct ACK …", ackVal)
+		ackVal = waitForAck(1, true)
+		if ackVal == "" {
+			reader.Stop()
+			conn.Close()
+			return fmt.Errorf("No correct header ACK received after maximum retries. Giving up on transfer.")
+		}
+		ackInt, _ = strconv.ParseInt(ackVal, 16, 32)
+	}
+	currentPacket = int(ackInt) + 1
+	log.Printf("Header ACK received (0001); proceeding with data packets …")
+	for currentPacket <= totalIncludingHeader {
+		flushQueue()
+		startSeq := currentPacket
+		windowSize := allowedWindows[currentWindowIndex]
+		endSeq := startSeq + windowSize - 1
+		if endSeq > totalIncludingHeader {
+			endSeq = totalIncludingHeader
+		}
+		log.Printf("Sending burst: packets %d to %d (window size %d) …", startSeq, endSeq, windowSize)
+		burstStart := time.Now()
+		burstBytes := 0
+		for seq := startSeq; seq <= endSeq; seq++ {
+			n := sendPacket(seq)
+			burstBytes += n
+			totalBytesSent += n
+			time.Sleep(5 * time.Millisecond)
+		}
+		burstCount := endSeq - startSeq + 1
+		expectedAck := endSeq + 1
+		ackVal = waitForAck(burstCount, false)
+		burstDuration := time.Since(burstStart).Seconds()
+		if burstCount > 0 {
+			newTimeout := burstDuration / float64(burstCount+1)
+			perPacketTimeout = newTimeout
+			log.Printf("Updated per-packet timeout to %.2f seconds based on ACK.", perPacketTimeout)
+		}
+		if ackVal == "" {
+			log.Printf("No ACK received after maximum retries. Giving up on transfer.")
+			break
+		}
+		log.Printf("Received ACK: %s", ackVal)
+		var ackNum int
+		if strings.Contains(ackVal, "-") {
+			parts := strings.Split(ackVal, "-")
+			if len(parts) >= 2 {
+				if num, err := strconv.ParseInt(parts[1], 16, 32); err == nil {
+					ackNum = int(num) + 1
+				}
+			}
+		} else {
+			if num, err := strconv.ParseInt(ackVal, 16, 32); err == nil {
+				ackNum = int(num) + 1
+			} else {
+				ackNum = currentPacket + 1
+			}
+		}
+		if ackNum == expectedAck {
+			if !staticWindow {
+				successfulBurstCount++
+				log.Printf("All packets in burst acknowledged.")
+				if successfulBurstCount >= 2 && currentWindowIndex < len(allowedWindows)-1 {
+					currentWindowIndex++
+					successfulBurstCount = 0
+					log.Printf("Increasing window size to %d", allowedWindows[currentWindowIndex])
+				} else {
+					log.Printf("Window remains at %d", allowedWindows[currentWindowIndex])
+				}
+			} else {
+				log.Printf("All packets in burst acknowledged. (Static window in use)")
+			}
+		} else {
+			log.Printf("Not all packets acknowledged. Expected ACK: %d, received ACK: %d", expectedAck, ackNum)
+			if !staticWindow {
+				if currentWindowIndex > 0 {
+					currentWindowIndex--
+					successfulBurstCount = 0
+					log.Printf("Reducing window size to %d", allowedWindows[currentWindowIndex])
+				} else {
+					log.Printf("Window size is at minimum (1).")
+				}
+			} else {
+				log.Printf("Static window size in use; no adjustment made.")
+			}
+		}
+		if ackNum <= currentPacket {
+			log.Printf("Stale ACK received; waiting for next ACK …")
+			continue
+		}
+		currentPacket = ackNum
+		log.Printf("Updated current_packet to %d.", currentPacket)
+		overallElapsed := time.Since(overallStart).Seconds()
+		burstRate := float64(burstBytes) / burstDuration
+		overallRate := float64(totalBytesSent) / overallElapsed
+		progress := (float64(totalBytesSent) / float64(totalBytesToSend)) * 100
+		var eta float64
+		if overallRate > 0 {
+			eta = float64(totalBytesToSend-totalBytesSent) / overallRate
+		} else {
+			eta = 0
+		}
+		log.Printf("--- Stats ---")
+		log.Printf("Previous burst: %d bytes in %.2fs (%.2f bytes/s)", burstBytes, burstDuration, burstRate)
+		log.Printf("Overall: %d/%d bytes (%.2f%%), elapsed: %.2fs, ETA: %.2fs", totalBytesSent, totalBytesToSend, progress, overallElapsed, eta)
+		log.Printf("Overall bytes/sec: %.2f bytes/s", overallRate)
+		log.Printf("--------------")
+	}
+	if currentPacket <= totalIncludingHeader {
+		reader.Stop()
+		conn.Close()
+		return fmt.Errorf("STDIN transfer incomplete; aborted before sending all packets.")
+	}
+	overallElapsed := time.Since(overallStart).Seconds()
+	overallRate := float64(totalBytesSent) / overallElapsed
+	log.Printf("STDIN transfer complete.")
+	log.Printf("=== Final Summary ===")
+	log.Printf("Total bytes sent: %d bytes in %.2fs (%.2f bytes/s).", totalBytesSent, overallElapsed, overallRate)
+	log.Printf("Total retries: %d.", totalRetries)
+	log.Printf("=====================")
+	finalConfirmationInfo := fmt.Sprintf("%s>%s:%s:ACK:FIN-ACK", padCallsign(args.MyCallsign), padCallsign(args.ReceiverCallsign), fileID)
+	finalConfirmationPkt := append(buildAX25Header(args.MyCallsign, args.ReceiverCallsign), []byte(finalConfirmationInfo)...)
+	finalFrame := buildKISSFrame(finalConfirmationPkt)
+	conn.SendFrame(finalFrame)
+	log.Printf("Sent FIN-ACK after final cumulative ACK. Transfer fully completed.")
+	finalWaitPeriod := 1500*time.Millisecond + time.Duration(args.TimeoutSeconds)*time.Second
+	log.Printf("Listening for re-transmitted ACK for %.2f seconds...", finalWaitPeriod.Seconds())
+	endTime := time.Now().Add(finalWaitPeriod)
+	for time.Now().Before(endTime) {
+		select {
+		case ackPkt := <-frameChan:
+			parsedAck := parsePacket(ackPkt)
+			if parsedAck != nil && parsedAck.Type == "ack" && strings.Contains(parsedAck.Ack, "-") {
+				// Only resend if the ACK is from the expected receiver and the fileID matches.
+				if strings.TrimSpace(parsedAck.Sender) == padCallsign(args.ReceiverCallsign) &&
+					strings.TrimSpace(parsedAck.FileID) == fileID {
+					log.Printf("Re-received cumulative ACK from expected receiver, re-sending final confirmation FIN-ACK.")
+					conn.SendFrame(finalFrame)
+				} else {
+					log.Printf("Ignored ACK from unexpected sender (%s) or mismatched fileID (expected: %s, got: %s).",
+						parsedAck.Sender, fileID, parsedAck.FileID)
+				}
 			}
 		case <-time.After(500 * time.Millisecond):
 		}
@@ -925,6 +1331,16 @@ func main() {
 	args := parseArguments()
 	if args.Debug {
 		log.SetFlags(log.LstdFlags | log.Lshortfile)
+	}
+
+	// If -stdin is specified, read from standard input.
+	if args.Stdin {
+		log.Printf("=== Starting transfer for data from STDIN ===")
+		if err := sendStdin(args); err != nil {
+			log.Fatalf("Error sending data from STDIN: %v", err)
+		}
+		log.Printf("=== Completed transfer for data from STDIN ===")
+		return
 	}
 
 	// If file-directory is specified, run in directory‑monitoring mode.

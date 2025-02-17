@@ -37,6 +37,8 @@ var (
 	debug           = flag.Bool("debug", false, "Enable extra debug logging")
 	// New flag to save files locally.
 	saveFiles = flag.Bool("save-files", false, "Save received files locally (reassemble from data packets)")
+	// New flag for repeater delay (in milliseconds)
+	repeaterDelay = flag.Int("repeater-delay", 0, "Delay in milliseconds before forwarding ACK packets and the start of a data burst")
 )
 
 var allowedCalls map[string]bool
@@ -122,26 +124,39 @@ func extractKISSFrames(data []byte) ([][]byte, []byte) {
 //
 // Packet Parsing: Structures and Functions
 //
+// We now add a RawFrame field to preserve the original TNC frame.
 type Packet struct {
 	Type           string // "data" or "ack"
 	Sender         string
 	Receiver       string
 	FileID         string
-	Seq            int    // sequence number (first 4 hex digits)
-	BurstTo        int    // expected highest sequence number for the burst (last 4 hex digits)
-	Payload        []byte // inner payload (header info, file data, or FIN marker)
+	Seq            int    // sequence number
+	BurstTo        int    // expected highest sequence number for the burst
+	Payload        []byte // inner payload (after unescaping)
 	RawInfo        string // raw info field (for logging)
 	Ack            string // for ACK packets
 	EncodingMethod byte   // parsed for completeness (not used here)
+	RawFrame       []byte // the original raw frame (with KISS framing)
 }
 
-func parsePacket(packet []byte) *Packet {
-	debugf("Parsing packet: % X", packet)
-	if len(packet) < 16 {
-		debugf("Packet too short: %d bytes", len(packet))
+//
+// parsePacket now expects the full raw frame, strips the first two and last byte,
+// unescapes the inner data, and uses that for parsing. It also saves the raw frame.
+func parsePacket(rawFrame []byte) *Packet {
+	// Basic sanity check: frame should start and end with KISS_FLAG and have at least 4 bytes.
+	if len(rawFrame) < 4 || rawFrame[0] != KISS_FLAG || rawFrame[len(rawFrame)-1] != KISS_FLAG {
+		debugf("Invalid frame format")
 		return nil
 	}
-	infoAndPayload := packet[16:]
+	// Remove the first 2 bytes (KISS_FLAG and command) and the last KISS_FLAG.
+	inner := rawFrame[2 : len(rawFrame)-1]
+	unesc := unescapeData(inner)
+	// Now, unesc is the same as what was previously passed to parsePacket.
+	if len(unesc) < 16 {
+		debugf("Packet too short: %d bytes", len(unesc))
+		return nil
+	}
+	infoAndPayload := unesc[16:]
 	if len(infoAndPayload) == 0 {
 		debugf("No info/payload found")
 		return nil
@@ -154,9 +169,10 @@ func parsePacket(packet []byte) *Packet {
 			srParts := strings.Split(fields[0], ">")
 			if len(srParts) != 2 {
 				return &Packet{
-					Type:    "ack",
-					Ack:     strings.TrimSpace(fields[len(fields)-1]),
-					RawInfo: string(infoAndPayload),
+					Type:     "ack",
+					Ack:      strings.TrimSpace(fields[len(fields)-1]),
+					RawInfo:  string(infoAndPayload),
+					RawFrame: rawFrame,
 				}
 			}
 			sender := strings.TrimSpace(srParts[0])
@@ -171,6 +187,7 @@ func parsePacket(packet []byte) *Packet {
 				FileID:   fileID,
 				Ack:      ackVal,
 				RawInfo:  string(infoAndPayload),
+				RawFrame: rawFrame,
 			}
 		}
 		ackVal := ""
@@ -179,9 +196,10 @@ func parsePacket(packet []byte) *Packet {
 			ackVal = strings.Trim(strings.Trim(parts[1], ":"), " ")
 		}
 		return &Packet{
-			Type:    "ack",
-			Ack:     ackVal,
-			RawInfo: string(infoAndPayload),
+			Type:     "ack",
+			Ack:      ackVal,
+			RawInfo:  string(infoAndPayload),
+			RawFrame: rawFrame,
 		}
 	}
 
@@ -257,6 +275,7 @@ func parsePacket(packet []byte) *Packet {
 		Payload:        payload,
 		RawInfo:        infoStr,
 		EncodingMethod: encodingMethod,
+		RawFrame:       rawFrame,
 	}
 }
 
@@ -314,22 +333,28 @@ var (
 	ptLock  sync.Mutex
 )
 
-func broadcastToClients(data []byte, lock *sync.Mutex, conns *[]net.Conn) {
+// broadcastToClients now accepts an "exclude" connection. If non‑nil, that client
+// will not receive the data.
+func broadcastToClients(data []byte, lock *sync.Mutex, conns *[]net.Conn, exclude net.Conn) {
 	lock.Lock()
 	defer lock.Unlock()
 	for i := len(*conns) - 1; i >= 0; i-- {
 		conn := (*conns)[i]
-		if conn != nil {
-			_, err := conn.Write(data)
-			if err != nil {
-				log.Printf("Error writing to pass‑through client %v: %v. Dropping client.", conn.RemoteAddr(), err)
-				conn.Close()
-				*conns = append((*conns)[:i], (*conns)[i+1:]...)
-			}
+		if exclude != nil && conn == exclude {
+			continue
+		}
+		_, err := conn.Write(data)
+		if err != nil {
+			log.Printf("Error writing to pass‑through client %v: %v. Dropping client.", conn.RemoteAddr(), err)
+			conn.Close()
+			*conns = append((*conns)[:i], (*conns)[i+1:]...)
 		}
 	}
 }
 
+//
+// When a pass‑through client sends data, we want to forward it to the TNC
+// but exclude that client from the broadcast.
 func handlePassThroughRead(client net.Conn, tncConn KISSConnection) {
 	defer client.Close()
 	buf := make([]byte, 1024)
@@ -343,7 +368,8 @@ func handlePassThroughRead(client net.Conn, tncConn KISSConnection) {
 		}
 		if n > 0 {
 			debugf("Pass‑through received %d bytes from %s: % X", n, client.RemoteAddr(), buf[:n])
-			if err := tncConn.SendFrame(buf[:n]); err != nil {
+			// Send to the TNC; note that we no longer broadcast here.
+			if err := tncConn.SendFrameExcluding(buf[:n], client); err != nil {
 				log.Printf("Error sending data from pass‑through client to TNC: %v", err)
 				return
 			}
@@ -375,8 +401,10 @@ func startPassThroughListener(port int, tncConn KISSConnection) {
 //
 // KISSConnection Interface and Implementations
 //
+// We add SendFrameExcluding as before.
 type KISSConnection interface {
 	SendFrame(frame []byte) error
+	SendFrameExcluding(frame []byte, exclude net.Conn) error
 	RecvData(timeout time.Duration) ([]byte, error)
 	Close() error
 }
@@ -409,92 +437,39 @@ func newTCPKISSConnectionClient(host string, port int) (*tcpKISSConnection, erro
 	}, nil
 }
 
+func (t *tcpKISSConnection) SendFrameExcluding(frame []byte, exclude net.Conn) error {
+	t.lock.Lock()
+	defer t.lock.Unlock()
+	_, err := t.conn.Write(frame)
+	debugf("Sent frame: % X", frame)
+	// Removed broadcasting to pass‑through clients from here.
+	// broadcastToClients(frame, &ptLock, &ptConns, exclude)
+	return err
+}
+
 func (t *tcpKISSConnection) SendFrame(frame []byte) error {
-	if !t.isServer {
-		t.lock.Lock()
-		defer t.lock.Unlock()
-		_, err := t.conn.Write(frame)
-		debugf("Sent frame: % X", frame)
-		broadcastToClients(frame, &ptLock, &ptConns)
-		return err
-	}
-	for {
-		holder := t.atomicConn.Load().(*connHolder)
-		if holder.conn == nil {
-			time.Sleep(50 * time.Millisecond)
-			continue
-		}
-		t.lock.Lock()
-		holder = t.atomicConn.Load().(*connHolder)
-		if holder.conn == nil {
-			t.lock.Unlock()
-			continue
-		}
-		_, err := holder.conn.Write(frame)
-		t.lock.Unlock()
-		debugf("Sent frame (server mode): % X", frame)
-		broadcastToClients(frame, &ptLock, &ptConns)
-		return err
-	}
+	return t.SendFrameExcluding(frame, nil)
 }
 
 func (t *tcpKISSConnection) RecvData(timeout time.Duration) ([]byte, error) {
-	if !t.isServer {
-		t.conn.SetReadDeadline(time.Now().Add(timeout))
-		buf := make([]byte, 1024)
-		n, err := t.conn.Read(buf)
-		if err != nil {
-			if err == io.EOF {
-				return []byte{}, nil
-			}
-			if nErr, ok := err.(net.Error); ok && nErr.Timeout() {
-				return []byte{}, nil
-			}
-			return nil, err
+	t.conn.SetReadDeadline(time.Now().Add(timeout))
+	buf := make([]byte, 1024)
+	n, err := t.conn.Read(buf)
+	if err != nil {
+		if err == io.EOF {
+			return []byte{}, err
 		}
-		debugf("Received %d bytes from TCP client", n)
-		return buf[:n], nil
+		if nErr, ok := err.(net.Error); ok && nErr.Timeout() {
+			return []byte{}, nil
+		}
+		return nil, err
 	}
-	start := time.Now()
-	for {
-		holder := t.atomicConn.Load().(*connHolder)
-		if holder.conn == nil {
-			if time.Since(start) > timeout {
-				return []byte{}, nil
-			}
-			time.Sleep(50 * time.Millisecond)
-			continue
-		}
-		holder.conn.SetReadDeadline(time.Now().Add(timeout))
-		buf := make([]byte, 1024)
-		n, err := holder.conn.Read(buf)
-		if err != nil {
-			if err == io.EOF {
-				t.atomicConn.Store(&connHolder{conn: nil})
-				continue
-			}
-			if nErr, ok := err.(net.Error); ok && nErr.Timeout() {
-				return []byte{}, nil
-			}
-			return nil, err
-		}
-		debugf("Received %d bytes from TCP server", n)
-		return buf[:n], nil
-	}
+	debugf("Received %d bytes from TCP client", n)
+	return buf[:n], nil
 }
 
 func (t *tcpKISSConnection) Close() error {
-	if !t.isServer {
-		return t.conn.Close()
-	}
-	holder := t.atomicConn.Load().(*connHolder)
-	if holder.conn != nil {
-		holder.conn.Close()
-	}
-	if t.listener != nil {
-		t.listener.Close()
-	}
-	return nil
+	return t.conn.Close()
 }
 
 //
@@ -517,13 +492,28 @@ func newSerialKISSConnection(portName string, baud int) (*serialKISSConnection, 
 	return &serialKISSConnection{ser: ser}, nil
 }
 
-func (s *serialKISSConnection) SendFrame(frame []byte) error {
+func (s *serialKISSConnection) SendFrameExcluding(frame []byte, exclude net.Conn) error {
 	s.lock.Lock()
 	defer s.lock.Unlock()
-	_, err := s.ser.Write(frame)
+	// Flush the serial port's output buffer before sending
+	if err := s.ser.ResetOutputBuffer(); err != nil {
+		log.Printf("Error flushing serial port: %v", err)
+	}
+	// Loop until all bytes are written to handle partial writes.
+	totalWritten := 0
+	for totalWritten < len(frame) {
+		n, err := s.ser.Write(frame[totalWritten:])
+		if err != nil {
+			return err
+		}
+		totalWritten += n
+	}
 	debugf("Sent frame over serial: % X", frame)
-	broadcastToClients(frame, &ptLock, &ptConns)
-	return err
+	return nil
+}
+
+func (s *serialKISSConnection) SendFrame(frame []byte) error {
+	return s.SendFrameExcluding(frame, nil)
 }
 
 func (s *serialKISSConnection) RecvData(timeout time.Duration) ([]byte, error) {
@@ -532,7 +522,7 @@ func (s *serialKISSConnection) RecvData(timeout time.Duration) ([]byte, error) {
 	n, err := s.ser.Read(buf)
 	if err != nil {
 		if err == io.EOF {
-			return []byte{}, nil
+			return []byte{}, err
 		}
 		return nil, err
 	}
@@ -545,11 +535,13 @@ func (s *serialKISSConnection) Close() error {
 }
 
 //
-// FrameReader: Reads raw data and extracts KISS frames
+// FrameReader: Reads raw data from the TNC and extracts KISS frames.
+// We now push the full raw frame to the out channel (so that we can forward it unchanged).
 //
 type FrameReader struct {
 	conn    KISSConnection
 	outChan chan []byte
+	errChan chan error // error channel to signal connection loss
 	running bool
 	buffer  []byte
 }
@@ -558,6 +550,7 @@ func NewFrameReader(conn KISSConnection, outChan chan []byte) *FrameReader {
 	return &FrameReader{
 		conn:    conn,
 		outChan: outChan,
+		errChan: make(chan error, 1),
 		running: true,
 		buffer:  []byte{},
 	}
@@ -567,8 +560,11 @@ func (fr *FrameReader) Run() {
 	for fr.running {
 		data, err := fr.conn.RecvData(100 * time.Millisecond)
 		if err != nil {
-			log.Printf("Receive error: %v", err)
-			continue
+			if nErr, ok := err.(net.Error); !ok || !nErr.Timeout() {
+				log.Printf("Fatal receive error: %v", err)
+				fr.errChan <- err
+				return
+			}
 		}
 		if len(data) > 0 {
 			debugf("FrameReader received %d bytes: % X", len(data), data)
@@ -576,15 +572,10 @@ func (fr *FrameReader) Run() {
 			frames, remaining := extractKISSFrames(fr.buffer)
 			fr.buffer = remaining
 			for _, f := range frames {
-				if len(f) >= 2 && f[0] == KISS_FLAG && f[len(f)-1] == KISS_FLAG {
-					if len(f) < 4 {
-						continue
-					}
-					inner := f[2 : len(f)-1]
-					unesc := unescapeData(inner)
-					debugf("FrameReader pushing packet: % X", unesc)
-					fr.outChan <- unesc
-				}
+				// Immediately broadcast the raw frame from the TNC to all pass‑through clients.
+				broadcastToClients(f, &ptLock, &ptConns, nil)
+				// Also push the raw frame for state‑machine processing.
+				fr.outChan <- f
 			}
 		} else {
 			time.Sleep(10 * time.Millisecond)
@@ -609,7 +600,6 @@ const (
 )
 
 // Transfer holds the state and buffers for one file transfer session.
-// Extended below with fields for file saving.
 type Transfer struct {
 	Sender        string
 	Receiver      string
@@ -651,7 +641,8 @@ func forwardBurst(tr *Transfer, conn KISSConnection) {
 	}
 	sort.Ints(seqs)
 	for _, seq := range seqs {
-		frame := buildKISSFrame(tr.BurstBuffer[seq])
+		// Forward using the original raw frame from the buffered packet.
+		frame := tr.BurstBuffer[seq]
 		if err := conn.SendFrame(frame); err != nil {
 			log.Printf("[Repeater] Error sending data packet seq %d: %v", seq, err)
 		} else {
@@ -663,18 +654,30 @@ func forwardBurst(tr *Transfer, conn KISSConnection) {
 }
 
 // processPacket is the main state machine. It buffers packets and forwards duplicates immediately.
-func processPacket(pkt []byte, conn KISSConnection) {
-	packet := parsePacket(pkt)
+func processPacket(rawFrame []byte, conn KISSConnection) {
+	packet := parsePacket(rawFrame)
 	if packet == nil {
 		log.Printf("[Repeater] Could not parse packet.")
 		return
 	}
 
+	// --- Logging improvements ---
+	if packet.Type == "ack" {
+		log.Printf("[Repeater] ACK packet from %s -> %s for fileID %s: %s",
+			packet.Sender, packet.Receiver, packet.FileID, packet.RawInfo)
+	} else {
+		log.Printf("[Repeater] Data packet from %s -> %s for fileID %s, seq %d, burstTo %d",
+			packet.Sender, packet.Receiver, packet.FileID, packet.Seq, packet.BurstTo)
+	}
+	// --- End logging improvements ---
+
+	// If callsigns filtering is enabled.
 	if *callsigns != "" {
 		srcAllowed := allowedCalls[strings.ToUpper(strings.TrimSpace(packet.Sender))]
 		dstAllowed := allowedCalls[strings.ToUpper(strings.TrimSpace(packet.Receiver))]
 		if !srcAllowed || !dstAllowed {
-			log.Printf("[Repeater] Dropping packet for fileID %s from %s->%s: callsign not allowed", packet.FileID, packet.Sender, packet.Receiver)
+			log.Printf("[Repeater] Dropping packet for fileID %s from %s -> %s: callsign not allowed",
+				packet.FileID, packet.Sender, packet.Receiver)
 			return
 		}
 	}
@@ -688,7 +691,7 @@ func processPacket(pkt []byte, conn KISSConnection) {
 				Sender:        packet.Sender,
 				Receiver:      packet.Receiver,
 				FileID:        packet.FileID,
-				HeaderPacket:  pkt,
+				HeaderPacket:  rawFrame, // store the original raw header frame
 				BurstBuffer:   make(map[int][]byte),
 				ExpectedBurst: packet.BurstTo,
 				State:         WaitHeaderAck,
@@ -712,9 +715,11 @@ func processPacket(pkt []byte, conn KISSConnection) {
 				tr.PacketData = make(map[int][]byte)
 			}
 			transfers[key] = tr
-			log.Printf("[Repeater] Received HEADER from %s (fileID %s). Forwarding header to receiver.", packet.Sender, packet.FileID)
+			log.Printf("[Repeater] Received HEADER from %s -> %s for fileID %s. Forwarding header to receiver.",
+				packet.Sender, packet.Receiver, packet.FileID)
 			logHeaderDetails(packet.Payload, packet.FileID, packet.Sender, packet.Receiver)
-			if err := conn.SendFrame(buildKISSFrame(pkt)); err != nil {
+			// Forward the header using the original raw frame.
+			if err := conn.SendFrame(rawFrame); err != nil {
 				log.Printf("[Repeater] Error sending HEADER: %v", err)
 			}
 		} else {
@@ -736,23 +741,33 @@ func processPacket(pkt []byte, conn KISSConnection) {
 	case WaitHeaderAck:
 		if isFromSender && packet.Type == "data" && packet.Seq == 1 {
 			log.Printf("[Repeater] Resent HEADER from sender for fileID %s. Forwarding header to receiver.", tr.FileID)
-			conn.SendFrame(buildKISSFrame(pkt))
-		} else if isFromReceiver && packet.Type == "ack" {
-			log.Printf("[Repeater] Received header ACK from receiver for fileID %s. Forwarding header ACK to sender.", tr.FileID)
-			conn.SendFrame(buildKISSFrame(pkt))
+			conn.SendFrame(rawFrame)
+		} else if packet.Type == "ack" && (isFromReceiver || strings.ToUpper(packet.Ack) == "FIN-ACK") {
+			log.Printf("[Repeater] Received header ACK (%s) for fileID %s. Forwarding header ACK to sender after delay.", packet.Ack, tr.FileID)
+			if *repeaterDelay > 0 {
+				time.Sleep(time.Millisecond * time.Duration(*repeaterDelay))
+			}
+			conn.SendFrame(rawFrame)
 			tr.State = WaitBurst
 			debugf("State changed to WaitBurst")
 		} else {
 			log.Printf("[Repeater] In WaitHeaderAck state; forwarding packet from %s.", packet.Sender)
-			conn.SendFrame(buildKISSFrame(pkt))
+			conn.SendFrame(rawFrame)
 		}
 	case WaitBurst:
 		if isFromSender && packet.Type == "data" && packet.Seq > 1 {
+			// If this is the first data packet in a burst, delay processing the burst start.
+			if len(tr.BurstBuffer) == 0 {
+				log.Printf("[Repeater] Starting new data burst for fileID %s. Delaying %d ms before processing first packet.", tr.FileID, *repeaterDelay)
+				if *repeaterDelay > 0 {
+					time.Sleep(time.Millisecond * time.Duration(*repeaterDelay))
+				}
+			}
 			if _, exists := tr.BurstBuffer[packet.Seq]; exists {
 				log.Printf("[Repeater] Duplicate data packet seq %d for fileID %s. Forwarding immediately.", packet.Seq, tr.FileID)
-				conn.SendFrame(buildKISSFrame(pkt))
+				conn.SendFrame(rawFrame)
 			} else {
-				tr.BurstBuffer[packet.Seq] = pkt
+				tr.BurstBuffer[packet.Seq] = rawFrame
 				if packet.Seq > tr.LastSeq {
 					tr.LastSeq = packet.Seq
 				}
@@ -764,36 +779,42 @@ func processPacket(pkt []byte, conn KISSConnection) {
 				tr.State = WaitBurstAck
 				debugf("State changed to WaitBurstAck")
 			}
-		} else if isFromReceiver && packet.Type == "ack" {
-			log.Printf("[Repeater] Received ACK in WaitBurst state from receiver. Forwarding ACK to sender.")
-			conn.SendFrame(buildKISSFrame(pkt))
+		} else if packet.Type == "ack" && (isFromReceiver || strings.ToUpper(packet.Ack) == "FIN-ACK") {
+			log.Printf("[Repeater] Received ACK (%s) in WaitBurst state for fileID %s. Forwarding ACK to sender after delay.", packet.Ack, tr.FileID)
+			if *repeaterDelay > 0 {
+				time.Sleep(time.Millisecond * time.Duration(*repeaterDelay))
+			}
+			conn.SendFrame(rawFrame)
 		} else {
 			log.Printf("[Repeater] In WaitBurst state; forwarding packet from %s.", packet.Sender)
-			conn.SendFrame(buildKISSFrame(pkt))
+			conn.SendFrame(rawFrame)
 		}
 	case WaitBurstAck:
-		if isFromReceiver && packet.Type == "ack" {
-			log.Printf("[Repeater] Received burst ACK from receiver for fileID %s. Forwarding burst ACK to sender.", tr.FileID)
-			conn.SendFrame(buildKISSFrame(pkt))
+		if packet.Type == "ack" && (isFromReceiver || strings.ToUpper(packet.Ack) == "FIN-ACK") {
+			log.Printf("[Repeater] Received burst ACK (%s) for fileID %s. Forwarding burst ACK to sender after delay.", packet.Ack, tr.FileID)
+			if *repeaterDelay > 0 {
+				time.Sleep(time.Millisecond * time.Duration(*repeaterDelay))
+			}
+			conn.SendFrame(rawFrame)
 			tr.State = WaitBurst
 			debugf("State changed to WaitBurst")
 		} else if isFromSender && packet.Type == "data" && packet.Seq > 1 {
 			log.Printf("[Repeater] Resent data packet seq %d for fileID %s in WaitBurstAck state. Forwarding immediately.", packet.Seq, tr.FileID)
-			conn.SendFrame(buildKISSFrame(pkt))
-			tr.BurstBuffer[packet.Seq] = pkt
+			conn.SendFrame(rawFrame)
+			tr.BurstBuffer[packet.Seq] = rawFrame
 			if packet.Seq > tr.LastSeq {
 				tr.LastSeq = packet.Seq
 			}
 		} else {
 			log.Printf("[Repeater] In WaitBurstAck state; forwarding packet from %s.", packet.Sender)
-			conn.SendFrame(buildKISSFrame(pkt))
+			conn.SendFrame(rawFrame)
 		}
 	case Finished:
 		log.Printf("[Repeater] Transfer finished for fileID %s; forwarding packet from %s.", tr.FileID, packet.Sender)
-		conn.SendFrame(buildKISSFrame(pkt))
+		conn.SendFrame(rawFrame)
 	}
 
-	// --- File-saving logic ---
+	// --- File-saving logic (unchanged) ---
 	if *saveFiles && isFromSender && packet.Type == "data" && packet.Seq > 1 {
 		if tr.PacketData == nil {
 			tr.PacketData = make(map[int][]byte)
@@ -801,11 +822,9 @@ func processPacket(pkt []byte, conn KISSConnection) {
 		if _, exists := tr.PacketData[packet.Seq]; !exists {
 			tr.PacketData[packet.Seq] = packet.Payload
 		}
-		// Check if header specified a total packet count and if all data packets have arrived.
-		if tr.TotalPackets > 0 && !tr.FileSaved && len(tr.PacketData) == (tr.TotalPackets - 1) {
+		if tr.TotalPackets > 0 && !tr.FileSaved && len(tr.PacketData) == (tr.TotalPackets-1) {
 			var buf bytes.Buffer
 			complete := true
-			// Reassemble packets in order (from seq 2 onward).
 			for i := 2; i <= tr.TotalPackets; i++ {
 				data, ok := tr.PacketData[i]
 				if !ok {
@@ -813,7 +832,6 @@ func processPacket(pkt []byte, conn KISSConnection) {
 					log.Printf("[Repeater] Missing packet seq %d for fileID %s; cannot reassemble file.", i, tr.FileID)
 					break
 				}
-				// If encodingMethod==1, decode base64.
 				if tr.EncodingMethod == 1 {
 					decoded, err := ioutil.ReadAll(base64.NewDecoder(base64.StdEncoding, bytes.NewReader(data)))
 					if err != nil {
@@ -828,7 +846,6 @@ func processPacket(pkt []byte, conn KISSConnection) {
 			}
 			if complete {
 				fileData := buf.Bytes()
-				// If compression is enabled, decompress the assembled data.
 				if tr.Compress {
 					b := bytes.NewReader(fileData)
 					zr, err := zlib.NewReader(b)
@@ -849,7 +866,6 @@ func processPacket(pkt []byte, conn KISSConnection) {
 				if complete {
 					newFilename := fmt.Sprintf("%s_%s_%s_%s", strings.ToUpper(tr.Sender), strings.ToUpper(tr.Receiver), tr.FileID, tr.Filename)
 					finalFilename := newFilename
-					// Ensure unique filename.
 					for i := 1; ; i++ {
 						if _, err := os.Stat(finalFilename); os.IsNotExist(err) {
 							break
@@ -870,7 +886,7 @@ func processPacket(pkt []byte, conn KISSConnection) {
 }
 
 //
-// Main: TNC Connection Setup, Pass‑Through Listener, and Processing Loop
+// Main: TNC Connection Setup, Pass‑Through Listener, and Processing Loop with Auto‑Reconnect
 //
 func main() {
 	flag.Parse()
@@ -888,40 +904,62 @@ func main() {
 		log.Printf("--callsigns not set; allowing any callsign.")
 	}
 
-	var tncConn KISSConnection
-	var err error
+	for {
+		tncConn, err := createTNCConnection()
+		if err != nil {
+			log.Printf("Error creating TNC connection: %v. Retrying in 5 seconds...", err)
+			time.Sleep(5 * time.Second)
+			continue
+		}
 
+		go startPassThroughListener(*passthroughPort, tncConn)
+
+		frameChan := make(chan []byte, 100)
+		fr := NewFrameReader(tncConn, frameChan)
+		go fr.Run()
+
+		log.Printf("Repeater running. Waiting for packets...")
+		reconnect := false
+
+		for {
+			select {
+			case pkt := <-frameChan:
+				debugf("Main loop received raw packet: % X", pkt)
+				processPacket(pkt, tncConn)
+			case err := <-fr.errChan:
+				log.Printf("TNC connection lost: %v", err)
+				reconnect = true
+			}
+			if reconnect {
+				break
+			}
+		}
+
+		fr.Stop()
+		tncConn.Close()
+		log.Printf("Attempting to reconnect in 5 seconds...")
+		time.Sleep(5 * time.Second)
+	}
+}
+
+func createTNCConnection() (KISSConnection, error) {
 	switch strings.ToLower(*tncConnType) {
 	case "tcp":
-		tncConn, err = newTCPKISSConnectionClient(*tncHost, *tncPort)
+		conn, err := newTCPKISSConnectionClient(*tncHost, *tncPort)
 		if err != nil {
-			log.Fatalf("Error creating TCP connection: %v", err)
+			return nil, err
 		}
+		return conn, nil
 	case "serial":
 		if *tncSerialPort == "" {
-			log.Fatalf("Serial port must be specified for serial connection.")
+			return nil, fmt.Errorf("Serial port must be specified for serial connection")
 		}
-		tncConn, err = newSerialKISSConnection(*tncSerialPort, *tncBaud)
+		conn, err := newSerialKISSConnection(*tncSerialPort, *tncBaud)
 		if err != nil {
-			log.Fatalf("Error creating serial connection: %v", err)
+			return nil, err
 		}
+		return conn, nil
 	default:
-		log.Fatalf("Invalid TNC connection type: %s", *tncConnType)
-	}
-	defer tncConn.Close()
-
-	go startPassThroughListener(*passthroughPort, tncConn)
-
-	frameChan := make(chan []byte, 100)
-	fr := NewFrameReader(tncConn, frameChan)
-	go fr.Run()
-
-	log.Printf("Repeater running. Waiting for packets...")
-	for {
-		select {
-		case pkt := <-frameChan:
-			debugf("Main loop received raw packet: % X", pkt)
-			processPacket(pkt, tncConn)
-		}
+		return nil, fmt.Errorf("Invalid TNC connection type: %s", *tncConnType)
 	}
 }

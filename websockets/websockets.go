@@ -14,6 +14,7 @@ import (
 	"sync"
 	"syscall"
 	"time"
+
 	"go.bug.st/serial" // Switched from "github.com/tarm/serial" to go.bug.st/serial
 	"github.com/zishang520/engine.io/v2/types"
 	"github.com/zishang520/socket.io/v2/socket"
@@ -24,6 +25,17 @@ const (
 	KISS_FLAG     = 0xC0
 	KISS_CMD_DATA = 0x00
 )
+
+// DeviceConfig holds the connection parameters.
+type DeviceConfig struct {
+	ConnectionType string
+	SerialPort     string
+	BaudRate       int
+	TCPHost        string
+	TCPPort        int
+}
+
+var deviceConfig DeviceConfig
 
 // extractKISSFrames searches the provided data for complete frames.
 // It returns a slice of complete frames (each beginning and ending with KISS_FLAG)
@@ -96,6 +108,45 @@ var (
 // frameChan is a buffered channel used to decouple device reading from broadcasting.
 var frameChan = make(chan []byte, 100)
 
+// connectDevice creates a new connection based on the provided DeviceConfig.
+func connectDevice(cfg DeviceConfig) (io.ReadWriteCloser, error) {
+	switch cfg.ConnectionType {
+	case "serial":
+		if cfg.SerialPort == "" {
+			return nil, fmt.Errorf("serial port not specified")
+		}
+		mode := &serial.Mode{
+			BaudRate: cfg.BaudRate,
+			Parity:   serial.NoParity,
+			DataBits: 8,
+			StopBits: serial.OneStopBit,
+		}
+		port, err := serial.Open(cfg.SerialPort, mode)
+		if err != nil {
+			return nil, fmt.Errorf("failed to open serial port %s: %v", cfg.SerialPort, err)
+		}
+		if err := port.SetReadTimeout(time.Millisecond * 100); err != nil {
+			port.Close()
+			return nil, fmt.Errorf("failed to set read timeout on serial port %s: %v", cfg.SerialPort, err)
+		}
+		log.Printf("Opened serial connection on %s at %d baud", cfg.SerialPort, cfg.BaudRate)
+		return port, nil
+	case "tcp":
+		if cfg.TCPHost == "" || cfg.TCPPort == 0 {
+			return nil, fmt.Errorf("TCP host and port must be specified")
+		}
+		addr := fmt.Sprintf("%s:%d", cfg.TCPHost, cfg.TCPPort)
+		conn, err := net.Dial("tcp", addr)
+		if err != nil {
+			return nil, fmt.Errorf("failed to connect to TCP %s: %v", addr, err)
+		}
+		log.Printf("Opened TCP connection to %s", addr)
+		return conn, nil
+	default:
+		return nil, fmt.Errorf("unknown connection type: %s", cfg.ConnectionType)
+	}
+}
+
 func main() {
 	// Command-line flags.
 	connectionType := flag.String("connection", "", "Connection type: serial or tcp")
@@ -110,46 +161,20 @@ func main() {
 
 	debugMode := *debug
 
-	// Open the underlying connection.
-	switch *connectionType {
-	case "serial":
-		if *serialPort == "" {
-			fmt.Fprintln(os.Stderr, "Error: -serial-port is required when connection type is serial")
-			os.Exit(1)
-		}
-		// Create a Mode with the desired settings.
-		mode := &serial.Mode{
-			BaudRate: *baudRate,
-			Parity:   serial.NoParity,
-			DataBits: 8,
-			StopBits: serial.OneStopBit,
-		}
-		// Open the serial port using go.bug.st/serial.
-		port, err := serial.Open(*serialPort, mode)
-		if err != nil {
-			log.Fatalf("Failed to open serial port %s: %v", *serialPort, err)
-		}
-		// Optionally, set a read timeout.
-		if err := port.SetReadTimeout(time.Millisecond * 100); err != nil {
-			log.Fatalf("Failed to set read timeout on serial port %s: %v", *serialPort, err)
-		}
-		deviceConn = port
-		log.Printf("Opened serial connection on %s at %d baud", *serialPort, *baudRate)
-	case "tcp":
-		if *tcpHost == "" || *tcpPort == 0 {
-			fmt.Fprintln(os.Stderr, "Error: -host and -port are required when connection type is tcp")
-			os.Exit(1)
-		}
-		addr := fmt.Sprintf("%s:%d", *tcpHost, *tcpPort)
-		conn, err := net.Dial("tcp", addr)
-		if err != nil {
-			log.Fatalf("Failed to connect to TCP %s: %v", addr, err)
-		}
-		deviceConn = conn
-		log.Printf("Opened TCP connection to %s", addr)
-	default:
-		fmt.Fprintln(os.Stderr, "Error: -connection must be either serial or tcp")
-		os.Exit(1)
+	// Populate device configuration.
+	deviceConfig = DeviceConfig{
+		ConnectionType: *connectionType,
+		SerialPort:     *serialPort,
+		BaudRate:       *baudRate,
+		TCPHost:        *tcpHost,
+		TCPPort:        *tcpPort,
+	}
+
+	// Establish the initial device connection.
+	var err error
+	deviceConn, err = connectDevice(deviceConfig)
+	if err != nil {
+		log.Fatalf("Initial connection error: %v", err)
 	}
 
 	// Create an Engine.IO server and a Socket.IO server on top of it.
@@ -174,7 +199,6 @@ func main() {
 
 		// Only forward events from the active client.
 		client.On("raw_kiss_frame", func(datas ...any) {
-			// Check if this client is the active one.
 			activeSocketMutex.Lock()
 			if activeSocket != client {
 				activeSocketMutex.Unlock()
@@ -217,7 +241,6 @@ func main() {
 				}
 			}
 			clientsMutex.Unlock()
-			// If the disconnecting client is the active one, reset activeSocket.
 			activeSocketMutex.Lock()
 			if activeSocket == client {
 				activeSocket = nil
@@ -255,17 +278,34 @@ func main() {
 		for {
 			n, err := deviceConn.Read(buf)
 			if err != nil {
-				if err == io.EOF {
+				// Ignore EOF errors and timeouts (n==0) as normal.
+				if err == io.EOF || n == 0 {
+					if debugMode && n == 0 {
+						log.Println("DEBUG: Read timeout, no data")
+					}
+					// Sleep briefly and continue reading.
+					time.Sleep(100 * time.Millisecond)
 					continue
 				}
 				log.Printf("Error reading from device: %v", err)
-				time.Sleep(100 * time.Millisecond)
+				// Attempt to reconnect.
+				for {
+					log.Println("Attempting to reconnect in 5 seconds...")
+					time.Sleep(5 * time.Second)
+					newConn, err := connectDevice(deviceConfig)
+					if err != nil {
+						log.Printf("Reconnect failed: %v", err)
+					} else {
+						deviceConn = newConn
+						log.Println("Reconnected successfully to the device")
+						break
+					}
+				}
+				// Reset readBuffer after reconnection.
+				readBuffer = nil
 				continue
 			}
 			if n == 0 {
-				if debugMode {
-					log.Println("DEBUG: Read timeout, no data")
-				}
 				continue
 			}
 			if debugMode {

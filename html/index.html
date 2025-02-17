@@ -647,15 +647,15 @@ function startTransfer(fileId) {
     : "0001";
 
   // If we're not forcing a send and this ACK is the same as the last one, skip sending it.
-  if (!forceSend && lastRangeAck === ackStr) {
-    // For non-auto mode, if current packet index is at the end, we might need to send burst packets.
-    if (currentPacketIndex >= totalPackets) {
-      sendBurstPackets();
-    } else {
-      console.log("Ignoring duplicate cumulative ACK:", ackStr);
-    }
-    return;
-  }
+  //if (!forceSend && lastRangeAck === ackStr) {
+  //  // For non-auto mode, if current packet index is at the end, we might need to send burst packets.
+  //  if (currentPacketIndex >= totalPackets) {
+  //    sendBurstPackets();
+  //  } else {
+  //    console.log("Ignoring duplicate cumulative ACK:", ackStr);
+  //  }
+  //  return;
+  //}
   lastRangeAck = ackStr;
 
   console.log("Receiver: Cumulative ACK for file", transfer.header.fileId, ":", ackStr);
@@ -1105,7 +1105,11 @@ if (!transfer) {
     return;
   }
   if (transfer.ackRetryCount >= transfer.maxAckRetries) {
-    console.log("Receiver: ACK retry max reached (" + transfer.maxAckRetries + "). No further retries.");
+    console.log("Receiver: ACK retry max reached (" + transfer.maxAckRetries + "). Aborting transfer.");
+    // Mark the transfer as aborted or remove it from activeTransfers.
+    delete activeTransfers[senderStr + "_" + transfer.header.fileId];
+    updateReceiverProgressUI();
+    updateStatus("Receiver: Transfer for file " + transfer.header.fileId + " aborted due to ACK timeout.");
     transfer.ackTimer = null;
     return;
   }
@@ -1750,6 +1754,40 @@ document.getElementById('senderCallsign').addEventListener('input', function() {
 document.getElementById('receiverCallsign').addEventListener('input', function() {
   this.value = this.value.toUpperCase();
 });
+// Periodically check for transfers that haven't received new packets and force an ACK resend.
+setInterval(() => {
+  const now = Date.now();
+  for (const key in activeTransfers) {
+    const transfer = activeTransfers[key];
+    // Skip transfers that are already finalized.
+    if (transfer.finalHandshakeReceived || transfer.completed) continue;
+    
+    // Log the current retry count and max retries.
+    console.log(`Periodic check for transfer ${key}: current retry ${transfer.ackRetryCount} of ${transfer.maxAckRetries}`);
+    
+    // Check if maximum ACK retries have been reached.
+    if (transfer.ackRetryCount >= transfer.maxAckRetries) {
+      console.log(`Receiver: Maximum ACK retries reached for transfer ${key} (retry ${transfer.ackRetryCount} of ${transfer.maxAckRetries}). Aborting transfer.`);
+      delete activeTransfers[key];
+      updateReceiverProgressUI();
+      updateStatus("Receiver: Transfer for file " + transfer.header.fileId + " aborted due to ACK timeout.");
+      continue;
+    }
+    
+    // If enough time has passed since the last packet, force a resend.
+    if (now - transfer.lastPacketTime > transfer.ackDelay) {
+      // Increment the retry counter here.
+      transfer.ackRetryCount++;
+      console.log(`Periodic check: ACK retry attempt ${transfer.ackRetryCount} for transfer ${key} (max ${transfer.maxAckRetries}). Resending ACK.`);
+      sendCumulativeAck(transfer, key.split("_")[0], transfer.header.fileId, true);
+      // Update the last packet time to prevent too-frequent retries.
+      transfer.lastPacketTime = now;
+    }
+  }
+}, 1000);
+
+
+
 
   </script>
 </body>

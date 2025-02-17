@@ -546,7 +546,7 @@ type Arguments struct {
 	Replace        bool    // Overwrite existing files if a new file is received with the same name.
 	OnlyFrom       string  // Only accept files from the specified callsign.
 	ExecuteTimeout float64 // Maximum seconds to allow executed file to run (0 means unlimited)
-	// Note: The receiver no longer has a Base64 flag; it determines encoding via the header.
+	Stdout         bool    // Output received file to stdout instead of saving
 }
 
 func parseArguments() *Arguments {
@@ -563,6 +563,7 @@ func parseArguments() *Arguments {
 	flag.BoolVar(&args.Replace, "replace", false, "Overwrite existing files if a new file is received with the same name")
 	flag.StringVar(&args.OnlyFrom, "only-from", "", "Only accept files from the specified callsign")
 	flag.Float64Var(&args.ExecuteTimeout, "execute-timeout", 0, "Maximum seconds to allow executed file to run (0 means unlimited)")
+	flag.BoolVar(&args.Stdout, "stdout", false, "Output the received file to stdout instead of saving to disk")
 	flag.Parse()
 
 	if args.MyCallsign == "" {
@@ -621,11 +622,14 @@ func receiverMain(args *Arguments) {
 				log.Printf("Packet intended for %s, not me (%s). Ignoring.", receiverStr, localCS)
 				continue
 			}
+
+			// If the transfer has not yet started, only accept header packets (seq == 1)
 			if _, ok := transfers[fileID]; !ok {
 				if seq != 1 {
 					log.Printf("Received non-header packet (seq=%d) for unknown transfer %s. Ignoring.", seq, fileID)
 					continue
 				}
+				// Process header packet to start new transfer.
 				headerPayload := parsed.Payload
 				headerInfo := string(headerPayload)
 				parts := strings.Split(headerInfo, "|")
@@ -670,7 +674,15 @@ func receiverMain(args *Arguments) {
 				log.Printf("Total packets required (including header): %d", totalPackets)
 				sendAck(conn, args.MyCallsign, sender, fileID, "0001")
 				continue
+			} else {
+				// Transfer already exists.
+				// If a duplicate header packet (seq==1) is received, ignore it.
+				if seq == 1 {
+					log.Printf("Duplicate header packet received for file %s; ignoring.", fileID)
+					continue
+				}
 			}
+
 			transfer := transfers[fileID]
 			transfer.LastReceived = time.Now()
 			transfer.RetryInterval = float64(transfer.TimeoutSeconds) + 1.5
@@ -709,6 +721,7 @@ func receiverMain(args *Arguments) {
 				transfer.RetryCount = 0
 				transfer.RetryInterval = float64(transfer.TimeoutSeconds)
 			}
+			// Check if all expected packets (excluding header) have been received.
 			if transfer.Total > 0 && len(transfer.Packets) == transfer.Total-1 {
 				overallElapsed := time.Since(transfer.StartTime).Seconds()
 				overallRate := float64(transfer.BytesReceived) / overallElapsed
@@ -765,7 +778,15 @@ func receiverMain(args *Arguments) {
 				} else {
 					log.Printf("Checksum mismatch! (Expected: %s, Got: %s)", transfer.MD5, calculatedMD5Str)
 				}
-				if args.Execute != "" && transfer.Filename == args.Execute {
+
+				// Output or process the file based on options.
+				if args.Stdout {
+					log.Printf("Outputting received file %s to stdout.", transfer.Filename)
+					_, err = os.Stdout.Write(fullData)
+					if err != nil {
+						log.Printf("Error writing to stdout: %v", err)
+					}
+				} else if args.Execute != "" && transfer.Filename == args.Execute {
 					log.Printf("Received file %s matches -execute option; executing file instead of saving.", transfer.Filename)
 					tmpFile, err := ioutil.TempFile("", "rxexec-")
 					if err != nil {

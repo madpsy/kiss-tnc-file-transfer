@@ -137,6 +137,18 @@ func encodeAX25Address(callsign string, isLast bool) []byte {
 	return addr
 }
 
+// decodeAX25Address decodes a 7‑byte AX.25 address into its callsign.
+func decodeAX25Address(addr []byte) string {
+	if len(addr) < 7 {
+		return ""
+	}
+	var call string
+	for i := 0; i < 6; i++ {
+		call += string(addr[i] >> 1)
+	}
+	return strings.TrimSpace(call)
+}
+
 // buildAX25Header builds an AX.25 header using the source and destination callsigns.
 func buildAX25Header(sender, receiver string) []byte {
 	dest := encodeAX25Address(receiver, false)
@@ -147,8 +159,6 @@ func buildAX25Header(sender, receiver string) []byte {
 }
 
 // buildPacket builds a packet with the appropriate info field.
-// In our design, the header packet (seq==1) contains the header payload (which itself includes the encoding method)
-// while all other packets use file data chunks.
 func buildPacket(sender, receiver string, seq, totalDataPackets int, payload []byte, fileID string, burstTo int) []byte {
 	sStr := padCallsign(sender)
 	rStr := padCallsign(receiver)
@@ -185,121 +195,125 @@ type Packet struct {
 
 // parsePacket parses an unescaped packet.
 func parsePacket(packet []byte) *Packet {
-    if len(packet) < 16 {
-        return nil
-    }
-    // Skip the first 16 bytes (AX.25 header)
-    infoAndPayload := packet[16:]
-    
-    // NEW: Check if this is an ACK packet.
-    prefix := string(infoAndPayload[:min(50, len(infoAndPayload))])
-    if strings.Contains(prefix, "ACK:") {
-        fullInfo := string(infoAndPayload)
-        parts := strings.Split(fullInfo, "ACK:")
-        if len(parts) >= 2 {
-            ackVal := strings.Trim(strings.Trim(parts[1], ":"), " ")
-            return &Packet{
-                Type:    "ack",
-                Ack:     ackVal,
-                RawInfo: fullInfo,
-            }
-        }
-    }
-    
-    var infoField, payload []byte
-    // For header packets: the info field ends with a colon after "0001".
-    if len(infoAndPayload) >= 27 && string(infoAndPayload[23:27]) == "0001" {
-        idx := bytes.IndexByte(infoAndPayload[27:], ':')
-        if idx == -1 {
-            return nil
-        }
-        endIdx := 27 + idx + 1
-        infoField = infoAndPayload[:endIdx]
-        payload = infoAndPayload[endIdx:]
-    } else {
-        // For data packets: fixed info field length.
-        if len(infoAndPayload) < 32 {
-            return nil
-        }
-        infoField = infoAndPayload[:32]
-        payload = infoAndPayload[32:]
-    }
+	if len(packet) < 16 {
+		return nil
+	}
+	// Extract sender from AX.25 header (bytes 7-14)
+	senderCallsign := decodeAX25Address(packet[7:14])
 
-    infoStr := string(infoField)
-    parts := strings.Split(infoStr, ":")
-    if len(parts) < 4 {
-        return nil
-    }
-    splitSR := strings.Split(parts[0], ">")
-    if len(splitSR) != 2 {
-        return nil
-    }
-    sender := strings.TrimSpace(splitSR[0])
-    receiver := strings.TrimSpace(splitSR[1])
-    fileID := strings.TrimSpace(parts[1])
-    seqBurst := strings.TrimSpace(parts[2])
-    var seq int
-    var burstTo int
-    total := 0
-    if strings.Contains(seqBurst, "/") {
-        if len(seqBurst) < 8 {
-            return nil
-        }
-        seq = 1
-        burstPart := seqBurst[4:8]
-        b, err := strconv.ParseInt(burstPart, 16, 32)
-        if err != nil {
-            return nil
-        }
-        burstTo = int(b)
-        spl := strings.Split(seqBurst, "/")
-        if len(spl) < 2 {
-            return nil
-        }
-        t, err := strconv.ParseInt(spl[1], 16, 32)
-        if err != nil {
-            return nil
-        }
-        total = int(t)
-    } else {
-        if len(seqBurst) != 8 {
-            return nil
-        }
-        seqInt, err1 := strconv.ParseInt(seqBurst[:4], 16, 32)
-        burstInt, err2 := strconv.ParseInt(seqBurst[4:], 16, 32)
-        if err1 != nil || err2 != nil {
-            return nil
-        }
-        seq = int(seqInt)
-        burstTo = int(burstInt)
-    }
+	infoAndPayload := packet[16:]
+	// Check if this is an ACK packet.
+	prefix := string(infoAndPayload[:min(50, len(infoAndPayload))])
+	if strings.Contains(prefix, "ACK:") {
+		fullInfo := string(infoAndPayload)
+		parts := strings.Split(fullInfo, "ACK:")
+		if len(parts) >= 2 {
+			ackVal := strings.Trim(strings.Trim(parts[1], ":"), " ")
+			// Attempt to extract fileID from the info field.
+			infoParts := strings.Split(fullInfo, ":")
+			fileID := ""
+			if len(infoParts) > 1 {
+				fileID = strings.TrimSpace(infoParts[1])
+			}
+			return &Packet{
+				Type:    "ack",
+				Sender:  senderCallsign,
+				FileID:  fileID,
+				Ack:     ackVal,
+				RawInfo: fullInfo,
+			}
+		}
+	}
 
-    // For header packets (seq==1), parse the header payload to extract the encoding method.
-    var encodingMethod byte = 0
-    if seq == 1 {
-        // The header payload follows the format:
-        // timeout|timeoutRetries|filename|origSize|compSize|md5|fileID|encodingMethod|compress|totalPackets
-        headerFields := strings.Split(string(payload), "|")
-        if len(headerFields) >= 10 {
-            if val, err := strconv.Atoi(headerFields[7]); err == nil {
-                encodingMethod = byte(val)
-            }
-        }
-    }
-    return &Packet{
-        Type:           "data",
-        Sender:         sender,
-        Receiver:       receiver,
-        FileID:         fileID,
-        Seq:            seq,
-        BurstTo:        burstTo,
-        Total:          total,
-        Payload:        payload,
-        RawInfo:        infoStr,
-        EncodingMethod: encodingMethod,
-    }
+	var infoField, payload []byte
+	// For header packets: info field ends with colon after "0001".
+	if len(infoAndPayload) >= 27 && string(infoAndPayload[23:27]) == "0001" {
+		idx := bytes.IndexByte(infoAndPayload[27:], ':')
+		if idx == -1 {
+			return nil
+		}
+		endIdx := 27 + idx + 1
+		infoField = infoAndPayload[:endIdx]
+		payload = infoAndPayload[endIdx:]
+	} else {
+		if len(infoAndPayload) < 32 {
+			return nil
+		}
+		infoField = infoAndPayload[:32]
+		payload = infoAndPayload[32:]
+	}
+
+	infoStr := string(infoField)
+	parts := strings.Split(infoStr, ":")
+	if len(parts) < 4 {
+		return nil
+	}
+	splitSR := strings.Split(parts[0], ">")
+	if len(splitSR) != 2 {
+		return nil
+	}
+	sender := strings.TrimSpace(splitSR[0])
+	receiver := strings.TrimSpace(splitSR[1])
+	fileID := strings.TrimSpace(parts[1])
+	seqBurst := strings.TrimSpace(parts[2])
+	var seq int
+	var burstTo int
+	total := 0
+	if strings.Contains(seqBurst, "/") {
+		if len(seqBurst) < 8 {
+			return nil
+		}
+		seq = 1
+		burstPart := seqBurst[4:8]
+		b, err := strconv.ParseInt(burstPart, 16, 32)
+		if err != nil {
+			return nil
+		}
+		burstTo = int(b)
+		spl := strings.Split(seqBurst, "/")
+		if len(spl) < 2 {
+			return nil
+		}
+		t, err := strconv.ParseInt(spl[1], 16, 32)
+		if err != nil {
+			return nil
+		}
+		total = int(t)
+	} else {
+		if len(seqBurst) != 8 {
+			return nil
+		}
+		seqInt, err1 := strconv.ParseInt(seqBurst[:4], 16, 32)
+		burstInt, err2 := strconv.ParseInt(seqBurst[4:], 16, 32)
+		if err1 != nil || err2 != nil {
+			return nil
+		}
+		seq = int(seqInt)
+		burstTo = int(burstInt)
+	}
+	// For header packets (seq==1), extract encodingMethod from the header payload.
+	var encodingMethod byte = 0
+	if seq == 1 {
+		headerFields := strings.Split(string(payload), "|")
+		if len(headerFields) >= 10 {
+			if val, err := strconv.Atoi(headerFields[7]); err == nil {
+				encodingMethod = byte(val)
+			}
+		}
+	}
+	return &Packet{
+		Type:           "data",
+		Sender:         sender,
+		Receiver:       receiver,
+		FileID:         fileID,
+		Seq:            seq,
+		BurstTo:        burstTo,
+		Total:          total,
+		Payload:        payload,
+		RawInfo:        infoStr,
+		EncodingMethod: encodingMethod,
+	}
 }
-
 
 func min(a, b int) int {
 	if a < b {
@@ -367,7 +381,6 @@ func (t *TCPKISSConnection) RecvData(timeout time.Duration) ([]byte, error) {
 	n, err := t.conn.Read(buf)
 	if err != nil {
 		if err == io.EOF {
-			// Treat EOF as no data.
 			return []byte{}, nil
 		}
 		if nErr, ok := err.(net.Error); ok && nErr.Timeout() {
@@ -405,7 +418,6 @@ func newSerialKISSConnection(portName string, baud int) (*SerialKISSConnection, 
 	if err != nil {
 		return nil, err
 	}
-	// Optionally, set a read timeout if desired.
 	if err := ser.SetReadTimeout(100 * time.Millisecond); err != nil {
 		return nil, err
 	}
@@ -425,7 +437,6 @@ func (s *SerialKISSConnection) RecvData(timeout time.Duration) ([]byte, error) {
 	n, err := s.ser.Read(buf)
 	if err != nil {
 		if err == io.EOF {
-			// Treat EOF as no data.
 			return []byte{}, nil
 		}
 		return nil, err
@@ -463,7 +474,6 @@ func (fr *FrameReader) Run() {
 	for fr.running {
 		data, err := fr.conn.RecvData(100 * time.Millisecond)
 		if err != nil {
-			// If EOF is returned, simply continue.
 			if err == io.EOF || strings.Contains(err.Error(), "use of closed network connection") {
 				continue
 			}
@@ -498,7 +508,6 @@ func (fr *FrameReader) Stop() {
 // Command‑Line Arguments
 // ---------------------
 
-// Arguments holds the command‑line arguments.
 type Arguments struct {
 	Role             string
 	MyCallsign       string
@@ -512,7 +521,7 @@ type Arguments struct {
 	Baud             int
 	File             string
 	Compress         bool
-	TimeoutSeconds   int // now an integer
+	TimeoutSeconds   int
 	TimeoutRetries   int
 	OneFile          bool
 	Base64           bool // Only valid when role == "sender"
@@ -550,7 +559,6 @@ func parseArguments() *Arguments {
 	} else if args.Role != "receiver" {
 		log.Fatalf("Role must be either sender or receiver.")
 	}
-	// In receiver mode, ignore any base64 flag.
 	if args.Role == "receiver" && args.Base64 {
 		log.Printf("Warning: -base64 flag is ignored in receiver mode.")
 		args.Base64 = false
@@ -606,7 +614,6 @@ func senderMain(args *Arguments) {
 	totalIncludingHeader := dataPacketCount + 1
 
 	// Build the header payload.
-	// Header format: timeout|timeoutRetries|filename|origSize|compSize|md5|fileID|encodingMethod|compress|totalPackets
 	encodingMethod := 0
 	if args.Base64 {
 		encodingMethod = 1
@@ -620,8 +627,7 @@ func senderMain(args *Arguments) {
 	log.Printf("Compressed to %d bytes, split into %d data packets (total packets including header: %d)", compressedSize, dataPacketCount, totalIncludingHeader)
 	log.Printf("MD5: %s  File ID: %s", md5Hash, fileID)
 
-	// Build the chunks array.
-	// We follow the original design: chunk 0 is the header, then the file data chunks.
+	// Build the chunks array (chunk 0 is header).
 	chunks := make([][]byte, 0, totalIncludingHeader)
 	chunks = append(chunks, headerPayload)
 	for i := 0; i < len(finalData); i += dataChunkSize {
@@ -690,7 +696,6 @@ func senderMain(args *Arguments) {
 		}
 	}
 
-	// sendPacket uses the prebuilt chunks.
 	sendPacket := func(seq int) int {
 		var burstTo int
 		if seq == 1 {
@@ -716,7 +721,7 @@ func senderMain(args *Arguments) {
 
 	waitForAck := func(numPackets int, isHeader bool) string {
 		retries := 0
-		overallTimeout := time.Duration(numPackets)*time.Duration(perPacketTimeout*float64(time.Second)) + time.Duration(args.TimeoutSeconds)*time.Second
+		overallTimeout := time.Duration(numPackets) * time.Duration(perPacketTimeout*float64(time.Second)) + time.Duration(args.TimeoutSeconds)*time.Second
 		for retries < args.TimeoutRetries {
 			deadline := time.Now().Add(overallTimeout)
 			for time.Now().Before(deadline) {
@@ -739,7 +744,7 @@ func senderMain(args *Arguments) {
 				log.Printf("Resending header packet (retry %d/%d).", retries, args.TimeoutRetries)
 				sendPacket(1)
 			}
-			overallTimeout = time.Duration(args.TimeoutSeconds)*time.Second * time.Duration(math.Pow(1.5, float64(retries)))
+			overallTimeout = time.Duration(args.TimeoutSeconds) * time.Second * time.Duration(math.Pow(1.5, float64(retries)))
 		}
 		return ""
 	}
@@ -869,11 +874,9 @@ func senderMain(args *Arguments) {
 		log.Printf("Overall bytes/sec: %.2f bytes/s", overallRate)
 		log.Printf("--------------")
 	}
-	overallElapsed := time.Since(overallStart).Seconds()
-	overallRate := float64(totalBytesSent) / overallElapsed
 	log.Printf("File transfer complete.")
 	log.Printf("=== Final Summary ===")
-	log.Printf("Total bytes sent: %d bytes in %.2fs (%.2f bytes/s).", totalBytesSent, overallElapsed, overallRate)
+	log.Printf("Total bytes sent: %d bytes in %.2fs (%.2f bytes/s).", totalBytesSent, time.Since(overallStart).Seconds(), float64(totalBytesSent)/time.Since(overallStart).Seconds())
 	log.Printf("Total retries: %d.", totalRetries)
 	log.Printf("=====================")
 	finalConfirmationInfo := fmt.Sprintf("%s>%s:%s:ACK:FIN-ACK", padCallsign(args.MyCallsign), padCallsign(args.ReceiverCallsign), fileID)
@@ -889,8 +892,15 @@ func senderMain(args *Arguments) {
 		case ackPkt := <-frameChan:
 			parsedAck := parsePacket(ackPkt)
 			if parsedAck != nil && parsedAck.Type == "ack" && strings.Contains(parsedAck.Ack, "FIN-ACK") {
-				log.Printf("Re-received cumulative ACK from receiver, re-sending final confirmation FIN-ACK.")
-				conn.SendFrame(finalFrame)
+				// Only resend if the ACK comes from the expected receiver and fileID matches.
+				if strings.TrimSpace(parsedAck.Sender) == padCallsign(args.ReceiverCallsign) &&
+					strings.TrimSpace(parsedAck.FileID) == fileID {
+					log.Printf("Re-received cumulative ACK from expected receiver, re-sending final confirmation FIN-ACK.")
+					conn.SendFrame(finalFrame)
+				} else {
+					log.Printf("Ignored ACK from unexpected sender (%s) or mismatched fileID (expected: %s, got: %s).",
+						parsedAck.Sender, fileID, parsedAck.FileID)
+				}
 			}
 		case <-time.After(500 * time.Millisecond):
 		}
@@ -902,6 +912,8 @@ func senderMain(args *Arguments) {
 // ---------------------
 // Receiver Data Structures and Functions
 // ---------------------
+
+// (Receiver code remains unchanged.)
 
 // Transfer holds state for an incoming file transfer.
 type Transfer struct {
@@ -925,12 +937,10 @@ type Transfer struct {
 	DuplicateCount   int
 	BurstBytes       int
 	LastBurstAckTime time.Time
-	EncodingMethod   byte // 0 = binary, 1 = base64 (set from header)
+	EncodingMethod   byte // 0 = binary, 1 = base64
 }
 
 // computeCumulativeAck computes the highest contiguous sequence number received.
-// If only the header is present, it returns "0001".
-// Otherwise it returns "0001-XXXX" where XXXX is the highest contiguous packet.
 func computeCumulativeAck(t *Transfer) string {
 	var keys []int
 	for k := range t.Packets {
@@ -1029,7 +1039,6 @@ func receiverMain(args *Arguments) {
 				origSize, _ := strconv.Atoi(parts[3])
 				compSize, _ := strconv.Atoi(parts[4])
 				md5Hash := parts[5]
-				// parts[6] is fileID, parts[7] is encodingMethod, parts[8] is compress, parts[9] is total packets.
 				encodingMethodVal, _ := strconv.Atoi(parts[7])
 				compFlag := parts[8]
 				totalPackets, _ := strconv.Atoi(parts[9])
@@ -1061,6 +1070,11 @@ func receiverMain(args *Arguments) {
 				log.Printf("Total packets required (including header): %d", totalPackets)
 				sendAck(conn, args.MyCallsign, sender, fileID, "0001")
 				continue
+			} else {
+				if seq == 1 {
+					log.Printf("Duplicate header packet received for file %s; ignoring.", fileID)
+					continue
+				}
 			}
 			transfer := transfers[fileID]
 			transfer.LastReceived = time.Now()
@@ -1117,7 +1131,6 @@ func receiverMain(args *Arguments) {
 						complete = false
 						break
 					}
-					// Use the encoding method from the header.
 					if transfer.EncodingMethod == 1 {
 						decoded, err := base64.StdEncoding.DecodeString(string(part))
 						if err != nil {

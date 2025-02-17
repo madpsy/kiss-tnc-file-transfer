@@ -19,6 +19,7 @@
     The Sender is a core component of the AX.25 file‑transfer suite. It takes one or more files and transmits them as a series of AX.25 KISS‑framed packets.
     The Sender supports both file‑mode (sending a comma‑delimited list of files) and directory‑monitoring mode (watching a directory for new files to send).
     It features configurable window (burst) size, optional compression, and optional Base64 encoding of the payload.
+    Additionally, it can read data from standard input when required.
   </p>
 
   <h2>Table of Contents</h2>
@@ -39,6 +40,7 @@
   <p>
     A sliding‐window (burst) protocol is implemented to allow multiple packets to be sent before waiting for cumulative ACKs. The window size can be set manually or allowed to adjust automatically.
     In addition, the program can monitor a directory for new files (using <code>fsnotify</code>) instead of sending a fixed list of files.
+    The Sender also supports reading data from standard input. When using standard input, a filename must be provided to populate the header metadata.
   </p>
 
   <h2 id="installation">Installation &amp; Build</h2>
@@ -109,14 +111,14 @@ go build -o ax25sender sender.go
     <tr>
       <td><code>--file</code></td>
       <td>
-        Comma‑delimited list of files to send. (Mutually exclusive with <code>--file-directory</code>.)
+        Comma‑delimited list of files to send. (Mutually exclusive with <code>--file-directory</code> and <code>--stdin</code>.)
       </td>
       <td><em>empty</em></td>
     </tr>
     <tr>
       <td><code>--file-directory</code></td>
       <td>
-        Directory to monitor for files to send. (Mutually exclusive with <code>--file</code>.)
+        Directory to monitor for files to send. (Mutually exclusive with <code>--file</code> and <code>--stdin</code>.)
       </td>
       <td><em>empty</em></td>
     </tr>
@@ -162,6 +164,21 @@ go build -o ax25sender sender.go
       </td>
       <td><code>false</code></td>
     </tr>
+    <tr>
+      <td><code>--stdin</code></td>
+      <td>
+        Read file data from standard input instead of reading from a file or directory. (Mutually exclusive with <code>--file</code> and <code>--file-directory</code>.)
+      </td>
+      <td><code>false</code></td>
+    </tr>
+    <tr>
+      <td><code>--file-name</code></td>
+      <td>
+        Specifies the filename to be used in the header when reading data from standard input.
+        This option is required when <code>--stdin</code> is set.
+      </td>
+      <td><em>none</em></td>
+    </tr>
   </table>
 
   <h2 id="examples">Examples</h2>
@@ -201,10 +218,19 @@ go run sender.go --my-callsign=N0CALL --receiver-callsign=W1AW --connection=tcp 
 go run sender.go --my-callsign=N0CALL --receiver-callsign=W1AW --connection=tcp --host=127.0.0.1 --port=9001 --file="image.jpg" --window-size=6 --no-compress
   </pre>
 
+  <h3>Example 5: Reading Data from Standard Input</h3>
+  <p>
+    This example demonstrates how to pipe data into the sender using standard input.
+    The <code>--stdin</code> flag tells the sender to read from standard input, and the <code>--file-name</code> flag specifies the filename that will appear in the header.
+  </p>
+  <pre>
+cat mydata.bin | go run sender.go --my-callsign=N0CALL --receiver-callsign=W1AW --connection=tcp --host=127.0.0.1 --port=9001 --stdin --file-name="mydata.bin"
+  </pre>
+
   <h2 id="notes">Additional Notes</h2>
   <ul>
     <li>
-      Exactly one of <code>--file</code> or <code>--file-directory</code> must be specified. They are mutually exclusive.
+      Exactly one of <code>--file</code>, <code>--file-directory</code>, or <code>--stdin</code> must be specified. They are mutually exclusive.
     </li>
     <li>
       Compression is enabled by default. To disable it, use the <code>--no-compress</code> flag.
@@ -216,10 +242,17 @@ go run sender.go --my-callsign=N0CALL --receiver-callsign=W1AW --connection=tcp 
       The window size may be set to "auto" (the default) for dynamic adjustment based on ACK feedback, or a fixed value may be chosen from 1, 2, 4, 6, 8, or 10.
     </li>
     <li>
-      When in file‑directory mode, a filesystem watcher (<code>fsnotify</code>) monitors the directory for new or modified files. Existing files can be queued by specifying <code>--file-directory-existing</code>.
+      When in file‑directory mode, a filesystem watcher (<code>fsnotify</code>) monitors the directory for new or modified files.
+      Existing files can be queued by specifying <code>--file-directory-existing</code>.
+    </li>
+    <li>
+      When using standard input (<code>--stdin</code>), you must also specify <code>--file-name</code> to define the file name used in the header.
     </li>
   </ul>
 
   <h2 id="support">Contact &amp; Support</h2>
   <p>
-    For further questions, bug reports, or feature requests, please contact the project maintainer or visit the projec
+    For additional questions, issue reports, or support, please contact the project maintainer or visit the source repository.
+  </p>
+</body>
+</html>
