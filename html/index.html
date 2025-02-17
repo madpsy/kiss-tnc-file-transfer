@@ -879,16 +879,16 @@ function sendFinalFinAck(fileId) {
 }
 
     
-    // NEW: Final FIN-ACK retry loop functions
 function startFinAckWaitLoop() {
-  // Get the timeout from the UI (or default to 5000 ms)
-  finalAckTimeout = (parseFloat(document.getElementById('timeoutSeconds').value) * 1000) || 5000;
+  // Get the base timeout from the UI in seconds and convert to milliseconds.
+  let baseTimeout = parseFloat(document.getElementById('timeoutSeconds').value) * 1000;
+  // Multiply by 1.5. If baseTimeout is falsy (e.g., invalid), default to 7500 ms (which is 1.5 x 5000)
+  finalAckTimeout = baseTimeout ? baseTimeout * 1.5 : 7500;
   
   waitingForFinAck = true;
   console.log("Sender: Sending FIN-ACK and starting final wait period of " + finalAckTimeout + " ms.");
   sendFinalFinAck(currentFileId);
   
-  // Instead of retrying, wait for a single timeout period and then finish.
   finalAckRetryTimer = setTimeout(() => {
     console.log("Sender: Final wait period expired; ending FIN-ACK wait loop.");
     waitingForFinAck = false;
