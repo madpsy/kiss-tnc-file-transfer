@@ -478,7 +478,7 @@ function finalizeTransfer() {
 function startTransfer(fileId) {
   currentFileId = fileId; // Set current fileId to track for final ACK waiting
   waitingForFinAckMap[fileId] = true; // Set final ACK wait for this specific fileId
-  console.log("startTransfer with", fileId);
+  console.log("Transfer started with fileId:", currentFileId);
 }
 
     /***********************
@@ -946,15 +946,20 @@ function processRawPacket(packet) {
 
 if (infoText.indexOf(":ACK:FIN-ACK") !== -1) {
   let localCallsign = document.getElementById('senderCallsign').value.trim();
+  
   let intendedReceiver = infoText.substring(10, 19).trim();
+  let fileIdFromAck = infoText.substring(20, 22).trim();
 
-  if (intendedReceiver === localCallsign) {
-    console.log("Receiver: FIN-ACK received. Final handshake successful!");
-    // Mark all active transfers as complete and force ACK retries to stop.
+  console.log("FIN-ACK infoText:", infoText);
+  console.log("Extracted intendedReceiver:", `"${intendedReceiver}"`, " vs localCallsign:", `"${localCallsign}"`);
+  console.log("Extracted fileIdFromAck:", `"${fileIdFromAck}"`, " vs expected currentFileId:", `"${currentFileId}"`);
+
+  if (intendedReceiver === localCallsign && fileIdFromAck === currentFileId) {
+    console.log("Receiver: FIN-ACK received for correct fileId. Final handshake successful!");
+    // Mark all active transfers as complete and clear ACK timers.
     for (let key in activeTransfers) {
       let transfer = activeTransfers[key];
       transfer.finalHandshakeReceived = true;
-      transfer.ackRetryCount = transfer.maxAckRetries; // <-- Force the retry loop to exit
       if (transfer.ackTimer) {
         clearTimeout(transfer.ackTimer);
         transfer.ackTimer = null;
@@ -962,22 +967,14 @@ if (infoText.indexOf(":ACK:FIN-ACK") !== -1) {
       delete activeTransfers[key];
     }
     updateReceiverProgressUI();
-    return;
   } else {
-    // Sender branch – handle as before.
-    if (waitingForFinAck) {
-      console.log("Sender: FIN-ACK received. Final handshake successful!");
-      if (finalAckRetryTimer) {
-        clearTimeout(finalAckRetryTimer);
-        finalAckRetryTimer = null;
-      }
-      waitingForFinAck = false;
-    } else {
-      console.log("Sender: FIN-ACK received but not in final wait period; ignoring.");
-    }
-    return;
+    console.log("FIN-ACK received, but it does not match the expected callsign or fileId. Ignoring FIN-ACK.");
   }
+  return;
 }
+
+
+
 
 
 
@@ -1032,6 +1029,7 @@ if (infoText.indexOf(":ACK:FIN-ACK") !== -1) {
   // --- Header branch: When seq === 1, create a new transfer record ---
   if (seq === 1 && !activeTransfers[transferKeyFinal]) {
     console.log("Starting new transfer from sender", senderStr, "with file ID", packetFileId);
+    currentFileId = packetFileId;
     let headerPayloadText = new TextDecoder().decode(payloadChunk);
     let parts = headerPayloadText.split("|");
     const headerTimeout = (parseFloat(parts[0]) * 1000) + 1500;
