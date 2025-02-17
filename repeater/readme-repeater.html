@@ -137,9 +137,10 @@ go build -o ax25repeater repeater.go
       <td><code>false</code></td>
     </tr>
     <tr>
-      <td><code>--repeater-delay</code></td>
+      <td><code>--send-delay</code></td>
       <td>
-        Delay in milliseconds before forwarding ACK packets and starting a data burst.
+        Delay in milliseconds before sending frames to the TNC if we have just received a frame from it (a.k.a. turnaround). It specifies
+        the minimum time which must have passed before we start sending frames.
         This option should not normally be needed unless there are timing issues with the TNC.
       </td>
       <td><code>0</code></td>
