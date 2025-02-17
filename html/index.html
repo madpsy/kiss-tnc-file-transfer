@@ -4,13 +4,9 @@
   <meta charset="UTF-8">
   <title>KISS File Transfer</title>
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <!-- Bootstrap CSS -->
   <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css" rel="stylesheet">
-  <!-- Socket.IO -->
   <script src="https://cdnjs.cloudflare.com/ajax/libs/socket.io/4.8.1/socket.io.min.js"></script>
-  <!-- CryptoJS for MD5 checksum -->
   <script src="https://cdnjs.cloudflare.com/ajax/libs/crypto-js/4.1.1/crypto-js.min.js"></script>
-  <!-- Pako for compression/decompression -->
   <script src="https://cdnjs.cloudflare.com/ajax/libs/pako/2.1.0/pako.min.js"></script>
   <style>
     body { padding: 20px; }
@@ -29,120 +25,105 @@
 </head>
 <body>
   <div class="container">
-    <h1>
-      KISS File Transfer
-      <span id="connectionStatusDot"></span>
-    </h1>
-    
-    <!-- Connection Type Dropdown -->
+    <h1>KISS File Transfer <span id="connectionStatusDot"></span></h1>
     <div class="mb-3">
-      <label for="connectionType" class="form-label">Connection Type</label>
-      <select id="connectionType" class="form-select">
-        <option value="websockets" selected>Websockets</option>
-        <option value="serial">Serial</option>
+      <label for="connectionType" class="form-label">Connection Type</label> <select id="connectionType" class="form-select">
+        <option value="websockets" selected>
+          Websockets
+        </option>
+        <option value="serial">
+          Serial
+        </option>
       </select>
     </div>
-    
-    <!-- Serial Settings -->
     <div id="serialSettings" style="display: none;">
       <div class="mb-3">
-        <label for="baudRate" class="form-label">Baud Rate</label>
-        <select id="baudRate" class="form-select">
-          <option value="9600">9600</option>
-          <option value="14400">14400</option>
-          <option value="19200">19200</option>
-          <option value="38400">38400</option>
-          <option value="57600">57600</option>
-          <option value="115200" selected>115200</option>
+        <label for="baudRate" class="form-label">Baud Rate</label> <select id="baudRate" class="form-select">
+          <option value="9600">
+            9600
+          </option>
+          <option value="14400">
+            14400
+          </option>
+          <option value="19200">
+            19200
+          </option>
+          <option value="38400">
+            38400
+          </option>
+          <option value="57600">
+            57600
+          </option>
+          <option value="115200" selected>
+            115200
+          </option>
         </select>
-      </div>
-      <button id="serialConnectBtn" class="btn btn-primary">Connect</button>
-      <button id="serialDisconnectBtn" class="btn btn-secondary" style="display: none;">Disconnect</button>
-    </div>
-    <br>
-    <!-- User Settings -->
+      </div><button id="serialConnectBtn" class="btn btn-primary">Connect</button> <button id="serialDisconnectBtn" class="btn btn-secondary" style="display: none;">Disconnect</button>
+    </div><br>
     <div class="mb-3">
-      <label for="senderCallsign" class="form-label">Your Callsign</label>
-      <input type="text" id="senderCallsign" class="form-control" placeholder="Enter your callsign">
+      <label for="senderCallsign" class="form-label">Your Callsign</label> <input type="text" id="senderCallsign" class="form-control" placeholder="Enter your callsign">
     </div>
     <div class="mb-3">
-      <label for="receiverCallsign" class="form-label">Receiver Callsign (for sending)</label>
-      <input type="text" id="receiverCallsign" class="form-control" placeholder="Enter receiver callsign">
+      <label for="receiverCallsign" class="form-label">Receiver Callsign (for sending)</label> <input type="text" id="receiverCallsign" class="form-control" placeholder="Enter receiver callsign">
     </div>
-    <!-- Encoding Method Selector -->
     <div class="mb-3">
-      <label for="encodingMethod" class="form-label">Encoding Method</label>
-      <select id="encodingMethod" class="form-select">
-        <option value="binary" selected>Binary (fastest)</option>
-        <option value="base64">Base64 (max compatibility)</option>
+      <label for="encodingMethod" class="form-label">Encoding Method</label> <select id="encodingMethod" class="form-select">
+        <option value="binary" selected>
+          Binary (fastest)
+        </option>
+        <option value="base64">
+          Base64 (max compatibility)
+        </option>
       </select>
     </div>
     <div class="mb-3">
-      <label for="fileInput" class="form-label">File to Send</label>
-      <input type="file" id="fileInput" class="form-control">
-    </div>
-    <!-- Timeout Settings -->
-    <div class="mb-3">
-      <label for="timeoutSeconds" class="form-label">Timeout Seconds</label>
-      <input type="number" id="timeoutSeconds" class="form-control" value="10" step="0.1">
+      <label for="fileInput" class="form-label">File to Send</label> <input type="file" id="fileInput" class="form-control">
     </div>
     <div class="mb-3">
-      <label for="timeoutRetries" class="form-label">Timeout Retries</label>
-      <input type="number" id="timeoutRetries" class="form-control" value="5">
+      <label for="timeoutSeconds" class="form-label">Timeout Seconds</label> <input type="number" id="timeoutSeconds" class="form-control" value="10" step="0.1">
     </div>
-    
-    <!-- Compress, Retries, and Burst Count Controls -->
+    <div class="mb-3">
+      <label for="timeoutRetries" class="form-label">Timeout Retries</label> <input type="number" id="timeoutRetries" class="form-control" value="5">
+    </div>
     <div class="mb-3">
       <div class="form-check" style="display: inline-block;">
-        <input type="checkbox" class="form-check-input" id="compressCheckbox" checked>
-        <label class="form-check-label" for="compressCheckbox">Compress</label>
+        <input type="checkbox" class="form-check-input" id="compressCheckbox" checked> <label class="form-check-label" for="compressCheckbox">Compress</label>
       </div>
-      <!-- Burst Count Slider / Auto Controls -->
       <div class="inline-control">
-        <label for="burstSlider" class="form-label" style="margin-bottom: 0;">
-          Window Size: <span id="burstValue">4</span>
-        </label>
-        <input type="range" class="form-range" id="burstSlider" min="0" max="5" step="1" value="2">
+        <label for="burstSlider" class="form-label" style="margin-bottom: 0;">Window Size: <span id="burstValue">4</span></label> <input type="range" class="form-range" id="burstSlider" min="0" max="5" step="1" value="2">
       </div>
       <div class="inline-control">
         <div class="form-check" style="margin-left: 10px;">
-          <input type="checkbox" class="form-check-input" id="autoBurstCheckbox" checked>
-          <label class="form-check-label" for="autoBurstCheckbox">Auto</label>
+          <input type="checkbox" class="form-check-input" id="autoBurstCheckbox" checked> <label class="form-check-label" for="autoBurstCheckbox">Auto</label>
         </div>
       </div>
-    </div>
-    
-    <button id="sendFileBtn" class="btn btn-primary">Send File</button>
+    </div><button id="sendFileBtn" class="btn btn-primary">Send File</button>
     <div id="status"></div>
-    
     <hr>
     <h2>Sender Progress</h2>
     <div id="senderProgress">
       <p>No file being sent.</p>
     </div>
-    
     <hr>
     <h2>Sent Files</h2>
     <div id="sentFiles">
       <p>No files sent yet.</p>
     </div>
-    
     <hr>
     <h2>Receiver Progress</h2>
     <div id="receiverProgress">
       <p>No active transfers.</p>
     </div>
-    
     <hr>
     <h2>Received Files</h2>
     <div id="receivedFiles">
       <p>No files received yet.</p>
     </div>
   </div>
-  
-  <!-- Bootstrap Bundle -->
-  <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/js/bootstrap.bundle.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/js/bootstrap.bundle.min.js"></script> 
   <script>
+
+
     /***********************
      * Global Variables
      ***********************/
@@ -212,7 +193,7 @@
      * Persistence Functions
      ***********************/
 
-function waitForHeaderAck() {
+  function waitForHeaderAck() {
   if (headerAckReceived) return; // Header ACK was received, so no need to wait further.
   headerRetryCount++;
   const timeoutRetries = parseInt(document.getElementById('timeoutRetries')?.value, 10) || 5;
@@ -228,7 +209,7 @@ function waitForHeaderAck() {
   // Increase the timeout for the next retry (exponential backoff)
   let newTimeout = defaultHeaderTimeout * Math.pow(1.5, headerRetryCount);
   headerAckTimer = setTimeout(waitForHeaderAck, newTimeout);
-}
+  }
 
 
     function saveReceivedFilesToLocalStorage(filesArray) {
@@ -397,12 +378,12 @@ function waitForHeaderAck() {
   }
   const now = Date.now();
   const elapsed = (now - sentFileStats.startTime) / 1000;
-  
+
   // Calculate the percentage of packets acked and sent
   const ackedPercent = Math.floor((currentPacketIndex / totalPackets) * 100);
   const sentPercent = Math.floor((highestPacketSentSoFar / totalPackets) * 100);
   const orangePercent = sentPercent - ackedPercent; // sent but not yet acked
-  
+
   let eta = "N/A";
   if (ackedPercent > 0) {
     let estimatedTotal = elapsed / (ackedPercent / 100);
@@ -411,7 +392,7 @@ function waitForHeaderAck() {
   const transferRate = elapsed > 0 ? sentFileStats.bytesSent / elapsed : 0;
   const retriesSoFar = totalRetries + currentRetries;
   const retryPercent = totalPackets ? Math.round((retriesSoFar / totalPackets) * 100) : 0;
-  
+
   let statusText = "";
   if (ackTimer || (senderState === "Awaiting ACK" && (now - senderStateTimestamp < 1000))) {
     statusText = '<span style="color: orange; font-weight: bold;">Awaiting ACK</span>';
@@ -419,7 +400,7 @@ function waitForHeaderAck() {
     senderState = "Sending";
     statusText = '<span style="color: red; font-weight: bold;">Sending</span>';
   }
-  
+
   container.innerHTML = `
     <h5>To ${sentFileStats.receiver} – ${sentFileStats.fileName} (ID: ${sentFileStats.fileId})<br>
       (Acked: ${currentPacketIndex} / ${totalPackets}, Sent: ${highestPacketSentSoFar} / ${totalPackets})
@@ -448,10 +429,10 @@ function waitForHeaderAck() {
       <button class="btn btn-danger btn-sm" onclick="cancelSenderTransfer()">Cancel</button>
     </div>
   `;
-}
+  }
 
 
-function finalizeTransfer() {
+  function finalizeTransfer() {
   updateStatus("File transfer complete.");
   sentFileStats.endTime = Date.now();
   sentFileStats.totalTime = ((sentFileStats.endTime - sentFileStats.startTime) / 1000).toFixed(2);
@@ -472,14 +453,14 @@ function finalizeTransfer() {
   updateReceiverProgressUI();
   document.getElementById('sendFileBtn').disabled = false;
   startFinAckWaitLoop();
-}
+  }
 
 
-function startTransfer(fileId) {
+  function startTransfer(fileId) {
   currentFileId = fileId; // Set current fileId to track for final ACK waiting
   waitingForFinAckMap[fileId] = true; // Set final ACK wait for this specific fileId
   console.log("Transfer started with fileId:", currentFileId);
-}
+  }
 
     /***********************
      * Receiver ACK Function
@@ -640,7 +621,7 @@ function startTransfer(fileId) {
     /***********************
      * Receiver ACK Functions
      ***********************/
- function sendCumulativeAck(transfer, sender, fileId, forceSend = false) {
+  function sendCumulativeAck(transfer, sender, fileId, forceSend = false) {
   if (transfer.finalHandshakeReceived) {
     console.log("Final handshake received; skipping cumulative ACK.");
     return;
@@ -676,13 +657,13 @@ function startTransfer(fileId) {
 
   // Update the last acknowledged packet in the transfer state.
   transfer.lastAcked = cumulative;
-}
+  }
 
     
     /***********************
      * ACK Processing Functions
      ***********************/
-function processAckFrame(infoText) {
+  function processAckFrame(infoText) {
   if (infoText.indexOf(":ACK:") === -1) return null;
   // Example: infoText is formatted like: "SENDER>RECEIVER:FI:ACK:ACK_VALUE"
   // Here, assume fileId is at a fixed position (positions 20 to 22)
@@ -690,11 +671,11 @@ function processAckFrame(infoText) {
   let parts = infoText.split(":ACK:");
   if (parts.length < 2) return null;
   return { fileId: fileIdExtracted, ack: parts[1].trim() };
-}
+  }
 
     
- 
-function processAck(ackContent) {
+
+  function processAck(ackContent) {
   // Ensure the current ack is for the correct fileId
   if (waitingForFinAckMap[currentFileId] && ackContent !== "0001" && waitingForFinAck) {
     console.log(`Sender: Received cumulative ACK during final wait for file ${currentFileId} (waitingForFinAck is ${waitingForFinAck}), re-sending final FIN-ACK.`);
@@ -771,12 +752,12 @@ function processAck(ackContent) {
   if (!burstInProgress && currentPacketIndex < totalPackets) {
     sendBurstPackets();
   }
-}
+  }
 
 
     
- 
-function processRangeAck(ackContent) {
+
+  function processRangeAck(ackContent) {
   // Expand the ACK range to get all acknowledged packet numbers.
   let receivedList = expandRanges(ackContent).sort((a, b) => a - b);
 
@@ -787,7 +768,7 @@ function processRangeAck(ackContent) {
     newIndex = expected;
     expected++;
   }
-  
+
   // If the new index is not greater than currentPacketIndex, it’s a duplicate.
   if (newIndex <= currentPacketIndex) {
     duplicateAckCount++;
@@ -800,7 +781,7 @@ function processRangeAck(ackContent) {
   duplicateAckCount = 0;
   lastRangeAck = ackContent;
   currentPacketIndex = newIndex;
-  
+
   console.log("Sender: Cumulative ACK received. Updating highest contiguous ACK to", newIndex);
 
   if (ackTimer) {
@@ -818,12 +799,12 @@ function processRangeAck(ackContent) {
     finalizeTransfer();
     return;
   }
-  
+
   // For non-auto mode, continue sending burst packets if needed.
   if (burstSize !== 0 && currentPacketIndex < totalPackets) {
     sendBurstPackets();
   }
-  
+
   // For auto mode, handle dynamic burst (automatic sliding window) logic.
   if (burstSize === 0) { 
     if (missingPackets.length === 0) {
@@ -851,13 +832,13 @@ function processRangeAck(ackContent) {
     }
     sendBurstPackets();
   }
-}
+  }
 
     
     /***********************
      * FIN-ACK Functions (Sender & Receiver) – UPDATED WITH RETRY LOOP
      ***********************/
-function sendFinalFinAck(fileId) {
+  function sendFinalFinAck(fileId) {
   if (waitingForFinAckMap[fileId]) {
     const finalInfo = padCallsign(sender) + '>' + padCallsign(receiver) + ':' + fileId + ':' + "ACK:FIN-ACK";
     const encoder = new TextEncoder();
@@ -876,24 +857,24 @@ function sendFinalFinAck(fileId) {
   } else {
     console.log(`Sender: No such fileId waiting for FIN-ACK ${fileId}.`);
   }
-}
+  }
 
     
-function startFinAckWaitLoop() {
+  function startFinAckWaitLoop() {
   // Get the base timeout from the UI in seconds and convert to milliseconds.
   let baseTimeout = parseFloat(document.getElementById('timeoutSeconds').value) * 1000;
   // Multiply by 1.5. If baseTimeout is falsy (e.g., invalid), default to 7500 ms (which is 1.5 x 5000)
   finalAckTimeout = baseTimeout ? baseTimeout * 1.5 : 7500;
-  
+
   waitingForFinAck = true;
   console.log("Sender: Sending FIN-ACK and starting final wait period of " + finalAckTimeout + " ms.");
   sendFinalFinAck(currentFileId);
-  
+
   finalAckRetryTimer = setTimeout(() => {
     console.log("Sender: Final wait period expired; ending FIN-ACK wait loop.");
     waitingForFinAck = false;
   }, finalAckTimeout);
-}
+  }
 
     
     function scheduleNextFinAckAttempt() {
@@ -916,7 +897,7 @@ function startFinAckWaitLoop() {
     /***********************
      * Process Raw Packet (Updated FIN-ACK handling)
      ***********************/
-function processRawPacket(packet) {
+  function processRawPacket(packet) {
   console.log("Processing raw packet:", packet);
   let packetBytes;
   if (typeof packet === 'string') {
@@ -944,9 +925,9 @@ function processRawPacket(packet) {
 
   // UPDATED FIN-ACK handling:
 
-if (infoText.indexOf(":ACK:FIN-ACK") !== -1) {
+  if (infoText.indexOf(":ACK:FIN-ACK") !== -1) {
   let localCallsign = document.getElementById('senderCallsign').value.trim();
-  
+
   let intendedReceiver = infoText.substring(10, 19).trim();
   let fileIdFromAck = infoText.substring(20, 22).trim();
 
@@ -971,7 +952,7 @@ if (infoText.indexOf(":ACK:FIN-ACK") !== -1) {
     console.log("FIN-ACK received, but it does not match the expected callsign or fileId. Ignoring FIN-ACK.");
   }
   return;
-}
+  }
 
 
 
@@ -1068,11 +1049,11 @@ if (infoText.indexOf(":ACK:FIN-ACK") !== -1) {
     return;
   }
 
-let transfer = activeTransfers[transferKeyFinal];
-if (!transfer) {
+  let transfer = activeTransfers[transferKeyFinal];
+  if (!transfer) {
   console.log("No active transfer record for", transferKeyFinal, "- transfer already finalized.");
   return;
-}
+  }
 
 
   let isDuplicate = !!transfer.received[seq];
@@ -1109,7 +1090,7 @@ if (!transfer) {
       console.log("Receiver: Reached highest burst seq (" + burstTo + "), ACKing immediately.");
       sendCumulativeAck(transfer, senderStr, transfer.header.fileId, true);
 
-(function ackRetry() {
+  (function ackRetry() {
   // Immediately exit if the final handshake is complete.
   if (transfer.finalHandshakeReceived) {
     console.log("Receiver: Final handshake done, stopping ACK retries.");
@@ -1135,7 +1116,7 @@ if (!transfer) {
     sendCumulativeAck(transfer, senderStr, transfer.header.fileId, true);
     ackRetry();
   }, nextDelay);
-})();
+  })();
 
 
     } else {
@@ -1269,7 +1250,7 @@ if (!transfer) {
     }
     updateReceiverProgressUI();
   }
-}
+  }
 
     
     /***********************
@@ -1285,8 +1266,8 @@ if (!transfer) {
         });
         let effectiveBurst = (burstSize === 0 ? currentBurstSizeDynamic : burstSize);
         const fixedTimeout = defaultPerPacketTimeout;
-	let effectiveTimeout = (burstSize === 0) ? perPacketTimeout : fixedTimeout;
-	const ackTimeout = effectiveBurst * effectiveTimeout + 500;
+        let effectiveTimeout = (burstSize === 0) ? perPacketTimeout : fixedTimeout;
+        const ackTimeout = effectiveBurst * effectiveTimeout + 500;
         senderState = "Awaiting ACK";
         senderStateTimestamp = Date.now();
         ackTimer = setTimeout(() => {
@@ -1426,34 +1407,34 @@ if (!transfer) {
                          ? !(socket && socket.connected) : !serialConnected;
     }
     
-function initializeWebSocket() {
+  function initializeWebSocket() {
   if (socket) return;
   socket = io('/');
   // Removed logging from onAny:
   socket.onAny((event, ...args) => { /* No logging here */ });
-  
+
   socket.on('connect', () => { 
     console.log("Websocket connected, id:", socket.id);
     updateConnectionIndicator();
   });
-  
+
   socket.on('disconnect', () => { 
     console.log("Websocket disconnected.");
     updateConnectionIndicator();
   });
-  
+
   socket.on('connect_error', (err) => { 
     // Removed logging for connect_error
     updateConnectionIndicator();
   });
-  
+
   socket.on('raw_kiss_frame', (packet) => { 
     // Removed logging for raw_kiss_frame
     processRawPacket(packet);
   });
-  
+
   updateConnectionIndicator();
-}
+  }
 
     
     async function readSerial() {
@@ -1665,7 +1646,7 @@ function initializeWebSocket() {
             fileId: fileId
           };
           updateStatus(`File compressed from ${fileData.length} bytes to ${finalData.length} bytes.
-File ID: ${fileId}`);
+  File ID: ${fileId}`);
           updateSenderProgressUI();
           // NEW: Initialize header retry variables and send header packet (seq 1)
           headerRetryCount = 0;
@@ -1758,15 +1739,15 @@ File ID: ${fileId}`);
         document.getElementById('sendFileBtn').disabled = false;
       }
     }
-document.getElementById('senderCallsign').addEventListener('input', function() {
+  document.getElementById('senderCallsign').addEventListener('input', function() {
   this.value = this.value.toUpperCase();
-});
+  });
 
-document.getElementById('receiverCallsign').addEventListener('input', function() {
+  document.getElementById('receiverCallsign').addEventListener('input', function() {
   this.value = this.value.toUpperCase();
-});
-// Periodically check for transfers that haven't received new packets and force an ACK resend.
-setInterval(() => {
+  });
+  // Periodically check for transfers that haven't received new packets and force an ACK resend.
+  setInterval(() => {
   const now = Date.now();
   for (const key in activeTransfers) {
     const transfer = activeTransfers[key];
@@ -1795,11 +1776,7 @@ setInterval(() => {
       transfer.lastPacketTime = now;
     }
   }
-}, 1000);
-
-
-
-
+  }, 1000);
   </script>
 </body>
 </html>
