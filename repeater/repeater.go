@@ -38,12 +38,42 @@ var (
 	debug           = flag.Bool("debug", false, "Enable extra debug logging")
 	// New flag to save files locally.
 	saveFiles = flag.Bool("save-files", false, "Save received files locally (reassemble from data packets)")
-	// New flag for repeater delay (in milliseconds)
-	repeaterDelay = flag.Int("repeater-delay", 0, "Delay in milliseconds before forwarding ACK packets and the start of a data burst")
+	// New flag for send delay (in milliseconds)
+	sendDelay = flag.Int("send-delay", 0, "Minimum delay in milliseconds after the TNC last sent us a frame before sending a frame to the TNC")
 )
 
 // Instead of a map for allowed callsigns, we now use a slice of patterns.
 var allowedCallsigns []string
+
+// Global variables to track when the TNC last sent us a frame.
+var (
+	lastTNCRecvTime  time.Time
+	lastTNCRecvMutex sync.Mutex
+)
+
+func updateLastTNCRecvTime() {
+	lastTNCRecvMutex.Lock()
+	lastTNCRecvTime = time.Now()
+	lastTNCRecvMutex.Unlock()
+}
+
+func waitForSendDelay() {
+	if *sendDelay <= 0 {
+		return
+	}
+	lastTNCRecvMutex.Lock()
+	t := lastTNCRecvTime
+	lastTNCRecvMutex.Unlock()
+	// If no frame has been received yet, send immediately.
+	if t.IsZero() {
+		return
+	}
+	delayDuration := time.Millisecond * time.Duration(*sendDelay)
+	elapsed := time.Since(t)
+	if elapsed < delayDuration {
+		time.Sleep(delayDuration - elapsed)
+	}
+}
 
 func debugf(format string, v ...interface{}) {
 	if *debug {
@@ -442,6 +472,8 @@ func newTCPKISSConnectionClient(host string, port int) (*tcpKISSConnection, erro
 func (t *tcpKISSConnection) SendFrameExcluding(frame []byte, exclude net.Conn) error {
 	t.lock.Lock()
 	defer t.lock.Unlock()
+	// Wait if necessary before sending.
+	waitForSendDelay()
 	_, err := t.conn.Write(frame)
 	debugf("Sent frame: % X", frame)
 	// Removed broadcasting to pass‑through clients from here.
@@ -497,6 +529,8 @@ func newSerialKISSConnection(portName string, baud int) (*serialKISSConnection, 
 func (s *serialKISSConnection) SendFrameExcluding(frame []byte, exclude net.Conn) error {
 	s.lock.Lock()
 	defer s.lock.Unlock()
+	// Wait if necessary before sending.
+	waitForSendDelay()
 	// Flush the serial port's output buffer before sending
 	if err := s.ser.ResetOutputBuffer(); err != nil {
 		log.Printf("Error flushing serial port: %v", err)
@@ -570,6 +604,7 @@ func (fr *FrameReader) Run() {
 		}
 		if len(data) > 0 {
 			debugf("FrameReader received %d bytes: % X", len(data), data)
+			updateLastTNCRecvTime()
 			fr.buffer = append(fr.buffer, data...)
 			frames, remaining := extractKISSFrames(fr.buffer)
 			fr.buffer = remaining
@@ -743,10 +778,7 @@ func processPacket(rawFrame []byte, conn KISSConnection) {
 			log.Printf("[Repeater] Resent HEADER from sender for fileID %s. Forwarding header to receiver.", tr.FileID)
 			conn.SendFrame(rawFrame)
 		} else if packet.Type == "ack" && (isFromReceiver || strings.ToUpper(packet.Ack) == "FIN-ACK") {
-			log.Printf("[Repeater] Received header ACK (%s) for fileID %s. Forwarding header ACK to sender after delay.", packet.Ack, tr.FileID)
-			if *repeaterDelay > 0 {
-				time.Sleep(time.Millisecond * time.Duration(*repeaterDelay))
-			}
+			log.Printf("[Repeater] Received header ACK (%s) for fileID %s. Forwarding header ACK to sender.", packet.Ack, tr.FileID)
 			conn.SendFrame(rawFrame)
 			tr.State = WaitBurst
 			debugf("State changed to WaitBurst")
@@ -756,13 +788,6 @@ func processPacket(rawFrame []byte, conn KISSConnection) {
 		}
 	case WaitBurst:
 		if isFromSender && packet.Type == "data" && packet.Seq > 1 {
-			// If this is the first data packet in a burst, delay processing the burst start.
-			if len(tr.BurstBuffer) == 0 {
-				log.Printf("[Repeater] Starting new data burst for fileID %s. Delaying %d ms before processing first packet.", tr.FileID, *repeaterDelay)
-				if *repeaterDelay > 0 {
-					time.Sleep(time.Millisecond * time.Duration(*repeaterDelay))
-				}
-			}
 			if _, exists := tr.BurstBuffer[packet.Seq]; exists {
 				log.Printf("[Repeater] Duplicate data packet seq %d for fileID %s. Forwarding immediately.", packet.Seq, tr.FileID)
 				conn.SendFrame(rawFrame)
@@ -780,10 +805,7 @@ func processPacket(rawFrame []byte, conn KISSConnection) {
 				debugf("State changed to WaitBurstAck")
 			}
 		} else if packet.Type == "ack" && (isFromReceiver || strings.ToUpper(packet.Ack) == "FIN-ACK") {
-			log.Printf("[Repeater] Received ACK (%s) in WaitBurst state for fileID %s. Forwarding ACK to sender after delay.", packet.Ack, tr.FileID)
-			if *repeaterDelay > 0 {
-				time.Sleep(time.Millisecond * time.Duration(*repeaterDelay))
-			}
+			log.Printf("[Repeater] Received ACK (%s) in WaitBurst state for fileID %s. Forwarding ACK to sender.", packet.Ack, tr.FileID)
 			conn.SendFrame(rawFrame)
 		} else {
 			log.Printf("[Repeater] In WaitBurst state; forwarding packet from %s.", packet.Sender)
@@ -791,10 +813,7 @@ func processPacket(rawFrame []byte, conn KISSConnection) {
 		}
 	case WaitBurstAck:
 		if packet.Type == "ack" && (isFromReceiver || strings.ToUpper(packet.Ack) == "FIN-ACK") {
-			log.Printf("[Repeater] Received burst ACK (%s) for fileID %s. Forwarding burst ACK to sender after delay.", packet.Ack, tr.FileID)
-			if *repeaterDelay > 0 {
-				time.Sleep(time.Millisecond * time.Duration(*repeaterDelay))
-			}
+			log.Printf("[Repeater] Received burst ACK (%s) for fileID %s. Forwarding burst ACK to sender.", packet.Ack, tr.FileID)
 			conn.SendFrame(rawFrame)
 			tr.State = WaitBurst
 			debugf("State changed to WaitBurst")
