@@ -2,7 +2,7 @@
 <html lang="en">
 <head>
   <meta charset="UTF-8">
-  <title>AX.25 Receiver Documentation</title>
+  <title>KISS File Transfer Receiver Documentation</title>
   <style>
     body { font-family: Arial, sans-serif; margin: 2em; line-height: 1.6; }
     h1, h2, h3 { color: #333; }
@@ -14,9 +14,9 @@
   </style>
 </head>
 <body>
-  <h1>AX.25 Receiver Documentation</h1>
+  <h1>KISS File Transfer Receiver Documentation</h1>
   <p>
-    The Receiver is part of the AX.25 file‑transfer suite. It connects to a TNC (using either a TCP or serial connection), listens for KISS‑framed file data, reassembles the packets into a complete file, verifies its integrity via an MD5 checksum, and either saves, executes, or outputs the file to standard output.
+    The Receiver is part of the file‑transfer suite. It connects to a TNC (using either a TCP or serial connection), listens for KISS‑framed file data, reassembles the packets into a complete file, verifies its integrity via an MD5 checksum, and either saves, executes, or outputs the file to standard output.
   </p>
 
   <h2>Table of Contents</h2>
@@ -31,7 +31,7 @@
 
   <h2 id="overview">Overview</h2>
   <p>
-    The Receiver program is designed to accept incoming file transfers sent using AX.25 KISS framing. It continuously reads from the underlying TNC connection, extracts and unescapes KISS frames, and parses packets.
+    The Receiver program is designed to accept incoming file transfers sent using KISS framing. It continuously reads from the underlying TNC connection, extracts and unescapes KISS frames, and parses packets.
   </p>
   <ul>
     <li>

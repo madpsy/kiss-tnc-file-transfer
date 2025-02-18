@@ -42,10 +42,10 @@
   <div class="section">
     <h2>Introduction</h2>
     <p>
-      The <strong>KISS File Transfer Protocol</strong> is implemented in several Go applications:
-      a combined app called <code>files</code> (which acts as either sender or receiver based on the <code>--role</code> flag),
+      The <strong>KISS File Transfer Protocol</strong> is implemented in several applications:
+      a combined Go app called <code>combined</code> (which acts as either sender or receiver based on the <code>--role</code> flag),
       as well as dedicated <code>sender</code> and <code>receiver</code> apps. In addition, a proxy app can be used to forward packets
-      between two KISS TNC connections. This protocol is designed for reliable file transfer over TCP or serial connections,
+      between two KISS TNC connections and a <code>repeater</code> which works with a single TNC. This protocol is designed for reliable file transfer over TCP or serial connections,
       even when the data is carried over RF links by radios.
     </p>
     <p>
@@ -75,9 +75,9 @@ function buildKISSFrame(packet):
     return FLAG + CMD + escaped_packet + FLAG
     </pre>
 
-    <h3>AX.25 Header</h3>
+    <h3>Header</h3>
     <p>
-      Each packet begins with a fixed 16-byte AX.25 header containing:
+      Each packet begins with a fixed 16-byte AX.25-style header containing:
     </p>
     <ul>
       <li><strong>Destination Callsign:</strong> 7 bytes (padded, uppercase, and bit-shifted).</li>
@@ -95,7 +95,7 @@ function buildAX25Header(source, destination):
 
     <h3>Info Field and Payload</h3>
     <p>
-      Immediately following the AX.25 header is the <strong>info field</strong>.
+      Immediately following the header is the <strong>info field</strong>.
       Its format depends on the packet type:
     </p>
 

@@ -2,7 +2,7 @@
 <html lang="en">
 <head>
   <meta charset="UTF-8">
-  <title>AX.25 KISS Proxy Documentation</title>
+  <title>KISS File Transfer Proxy Documentation</title>
   <style>
     body { font-family: Arial, sans-serif; margin: 2em; line-height: 1.6; }
     h1, h2, h3 { color: #333; }
@@ -14,9 +14,9 @@
   </style>
 </head>
 <body>
-  <h1>AX.25 KISS Proxy Documentation</h1>
+  <h1>KISS File Transfer Proxy Documentation</h1>
   <p>
-    This proxy application is designed to facilitate file transfers over AX.25 KISS connections while also allowing for pass‑through access via separate TCP ports.
+    This proxy application is designed to facilitate file transfers over KISS TNC connections while also allowing for pass‑through access via separate TCP ports.
     In non‑loop mode the proxy connects to TNC1 and TNC2 (using TCP or serial) for file‑transfer processing and additionally listens for pass‑through connections on dedicated TCP ports.
     In loop mode the application simply listens on the specified ports and echoes data.
   </p>
@@ -31,7 +31,7 @@
 
   <h2 id="overview">Overview</h2>
   <p>
-    The proxy is intended for environments where AX.25 file transfers need to be monitored or shared with additional clients.
+    The proxy is intended for environments where file transfers need to be bridged between two different TNCs, such as cross band or cross modulation.
     It supports two main modes:
   </p>
   <ul>

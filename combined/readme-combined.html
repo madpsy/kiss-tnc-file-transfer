@@ -2,7 +2,7 @@
 <html lang="en">
 <head>
   <meta charset="UTF-8">
-  <title>AX.25 Combined Sender/Receiver Documentation</title>
+  <title>KISS File Transfer combined Sender/Receiver Documentation</title>
   <style>
     body { font-family: Arial, sans-serif; margin: 2em; line-height: 1.6; }
     h1, h2, h3 { color: #333; }
@@ -14,9 +14,9 @@
   </style>
 </head>
 <body>
-  <h1>AX.25 Combined Sender/Receiver Documentation</h1>
+  <h1>KISS File Transfer Combined Sender/Receiver Documentation</h1>
   <p>
-    This program is a simplified, combined version of the AX.25 Sender and Receiver. It supports both sending and receiving files using AX.25 KISS‑framed packets.
+    This program is a simplified, combined version of the Sender and Receiver. It supports both sending and receiving files using KISS‑framed packets.
     The program’s behavior is selected via the <code>--role</code> flag, which can be set to either <code>sender</code> or <code>receiver</code>.
     In sender mode the program reads a file, optionally compresses and Base64‑encodes its contents, splits the data into chunks, and transmits the file along with a header packet.
     In receiver mode it listens for incoming packets, reassembles them into a file, verifies the MD5 checksum, and saves the file.
@@ -41,7 +41,7 @@
       <strong>Sender Mode:</strong> Reads a specified file, optionally compresses and encodes its contents, splits the data into chunks, builds a header packet (with metadata including file size, MD5 checksum, encoding method, etc.), and transmits the file using a sliding‑window (burst) protocol.
     </li>
     <li>
-      <strong>Receiver Mode:</strong> Listens for incoming AX.25 KISS‑framed packets, reassembles the header and data packets into a complete file, verifies the MD5 checksum, and saves the file.
+      <strong>Receiver Mode:</strong> Listens for incoming KISS‑framed packets, reassembles the header and data packets into a complete file, verifies the MD5 checksum, and saves the file.
     </li>
   </ul>
   <p>

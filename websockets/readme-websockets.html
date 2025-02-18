@@ -2,7 +2,7 @@
 <html lang="en">
 <head>
   <meta charset="UTF-8">
-  <title>AX.25 WebSockets Gateway Documentation</title>
+  <title>KISS File Transfer WebSockets Gateway Documentation</title>
   <style>
     body { font-family: Arial, sans-serif; margin: 2em; line-height: 1.6; }
     h1, h2, h3 { color: #333; }
@@ -14,9 +14,9 @@
   </style>
 </head>
 <body>
-  <h1>AX.25 WebSockets Gateway Documentation</h1>
+  <h1>KISS File Transfer WebSockets Gateway Documentation</h1>
   <p>
-    This program serves as a WebSockets and raw TCP gateway for AX.25 KISS data.
+    This program serves as a WebSockets and raw TCP gateway for KISS data.
     It establishes a connection to an underlying device (using either a serial port or a TCP connection)
     and then forwards complete KISS frames to connected clients via Socket.IO as well as raw TCP connections.
     Additionally, events from an active Socket.IO client are relayed back to the device.
@@ -33,7 +33,7 @@
 
   <h2 id="overview">Overview</h2>
   <p>
-    The WebSockets Gateway is designed to integrate with an AX.25 KISS device. It opens a connection to the device using either a serial port or a TCP connection, reads KISS-framed data, and:
+    The WebSockets Gateway is designed to integrate with a KISS TNC device. It opens a connection to the device using either a serial port or a TCP connection, reads KISS-framed data, and:
   </p>
   <ul>
     <li>
