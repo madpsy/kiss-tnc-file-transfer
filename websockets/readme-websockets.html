@@ -45,6 +45,9 @@
     <li>
       Forwards events from the active Socket.IO client back to the device.
     </li>
+    <li>
+      For TCP-based TNC connections, it monitors activity using a read deadline. If no data is received for the specified number of seconds, it triggers a reconnect.
+    </li>
   </ul>
 
   <h2 id="installation">Installation &amp; Build</h2>
@@ -120,6 +123,13 @@ go build -o ax25ws websockets.go
       </td>
       <td><code>false</code></td>
     </tr>
+    <tr>
+      <td><code>-tcp-read-deadline</code></td>
+      <td>
+        For TCP-based TNC connections, specifies the read deadline in seconds. If no data is received within this period, the connection is considered stalled and a reconnect is triggered.
+      </td>
+      <td><code>600</code></td>
+    </tr>
   </table>
 
   <h2 id="examples">Examples</h2>
@@ -132,15 +142,24 @@ go build -o ax25ws websockets.go
 go run websockets.go -connection=serial -serial-port=/dev/ttyUSB0 -baud=115200
   </pre>
 
-  <h3>Example 2: Using a TCP Connection</h3>
+  <h3>Example 2: Using a TCP Connection with Default Read Deadline</h3>
   <p>
     This command connects to the device over TCP at <code>192.168.1.50:8000</code> and starts the HTTP server on port 5000.
+    It uses the default read deadline of 600 seconds. If no data is received within 600 seconds, the gateway will reconnect to the device.
   </p>
   <pre>
 go run websockets.go -connection=tcp -host=192.168.1.50 -port=8000
   </pre>
 
-  <h3>Example 3: Custom HTTP Server Binding</h3>
+  <h3>Example 3: Using a TCP Connection with a Custom Read Deadline</h3>
+  <p>
+    The following command connects to the device over TCP at <code>192.168.1.50:8000</code> but sets the read deadline to 300 seconds.
+  </p>
+  <pre>
+go run websockets.go -connection=tcp -host=192.168.1.50 -port=8000 -tcp-read-deadline=300
+  </pre>
+
+  <h3>Example 4: Custom HTTP Server Binding</h3>
   <p>
     The following command runs the gateway with a TCP connection to the device, but binds the HTTP server to IP <code>127.0.0.1</code>
     on port <code>8080</code> (raw TCP will then listen on port <code>8081</code>):
@@ -149,7 +168,7 @@ go run websockets.go -connection=tcp -host=192.168.1.50 -port=8000
 go run websockets.go -connection=tcp -host=192.168.1.50 -port=8000 -listen-ip=127.0.0.1 -listen-port=8080
   </pre>
 
-  <h3>Example 4: Enabling Debug Logging</h3>
+  <h3>Example 5: Enabling Debug Logging</h3>
   <p>
     To enable verbose output for troubleshooting, use the <code>-debug</code> flag:
   </p>
@@ -170,6 +189,9 @@ go run websockets.go -connection=serial -serial-port=COM3 -baud=115200 -debug
     </li>
     <li>
       Only events from the most recently connected (active) Socket.IO client are forwarded to the device.
+    </li>
+    <li>
+      The <code>-tcp-read-deadline</code> flag applies only to TCP-based connections. It ensures that if no data is received from the remote TNC within the specified time (default 600 seconds), the connection will be closed and a reconnection attempt will be made.
     </li>
   </ul>
 

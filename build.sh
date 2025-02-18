@@ -14,7 +14,7 @@ while getopts "j:" opt; do
   case $opt in
     j)
       MAX_CONCURRENCY="$OPTARG"
-      # Ensure it's a non-negative integer
+      # Ensure it's a non-negative integer.
       if ! [[ "$MAX_CONCURRENCY" =~ ^[0-9]+$ ]]; then
         echo "Error: Maximum concurrency must be a non-negative integer."
         exit 1
@@ -37,19 +37,27 @@ if [ "$#" -eq 1 ]; then
   APP_FILTER="$1"
 fi
 
-# Create output and logs directories
+# Create output and logs directories.
 mkdir -p build
 mkdir -p build/logs
 
-# Arrays to keep track of background jobs
+# Remove any previous binary tracking files.
+rm -f build/logs/*-binaries.txt
+
+# Arrays to keep track of background jobs.
 declare -a pids
 declare -a app_names
 declare -a log_files
+declare -a failed_apps
 
 # Function to build a single app.
 build_app() {
   local app="$1"
   local logfile="$2"
+  # This file will track binaries built by this app.
+  local binaries_file="../build/logs/${app}-binaries.txt"
+  # Ensure any previous tracking file is removed.
+  rm -f "$binaries_file"
 
   {
     echo "=========================================="
@@ -75,20 +83,26 @@ build_app() {
     go mod tidy
 
     # Build for multiple platforms.
+
     echo "Building Linux (amd64) for $app..."
     env GOOS=linux GOARCH=amd64 go build -o ../build/${app}-linux-amd64 .
+    echo "build/${app}-linux-amd64" >> "$binaries_file"
 
     echo "Building macOS (amd64) for $app..."
     env GOOS=darwin GOARCH=amd64 go build -o ../build/${app}-darwin-amd64 .
+    echo "build/${app}-darwin-amd64" >> "$binaries_file"
 
     echo "Building Windows (amd64) for $app..."
     env GOOS=windows GOARCH=amd64 go build -o ../build/${app}-windows-amd64.exe .
+    echo "build/${app}-windows-amd64.exe" >> "$binaries_file"
 
     echo "Building Raspberry Pi 32-bit (linux/arm) for $app..."
     env GOOS=linux GOARCH=arm go build -o ../build/${app}-linux-arm .
+    echo "build/${app}-linux-arm" >> "$binaries_file"
 
     echo "Building Raspberry Pi 64-bit (linux/arm64) for $app..."
     env GOOS=linux GOARCH=arm64 go build -o ../build/${app}-linux-arm64 .
+    echo "build/${app}-linux-arm64" >> "$binaries_file"
 
     popd > /dev/null
   } &> "$logfile"
@@ -100,7 +114,7 @@ found=0
 for d in */ ; do
   APP_NAME="${d%/}"
   
-  # Skip the build directory
+  # Skip the build directory.
   if [ "$APP_NAME" == "build" ]; then
     continue
   fi
@@ -145,6 +159,7 @@ exit_status=0
 for i in "${!pids[@]}"; do
   if ! wait "${pids[$i]}"; then
     echo "Build failed for ${app_names[$i]}. Check its log file: ${log_files[$i]}"
+    failed_apps+=("${app_names[$i]}")
     exit_status=1
   fi
 done
@@ -158,5 +173,27 @@ for i in "${!app_names[@]}"; do
   cat "${log_files[$i]}"
 done
 
-exit $exit_status
+# Build summary
+echo ""
+echo "=========================================="
+echo "Build Summary"
+echo "=========================================="
 
+# Sum up all binaries recorded in the per-app tracking files.
+total_binaries=0
+for file in build/logs/*-binaries.txt; do
+  if [ -f "$file" ]; then
+    count=$(wc -l < "$file")
+    total_binaries=$((total_binaries + count))
+  fi
+done
+
+echo "Total binaries built: $total_binaries"
+
+if [ "${#failed_apps[@]}" -gt 0 ]; then
+  echo "The following builds failed: ${failed_apps[*]}"
+else
+  echo "All builds succeeded."
+fi
+
+exit $exit_status

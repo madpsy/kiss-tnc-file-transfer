@@ -1,0 +1,210 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <title>Passthrough Documentation</title>
+  <style>
+    body { font-family: Arial, sans-serif; margin: 2em; line-height: 1.6; }
+    h1, h2, h3 { color: #333; }
+    code { background-color: #f4f4f4; padding: 2px 4px; border-radius: 4px; }
+    pre { background-color: #f4f4f4; padding: 1em; overflow-x: auto; }
+    table { border-collapse: collapse; margin-bottom: 1em; }
+    th, td { border: 1px solid #ddd; padding: 8px; }
+    th { background-color: #eee; }
+  </style>
+</head>
+<body>
+  <h1>Passthrough Documentation</h1>
+  <p>
+    Passthrough is a lightweight bridge application that connects a Terminal Node Controller (TNC) to multiple TCP clients.
+    The application can connect to the TNC using either TCP or serial interfaces. Any data received from the TNC is broadcast to all connected clients,
+    while data sent by clients is forwarded to the TNC.
+  </p>
+  <p>
+    An optional <code>--send-delay</code> flag introduces a turnaround delay before client‑data is forwarded to the TNC after a received frame.
+    This feature is especially useful for preventing data collisions in environments where precise timing is critical.
+  </p>
+  <p>
+    In addition, the <code>--tcp-broadcast-port</code> flag allows you to open a dedicated one‑way broadcast port.
+    When set, all frames to and from the TNC and TCP clients are also sent out via this port.
+    Note that clients connecting to the broadcast port will only receive data and any data sent to this port is ignored.
+  </p>
+
+  <h2>Table of Contents</h2>
+  <ul>
+    <li><a href="#overview">Overview</a></li>
+    <li><a href="#installation">Installation &amp; Build</a></li>
+    <li><a href="#options">Command‑Line Options</a></li>
+    <li><a href="#examples">Examples</a></li>
+    <li><a href="#notes">Additional Notes</a></li>
+    <li><a href="#support">Contact &amp; Support</a></li>
+  </ul>
+
+  <h2 id="overview">Overview</h2>
+  <p>
+    The Passthrough application serves as a bidirectional bridge between a TNC device and TCP clients.
+    It supports two primary connection methods to the TNC:
+  </p>
+  <ul>
+    <li>
+      <strong>TCP Connection:</strong> Connect to the TNC over TCP using the provided host and port.
+    </li>
+    <li>
+      <strong>Serial Connection:</strong> Connect to the TNC via a serial interface using the specified port and baud rate.
+    </li>
+  </ul>
+  <p>
+    Data received from the TNC is forwarded to all connected TCP clients.
+    Similarly, any data received from a client is sent to the TNC.
+    If a frame is just received from the TNC, a configurable turnaround delay (using <code>--send-delay</code>)
+    can be applied before sending new frames from a client to the TNC.
+  </p>
+  <p>
+    Additionally, using the <code>--tcp-broadcast-port</code> option, you can enable a dedicated one‑way broadcast channel.
+    All frames passing through the bridge are also sent out on the specified broadcast port.
+  </p>
+
+  <h2 id="installation">Installation &amp; Build</h2>
+  <p>
+    To build the Passthrough application, ensure that you have <a href="https://golang.org/">Go</a> installed on your system.
+    Then, compile the program using the following command:
+  </p>
+  <pre>
+go build -o passthrough passthrough.go
+  </pre>
+
+  <h2 id="options">Command‑Line Options</h2>
+  <p>The table below lists all available command‑line options, their descriptions, and default values:</p>
+  <table>
+    <tr>
+      <th>Flag</th>
+      <th>Description</th>
+      <th>Default Value</th>
+    </tr>
+    <tr>
+      <td><code>--tnc-connection-type</code></td>
+      <td>Connection type for the TNC (<code>tcp</code> or <code>serial</code>).</td>
+      <td><code>tcp</code></td>
+    </tr>
+    <tr>
+      <td><code>--tnc-host</code></td>
+      <td>TCP host for the TNC (used when <code>--tnc-connection-type</code> is <code>tcp</code>).</td>
+      <td><code>127.0.0.1</code></td>
+    </tr>
+    <tr>
+      <td><code>--tnc-port</code></td>
+      <td>TCP port for the TNC (used when <code>--tnc-connection-type</code> is <code>tcp</code>).</td>
+      <td><code>9001</code></td>
+    </tr>
+    <tr>
+      <td><code>--tnc-serial-port</code></td>
+      <td>Serial port for the TNC (used when <code>--tnc-connection-type</code> is <code>serial</code>, e.g. <code>/dev/ttyUSB0</code> or <code>COM3</code>).</td>
+      <td><em>empty</em></td>
+    </tr>
+    <tr>
+      <td><code>--tnc-baud</code></td>
+      <td>Baud rate for the TNC serial connection.</td>
+      <td><code>115200</code></td>
+    </tr>
+    <tr>
+      <td><code>--client-listen-port</code></td>
+      <td>TCP port on which the application listens for client connections.</td>
+      <td><code>5010</code></td>
+    </tr>
+    <tr>
+      <td><code>--send-delay</code></td>
+      <td>
+        Delay (in milliseconds) before sending frames to the TNC after a frame has been received (i.e. turnaround delay).
+        Specifies the minimum time that must elapse before client data is forwarded.
+      </td>
+      <td><code>0</code></td>
+    </tr>
+    <tr>
+      <td><code>--tcp-read-deadline</code></td>
+      <td>
+        For TCP TNC connections only: the maximum time (in seconds) to wait for a complete frame from the TNC.
+        If no complete frame is received within this period, the connection is considered stalled and will be reestablished.
+      </td>
+      <td><code>600</code></td>
+    </tr>
+    <tr>
+      <td><code>--tcp-broadcast-port</code></td>
+      <td>
+        TCP port to broadcast all frames in a one‑way fashion.
+        If set (non‑zero), all frames to/from the TNC and TCP clients are additionally sent out this port.
+        Clients connecting to this port will only receive data.
+      </td>
+      <td><em>none (disabled)</em></td>
+    </tr>
+  </table>
+
+  <h2 id="examples">Examples</h2>
+  <h3>Example 1: TCP Connection with Default Settings</h3>
+  <p>
+    Run Passthrough using a TCP connection to the TNC with default host/port options, while listening for client connections on port <code>5010</code>:
+  </p>
+  <pre>
+go run passthrough.go
+  </pre>
+
+  <h3>Example 2: Serial Connection to TNC</h3>
+  <p>
+    In this example, the TNC is accessed via a serial interface (e.g. <code>/dev/ttyUSB0</code> on Unix or <code>COM3</code> on Windows) at 115200 baud:
+  </p>
+  <pre>
+go run passthrough.go --tnc-connection-type=serial --tnc-serial-port=/dev/ttyUSB0 --tnc-baud=115200
+  </pre>
+
+  <h3>Example 3: Enabling a Turnaround Delay</h3>
+  <p>
+    The following command configures a 100 millisecond delay before sending any client data to the TNC after receiving a frame:
+  </p>
+  <pre>
+go run passthrough.go --send-delay=100
+  </pre>
+
+  <h3>Example 4: Setting a Custom TCP Read Deadline</h3>
+  <p>
+    This command sets a custom TCP read deadline of 300 seconds. If no complete frame is received from the TCP TNC within this time, the connection will be reset:
+  </p>
+  <pre>
+go run passthrough.go --tcp-read-deadline=300
+  </pre>
+
+  <h3>Example 5: Enabling the TCP Broadcast Port</h3>
+  <p>
+    The following command opens a dedicated one‑way broadcast port on <code>7000</code>.
+    All frames passing through the bridge are also sent to any clients connected on port <code>7000</code>:
+  </p>
+  <pre>
+go run passthrough.go --tcp-broadcast-port=7000
+  </pre>
+
+  <h2 id="notes">Additional Notes</h2>
+  <ul>
+    <li>
+      When using serial connections, make sure you have the proper permissions to access the serial device.
+    </li>
+    <li>
+      The <code>--send-delay</code> flag is useful for preventing collisions on the TNC interface.
+      However, setting a high delay value may introduce unwanted latency.
+    </li>
+    <li>
+      Passthrough will continuously attempt to reconnect to the TNC if the connection is lost.
+      Meanwhile, connected TCP clients will continue to receive any available TNC data.
+    </li>
+    <li>
+      The <code>--tcp-read-deadline</code> flag applies only to TCP-based TNC connections. It ensures that if no complete frame is received within the specified time, the connection is considered stalled and a reconnect is triggered.
+    </li>
+    <li>
+      The <code>--tcp-broadcast-port</code> option creates a dedicated one‑way broadcast channel.
+      Data sent to this port is not processed; it is strictly for broadcasting frames.
+    </li>
+  </ul>
+
+  <h2 id="support">Contact &amp; Support</h2>
+  <p>
+    For further questions, bug reports, or to contribute to the Passthrough project, please contact the project maintainer or visit the source repository.
+  </p>
+</body>
+</html>

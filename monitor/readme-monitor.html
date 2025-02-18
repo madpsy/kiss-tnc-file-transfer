@@ -1,0 +1,189 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <title>KISS File Transfer Monitor Documentation</title>
+  <style>
+    body { font-family: Arial, sans-serif; margin: 2em; line-height: 1.6; }
+    h1, h2, h3 { color: #333; }
+    code { background-color: #f4f4f4; padding: 2px 4px; border-radius: 4px; }
+    pre { background-color: #f4f4f4; padding: 1em; overflow-x: auto; }
+    table { border-collapse: collapse; margin-bottom: 1em; }
+    th, td { border: 1px solid #ddd; padding: 8px; }
+    th { background-color: #eee; }
+  </style>
+</head>
+<body>
+  <h1>KISS File Transfer Monitor Documentation</h1>
+  <p>
+    The Monitor program connects to a broadcast server and displays incoming KISS‑framed packets from the file transfer system.
+    It decodes packets (including header, data, and ACK packets) and prints human‑readable summaries of their contents.
+    Optionally, the Monitor can publish raw packet data to an MQTT broker.
+  </p>
+
+  <h2>Table of Contents</h2>
+  <ul>
+    <li><a href="#overview">Overview</a></li>
+    <li><a href="#installation">Installation &amp; Build</a></li>
+    <li><a href="#options">Command‑Line Options</a></li>
+    <li><a href="#usage">Usage Examples</a></li>
+    <li><a href="#notes">Additional Notes</a></li>
+    <li><a href="#support">Contact &amp; Support</a></li>
+  </ul>
+
+  <h2 id="overview">Overview</h2>
+  <p>
+    The Monitor program is designed to assist in debugging and observing the file transfer process by decoding KISS‑framed packets.
+    It works with the KISS File Transfer combined Sender/Receiver system by:
+  </p>
+  <ul>
+    <li>
+      Connecting to a broadcast server (via TCP) and continuously reading incoming frames.
+    </li>
+    <li>
+      Removing the KISS framing and unescaping the data.
+    </li>
+    <li>
+      Decoding the packet’s fields – such as the sender and receiver callsigns, file ID, sequence numbers, header payload (including timeout settings), and ACK values.
+    </li>
+    <li>
+      Optionally publishing raw packet data to an MQTT broker for further processing.
+    </li>
+  </ul>
+
+  <h2 id="installation">Installation &amp; Build</h2>
+  <p>
+    To build the Monitor program, ensure that you have <a href="https://golang.org/">Go</a> installed.
+    Then compile the program using the following command:
+  </p>
+  <pre>
+go build -o kissmonitor monitor.go
+  </pre>
+
+  <h2 id="options">Command‑Line Options</h2>
+  <p>The table below lists the available command‑line options for the Monitor program along with their descriptions and default values.</p>
+  <table>
+    <tr>
+      <th>Flag</th>
+      <th>Description</th>
+      <th>Default Value</th>
+    </tr>
+    <tr>
+      <td><code>--host</code></td>
+      <td>
+        Host address of the broadcast server.
+      </td>
+      <td><code>127.0.0.1</code></td>
+    </tr>
+    <tr>
+      <td><code>--port</code></td>
+      <td>
+        TCP port of the broadcast server (required).
+      </td>
+      <td><em>none</em></td>
+    </tr>
+    <tr>
+      <td><code>--mqtt-host</code></td>
+      <td>
+        Hostname of the MQTT broker. If provided, all MQTT parameters must be specified.
+      </td>
+      <td><em>empty</em></td>
+    </tr>
+    <tr>
+      <td><code>--mqtt-port</code></td>
+      <td>
+        Port number of the MQTT broker.
+      </td>
+      <td><em>empty</em></td>
+    </tr>
+    <tr>
+      <td><code>--mqtt-user</code></td>
+      <td>
+        MQTT username.
+      </td>
+      <td><em>empty</em></td>
+    </tr>
+    <tr>
+      <td><code>--mqtt-pass</code></td>
+      <td>
+        MQTT password.
+      </td>
+      <td><em>empty</em></td>
+    </tr>
+    <tr>
+      <td><code>--mqtt-tls</code></td>
+      <td>
+        Use TLS for connecting to the MQTT broker.
+      </td>
+      <td><code>false</code></td>
+    </tr>
+    <tr>
+      <td><code>--mqtt-topic</code></td>
+      <td>
+        MQTT topic to which raw frames are published.
+      </td>
+      <td><em>empty</em></td>
+    </tr>
+    <tr>
+      <td><code>--ascii</code></td>
+      <td>
+        When set, displays raw frames as ASCII text instead of hexadecimal.
+      </td>
+      <td><code>false</code></td>
+    </tr>
+    <tr>
+      <td><code>--decode-file-transfer</code></td>
+      <td>
+        Attempt to decode known file transfer packets and display human‑readable summaries.
+      </td>
+      <td><code>false</code></td>
+    </tr>
+  </table>
+
+  <h2 id="usage">Usage Examples</h2>
+  <h3>Example 1: Monitor Mode over TCP (Decoding Enabled)</h3>
+  <p>
+    The following command connects to a broadcast server at <code>127.0.0.1</code> on port <code>9001</code> and decodes incoming file transfer packets.
+  </p>
+  <pre>
+go run monitor.go --host=127.0.0.1 --port=9001 --decode-file-transfer
+  </pre>
+
+  <h3>Example 2: Monitor Mode with MQTT Publishing</h3>
+  <p>
+    The following command connects to a broadcast server and publishes all raw frames to an MQTT broker at <code>mqtt.example.com:1883</code>.
+  </p>
+  <pre>
+go run monitor.go --host=127.0.0.1 --port=9001 --mqtt-host=mqtt.example.com --mqtt-port=1883 --mqtt-user=myuser --mqtt-pass=mypassword --mqtt-topic=kiss/frames
+  </pre>
+
+  <h3>Example 3: Monitor Mode with ASCII Output</h3>
+  <p>
+    The following command displays the raw unescaped frames as ASCII text.
+  </p>
+  <pre>
+go run monitor.go --host=127.0.0.1 --port=9001 --ascii
+  </pre>
+
+  <h2 id="notes">Additional Notes</h2>
+  <ul>
+    <li>
+      The <code>--port</code> flag is required.
+    </li>
+    <li>
+      When using MQTT, all MQTT parameters (<code>--mqtt-host</code>, <code>--mqtt-port</code>, <code>--mqtt-user</code>, <code>--mqtt-pass</code>, and <code>--mqtt-topic</code>) must be provided.
+    </li>
+    <li>
+      The <code>--decode-file-transfer</code> option instructs the program to parse and print details for file transfer packets (headers, data, and ACK packets).
+    </li>
+    <li>
+      ACK packets include an <code>ACK Value</code> field which may represent a range (e.g. <code>0001-XXXX</code>) or the final confirmation <code>FIN-ACK</code>.
+    </li>
+  </ul>
+
+  <h2 id="support">Contact &amp; Support</h2>
+  <p>
+    For questions, bug reports, or feature requests regarding the Monitor program, please contact the project maintainer or visit the project repository.
+  </p>
+</body>
+</html>

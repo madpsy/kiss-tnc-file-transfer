@@ -37,6 +37,16 @@ type DeviceConfig struct {
 
 var deviceConfig DeviceConfig
 
+// Global variables for reconnection and inactivity tracking.
+var (
+	// lastDataTime holds the time when data was last received.
+	lastDataTime time.Time
+	// Protects the reconnecting flag.
+	reconnectMutex sync.Mutex
+	// Indicates if a reconnect is already in progress.
+	reconnecting bool
+)
+
 // extractKISSFrames searches the provided data for complete frames.
 // It returns a slice of complete frames (each beginning and ending with KISS_FLAG)
 // and any leftover bytes.
@@ -141,10 +151,53 @@ func connectDevice(cfg DeviceConfig) (io.ReadWriteCloser, error) {
 			return nil, fmt.Errorf("failed to connect to TCP %s: %v", addr, err)
 		}
 		log.Printf("Opened TCP connection to %s", addr)
+		// (Optional) Enable keep-alives if desired:
+		// if tcpConn, ok := conn.(*net.TCPConn); ok {
+		//     tcpConn.SetKeepAlive(true)
+		//     tcpConn.SetKeepAlivePeriod(60 * time.Second)
+		// }
 		return conn, nil
 	default:
 		return nil, fmt.Errorf("unknown connection type: %s", cfg.ConnectionType)
 	}
+}
+
+// doReconnect closes the current connection and attempts to reconnect.
+// It uses a lock to prevent concurrent reconnect attempts.
+func doReconnect() {
+	reconnectMutex.Lock()
+	if reconnecting {
+		reconnectMutex.Unlock()
+		return
+	}
+	reconnecting = true
+	reconnectMutex.Unlock()
+
+	log.Println("Triggering reconnect...")
+
+	// Close the current connection to force the read loop to exit.
+	if deviceConn != nil {
+		deviceConn.Close()
+	}
+
+	// Attempt to reconnect in a loop.
+	for {
+		log.Println("Attempting to reconnect in 5 seconds...")
+		time.Sleep(5 * time.Second)
+		newConn, err := connectDevice(deviceConfig)
+		if err != nil {
+			log.Printf("Reconnect failed: %v", err)
+		} else {
+			deviceConn = newConn
+			lastDataTime = time.Now() // reset the inactivity timer
+			log.Println("Reconnected successfully to the device")
+			break
+		}
+	}
+
+	reconnectMutex.Lock()
+	reconnecting = false
+	reconnectMutex.Unlock()
 }
 
 func main() {
@@ -156,6 +209,8 @@ func main() {
 	tcpPort := flag.Int("port", 0, "TCP port (required for tcp connection)")
 	listenIP := flag.String("listen-ip", "0.0.0.0", "IP address to bind the HTTP server (default 0.0.0.0)")
 	listenPort := flag.Int("listen-port", 5000, "Port to bind the HTTP server (default 5000)")
+	// New flag: only used for TCP TNC inactivity (in seconds)
+	tcpReadDeadline := flag.Int("tcp-read-deadline", 600, "Time (in seconds) without data before triggering reconnect (only for TCP TNC)")
 	debug := flag.Bool("debug", false, "Enable verbose debug logging")
 	flag.Parse()
 
@@ -176,6 +231,22 @@ func main() {
 	if err != nil {
 		log.Fatalf("Initial connection error: %v", err)
 	}
+
+	// Initialize the timestamp for the last received data.
+	lastDataTime = time.Now()
+
+	// Start a goroutine to monitor inactivity.
+	go func() {
+		tncTimeout := time.Duration(*tcpReadDeadline) * time.Second
+		for {
+			time.Sleep(1 * time.Second)
+			if time.Since(lastDataTime) > tncTimeout {
+				log.Println("No data received for the specified deadline; triggering reconnect")
+				// Trigger reconnect (if not already in progress).
+				go doReconnect()
+			}
+		}
+	}()
 
 	// Create an Engine.IO server and a Socket.IO server on top of it.
 	engineServer := types.CreateServer(nil)
@@ -278,34 +349,26 @@ func main() {
 		for {
 			n, err := deviceConn.Read(buf)
 			if err != nil {
-				// Ignore EOF errors and timeouts (n==0) as normal.
-				if err == io.EOF || n == 0 {
-					if debugMode && n == 0 {
-						log.Println("DEBUG: Read timeout, no data")
-					}
-					// Sleep briefly and continue reading.
+				// If we're already reconnecting, just sleep a bit to avoid flooding logs.
+				reconnectMutex.Lock()
+				alreadyReconnecting := reconnecting
+				reconnectMutex.Unlock()
+				if alreadyReconnecting {
 					time.Sleep(100 * time.Millisecond)
 					continue
 				}
 				log.Printf("Error reading from device: %v", err)
-				// Attempt to reconnect.
-				for {
-					log.Println("Attempting to reconnect in 5 seconds...")
-					time.Sleep(5 * time.Second)
-					newConn, err := connectDevice(deviceConfig)
-					if err != nil {
-						log.Printf("Reconnect failed: %v", err)
-					} else {
-						deviceConn = newConn
-						log.Println("Reconnected successfully to the device")
-						break
-					}
-				}
-				// Reset readBuffer after reconnection.
+				go doReconnect()
 				readBuffer = nil
 				continue
 			}
+			if n > 0 {
+				// Update our inactivity timer.
+				lastDataTime = time.Now()
+			}
 			if n == 0 {
+				// No data read; let the inactivity timer handle reconnect if needed.
+				time.Sleep(100 * time.Millisecond)
 				continue
 			}
 			if debugMode {
