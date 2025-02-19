@@ -309,65 +309,81 @@
       container.innerHTML = html;
     }
     
-    function updateReceiverProgressUI() {
-      const container = document.getElementById('receiverProgress');
-      if (Object.keys(activeTransfers).length === 0) {
-        container.innerHTML = "<p>No active transfers.</p>";
-        return;
-      }
-      let html = "";
-      for (let key in activeTransfers) {
-        let transfer = activeTransfers[key];
-        let total = transfer.totalChunks || "N/A";
-        let receivedCount = Object.keys(transfer.received).length;
-        let progress = transfer.totalChunks ? Math.floor((receivedCount / transfer.totalChunks) * 100) : 0;
-        let elapsed = ((Date.now() - transfer.startTime) / 1000).toFixed(2);
-        let eta = "N/A";
-        if (transfer.totalChunks && progress > 0) {
-          let estimatedTotal = elapsed / (progress / 100);
-          eta = (estimatedTotal - elapsed).toFixed(2) + " s";
+ function updateReceiverProgressUI() {
+  const container = document.getElementById('receiverProgress');
+  if (Object.keys(activeTransfers).length === 0) {
+    container.innerHTML = "<p>No active transfers.</p>";
+    return;
+  }
+  let html = "";
+  for (let key in activeTransfers) {
+    let transfer = activeTransfers[key];
+
+    // total number of packets expected for the transfer (ensure it's at least 1 to avoid divide-by-zero)
+    let total = transfer.totalChunks || 1;
+
+    // 'cumulative' is the last contiguous packet number received (i.e. all packets 1...lastAcked are received)
+    let cumulative = transfer.lastAcked || 1;
+
+    // Now calculate the burst window progress:
+    let burstBlue = 0;   // number of packets in the current burst that have been received
+    let burstOrange = 0; // number of packets still expected in the current burst
+
+    if (transfer.currentBurstTo && transfer.currentBurstTo > cumulative) {
+      let burstWindowSize = transfer.currentBurstTo - cumulative;
+      // Count how many packets in the burst window have arrived:
+      for (let seq = cumulative + 1; seq <= transfer.currentBurstTo; seq++) {
+        if (transfer.received[seq]) {
+          burstBlue++;
         }
-        let fileIdDisplay = (transfer.header && transfer.header.fileId) ? transfer.header.fileId : "N/A";
-        let fileName = transfer.header ? transfer.header.fileName : "Unknown file";
-        let originalSize = transfer.header ? transfer.header.originalSize : "N/A";
-        let compressedSize = transfer.header ? transfer.header.compressedSize : "N/A";
-        let transferRate = (elapsed > 0 && transfer.rawBytesReceived) ? Math.floor(transfer.rawBytesReceived / elapsed) : 0;
-        let duplicateCount = transfer.duplicateCount || 0;
-        let duplicatePercent = (transfer.totalChunks && transfer.totalChunks > 0)
-                               ? Math.round((duplicateCount / transfer.totalChunks) * 100)
-                               : 0;
-        
-        let receiverStatus = "";
-        if (transfer.lastAckTime && (Date.now() - transfer.lastAckTime < 1100)) {
-          receiverStatus = '<span style="color: blue; font-weight: bold;">Ack</span>';
-        } else {
-          receiverStatus = '<span style="color: green; font-weight: bold;">Receiving</span>';
-        }
-        
-        html += `
-          <div class="mb-2 border p-2">
-            <h5>From ${key.split("_")[0]} – ${fileName} (ID: ${fileIdDisplay})</h5>
-            <p>(${receivedCount}/${total} packets received)</p>
-            <p>Original Size: ${originalSize} bytes; Compressed Size: ${compressedSize} bytes</p>
-            <div class="progress mb-2">
-              <div class="progress-bar" role="progressbar" style="width: ${progress}%;" 
-                   aria-valuenow="${progress}" aria-valuemin="0" aria-valuemax="100">
-                ${progress}%
-              </div>
-            </div>
-            <p>
-              ${receiverStatus}<br>
-              Elapsed time: ${elapsed} s; ETA: ${eta} 
-              (${transferRate} bytes/sec); Duplicates: ${duplicateCount} (${duplicatePercent}%)
-            </p>
-            <div style="margin-top: 0.5rem;">
-              <button class="btn btn-danger btn-sm" onclick="cancelReceiverTransfer('${key}')">Cancel</button>
-            </div>
-          </div>
-        `;
       }
-      container.innerHTML = html;
+      burstOrange = burstWindowSize - burstBlue;
     }
+
+    // The overall blue portion is the cumulative packets plus any burst packets that have arrived:
+    let blueTotal = cumulative + burstBlue;
+
+    // Calculate the percentages relative to the total number of packets:
+    let bluePercent = Math.floor((blueTotal / total) * 100);
+    let orangePercent = Math.floor((burstOrange / total) * 100);
+
+    // Build the single progress bar with two segments:
+    let progressBarHTML = `
+      <div class="progress mb-2" style="height: 20px;">
+        <!-- Blue: contiguous plus burst packets already received -->
+        <div class="progress-bar bg-primary" role="progressbar"
+             style="width: ${bluePercent}%;" aria-valuenow="${bluePercent}"
+             aria-valuemin="0" aria-valuemax="100">
+          ${bluePercent > 0 ? bluePercent + '%' : ''}
+        </div>
+        <!-- Orange: expected burst packets not yet received -->
+        <div class="progress-bar bg-warning" role="progressbar"
+             style="width: ${orangePercent}%;" aria-valuenow="${orangePercent}"
+             aria-valuemin="0" aria-valuemax="100">
+          ${orangePercent > 0 ? orangePercent + '%' : ''}
+        </div>
+      </div>
+    `;
+
+    html += `
+      <div class="mb-2 border p-2">
+        <h5>From ${key.split("_")[0]} – ${transfer.header ? transfer.header.fileName : "Unknown file"} (ID: ${transfer.header ? transfer.header.fileId : "N/A"})</h5>
+        <p>${blueTotal} of ${total} packets received</p>
+        ${progressBarHTML}
+        <p>
+          Status: ${(transfer.lastAckTime && (Date.now() - transfer.lastAckTime < 1100))
+                   ? '<span style="color: blue; font-weight: bold;">Ack</span>'
+                   : '<span style="color: green; font-weight: bold;">Receiving</span>'}
+        </p>
+        <div style="margin-top: 0.5rem;">
+          <button class="btn btn-danger btn-sm" onclick="cancelReceiverTransfer('${key}')">Cancel</button>
+        </div>
+      </div>
+    `;
+  }
+  container.innerHTML = html;
+}
+
     
   function updateSenderProgressUI() {
   const container = document.getElementById('senderProgress');
@@ -1054,6 +1070,9 @@
   return;
   }
 
+  if (!transfer.currentBurstTo || burstTo > transfer.currentBurstTo) {
+    transfer.currentBurstTo = burstTo;
+  }
 
   let isDuplicate = !!transfer.received[seq];
   if (!isDuplicate) {
