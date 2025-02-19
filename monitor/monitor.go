@@ -7,8 +7,10 @@ import (
 	"flag"
 	"fmt"
 	"log"
+	"math"
 	"net"
 	"os"
+	"os/signal"
 	"strconv"
 	"strings"
 	"time"
@@ -56,21 +58,9 @@ func removeKISSFrame(frame []byte) []byte {
 
 var asciiOutput bool
 var decodeFileTransfer bool
+var decodeAx25 bool
 
 // decodeFileTransferPacket attempts to decode a file-transfer packet based on the original protocol.
-// It returns a multi-line summary of all decoded fields (including total packet size) or an empty
-// string if the packet cannot be decoded.
-//
-// For header packets (sequence 1) the info field is expected to be in the form:
-//   SENDER>RECEIVER:FILEID:0001<burstHex>/<totalHex>:
-// followed by a header payload:
-//   timeoutSeconds|timeoutRetries|fileName|originalSize|compressedSize|md5Hash|fileID|encodingMethod|compressFlag|totalIncludingHeader
-//
-// For data packets the info field is expected to be in the form:
-//   SENDER>RECEIVER:FILEID:<seqHex><burstHex>:
-// and the payload is binary.
-// decodeFileTransferPacket attempts to decode a file-transfer packet based on the original protocol.
-// For ACK packets, we now extract the ACK value by splitting on "ACK:".
 func decodeFileTransferPacket(packet []byte) string {
 	// First, remove the KISS command byte that follows unescaping.
 	if len(packet) < 1 {
@@ -223,6 +213,76 @@ func decodeFileTransferPacket(packet []byte) string {
 		totalPacketSize, sender, receiver, fileID, seqDec, burstDec, len(payload))
 }
 
+// decodeAX25Packet attempts to decode the AX.25 header and payload from the packet.
+// If the PID is missing, it logs 'null' for the PID.
+func decodeAX25Packet(packet []byte) string {
+	if len(packet) == 0 {
+		return "Empty packet"
+	}
+
+	// Assume the first byte is the KISS command.
+	kissCmd := packet[0]
+	packet = packet[1:]
+
+	// We need at least 14 bytes for destination and source addresses.
+	if len(packet) < 14 {
+		return fmt.Sprintf("AX.25 header incomplete (KISS cmd 0x%02X), available bytes: % X", kissCmd, packet)
+	}
+
+	// Decode destination (first 7 bytes) and source (next 7 bytes).
+	dest := decodeAX25Address(packet[0:7])
+	src := decodeAX25Address(packet[7:14])
+
+	// Decode control field if available.
+	var control byte = 0
+	if len(packet) >= 15 {
+		control = packet[14]
+	}
+
+	// Decode PID if available; otherwise use "null".
+	var pid string
+	if len(packet) >= 16 {
+		pid = fmt.Sprintf("0x%02X", packet[15])
+	} else {
+		pid = "null"
+	}
+
+	// The payload starts after the header. If PID is missing, payload starts at offset 15;
+	// otherwise, it starts at offset 16.
+	var payloadStart int
+	if len(packet) >= 16 {
+		payloadStart = 16
+	} else {
+		payloadStart = 15
+	}
+
+	var payloadInfo string
+	if len(packet) > payloadStart {
+		payloadInfo = "\nPayload (ASCII): " + string(packet[payloadStart:])
+	}
+
+	return fmt.Sprintf("AX.25 Header (KISS cmd 0x%02X):\n  Destination: %s\n  Source: %s\n  Control: 0x%02X\n  PID: %s",
+		kissCmd, dest, src, control, pid) + payloadInfo
+}
+
+// decodeAX25Address decodes a 7-byte AX.25 address field into a human-readable callsign.
+func decodeAX25Address(addr []byte) string {
+	// Each address is 7 bytes. The first 6 bytes contain the callsign (each character shifted right by 1).
+	callsign := ""
+	for i := 0; i < 6; i++ {
+		c := addr[i] >> 1
+		// Only add non-space characters.
+		if c != ' ' {
+			callsign += string(c)
+		}
+	}
+	// The 7th byte contains the SSID in bits 1-4.
+	ssid := (addr[6] >> 1) & 0x0F
+	if ssid > 0 {
+		callsign += fmt.Sprintf("-%d", ssid)
+	}
+	return callsign
+}
 
 func main() {
 	// Disable the default logger timestamp.
@@ -244,8 +304,17 @@ func main() {
 	flag.BoolVar(&asciiOutput, "ascii", false, "Print frames as ASCII text instead of hexadecimal")
 	// Flag to attempt to decode file transfer packets.
 	flag.BoolVar(&decodeFileTransfer, "decode-file-transfer", false, "Attempt to decode known file transfer packets")
+	// Flag to attempt to decode AX.25 packets.
+	flag.BoolVar(&decodeAx25, "decode-ax25", false, "Attempt to decode all AX.25 packets")
 
 	flag.Parse()
+
+	// Enforce mutual exclusivity for decoding options.
+	if decodeAx25 && (asciiOutput || decodeFileTransfer) {
+		fmt.Fprintln(os.Stderr, "Error: -decode-ax25 is mutually exclusive with -ascii and -decode-file-transfer")
+		flag.Usage()
+		os.Exit(1)
+	}
 
 	if *port == 0 {
 		fmt.Fprintln(os.Stderr, "Error: -port is required")
@@ -291,9 +360,33 @@ func main() {
 		log.Printf("Connected to MQTT broker at %s", mqttAddr)
 	}
 
+	// --- Metrics variables ---
+	var totalFrames int
+	var totalBytes int
+	var minDelta int64 = math.MaxInt64
+	var maxDelta int64
+	var lastPacketTime time.Time
+
+	// Set up signal handling to catch Ctrl-C (SIGINT)
+	sigChan := make(chan os.Signal, 1)
+	signal.Notify(sigChan, os.Interrupt)
+	go func() {
+		<-sigChan
+		// When Ctrl-C is caught, print the summary and exit.
+		log.Printf("\n--- Summary ---")
+		log.Printf("Total frames seen: %d", totalFrames)
+		log.Printf("Total bytes seen: %d", totalBytes)
+		if totalFrames > 1 {
+			log.Printf("Minimum time between packets: %d ms", minDelta)
+			log.Printf("Maximum time between packets: %d ms", maxDelta)
+		} else {
+			log.Printf("Not enough packets to compute time differences.")
+		}
+		os.Exit(0)
+	}()
+
 	buf := make([]byte, 4096)
 	var dataBuffer []byte
-	var lastPacketTime time.Time
 
 	for {
 		n, err := conn.Read(buf)
@@ -320,6 +413,34 @@ func main() {
 					continue
 				}
 
+				// Update metrics.
+				totalFrames++
+				totalBytes += len(payload)
+
+				now := time.Now()
+				var deltaStr string
+				if !lastPacketTime.IsZero() {
+					d := now.Sub(lastPacketTime)
+					deltaMs := d.Milliseconds()
+					// If the delta is less than 1ms, use microseconds.
+					if deltaMs == 0 {
+						deltaStr = fmt.Sprintf("+%dµs", d.Microseconds())
+					} else {
+						deltaStr = fmt.Sprintf("+%dms", deltaMs)
+					}
+					// Update the min/max metrics in ms.
+					if deltaMs < minDelta {
+						minDelta = deltaMs
+					}
+					if deltaMs > maxDelta {
+						maxDelta = deltaMs
+					}
+				} else {
+					deltaStr = ""
+				}
+				lastPacketTime = now
+				timeStamp := fmt.Sprintf("[%s %s]", now.Format(time.RFC3339Nano), deltaStr)
+
 				// Always publish raw packet to MQTT if enabled.
 				if mqttEnabled {
 					token := mqttClient.Publish(*mqttTopic, 0, false, payload)
@@ -329,16 +450,11 @@ func main() {
 					}
 				}
 
-				now := time.Now()
-				delta := int64(0)
-				if !lastPacketTime.IsZero() {
-					delta = now.Sub(lastPacketTime).Milliseconds()
-				}
-				lastPacketTime = now
-				timeStamp := fmt.Sprintf("[%s +%dms]", now.Format(time.RFC3339Nano), delta)
-
-				// If decoding is enabled, only log decoded file transfer packets.
-				if decodeFileTransfer {
+				// Determine which decoding/output mode to use.
+				if decodeAx25 {
+					decoded := decodeAX25Packet(payload)
+					log.Printf("%s\n%s", timeStamp, decoded)
+				} else if decodeFileTransfer {
 					decoded := decodeFileTransferPacket(payload)
 					if decoded != "" {
 						log.Printf("%s\n%s", timeStamp, decoded)

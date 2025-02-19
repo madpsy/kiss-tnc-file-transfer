@@ -24,6 +24,31 @@ import (
 )
 
 // ---------------------
+// Global Variables for TCP Inactivity Monitoring
+// ---------------------
+
+// lastDataTime holds the timestamp of the most recent data received.
+// It is updated by the FrameReader and read by the TCP monitor.
+var (
+	lastDataTime  time.Time
+	lastDataMutex sync.Mutex
+)
+
+// updateLastDataTime safely updates the lastDataTime to now.
+func updateLastDataTime() {
+	lastDataMutex.Lock()
+	lastDataTime = time.Now()
+	lastDataMutex.Unlock()
+}
+
+// setLastDataTime sets the lastDataTime to a given time.
+func setLastDataTime(t time.Time) {
+	lastDataMutex.Lock()
+	lastDataTime = t
+	lastDataMutex.Unlock()
+}
+
+// ---------------------
 // Global Constants
 // ---------------------
 
@@ -335,9 +360,9 @@ func (t *TCPKISSConnection) RecvData(timeout time.Duration) ([]byte, error) {
 	buf := make([]byte, 1024)
 	n, err := t.conn.Read(buf)
 	if err != nil {
+		// Return EOF and other errors instead of swallowing them
 		if err == io.EOF {
-			// Treat EOF as no data.
-			return []byte{}, nil
+			return nil, err
 		}
 		if nErr, ok := err.(net.Error); ok && nErr.Timeout() {
 			return []byte{}, nil
@@ -394,8 +419,7 @@ func (s *SerialKISSConnection) RecvData(timeout time.Duration) ([]byte, error) {
 	n, err := s.ser.Read(buf)
 	if err != nil {
 		if err == io.EOF {
-			// Treat EOF as no data.
-			return []byte{}, nil
+			return nil, err
 		}
 		return nil, err
 	}
@@ -432,14 +456,20 @@ func (fr *FrameReader) Run() {
 	for fr.running {
 		data, err := fr.conn.RecvData(100 * time.Millisecond)
 		if err != nil {
-			// If EOF is returned, simply continue.
+			// Log the error and force an immediate reconnect by setting lastDataTime very old.
 			if err == io.EOF || strings.Contains(err.Error(), "use of closed network connection") {
-				continue
+				log.Printf("Receive error (connection closed): %v", err)
+			} else {
+				log.Printf("Receive error: %v", err)
 			}
-			log.Printf("Receive error: %v", err)
-			continue
+			// Set lastDataTime to the Unix epoch to force the inactivity monitor to reconnect
+			setLastDataTime(time.Unix(0, 0))
+			fr.running = false
+			break
 		}
 		if len(data) > 0 {
+			// Update global lastDataTime when data is received.
+			updateLastDataTime()
 			fr.buffer = append(fr.buffer, data...)
 			frames, remaining := extractKISSFrames(fr.buffer)
 			fr.buffer = remaining
@@ -547,6 +577,8 @@ type Arguments struct {
 	OnlyFrom       string  // Only accept files from the specified callsign.
 	ExecuteTimeout float64 // Maximum seconds to allow executed file to run (0 means unlimited)
 	Stdout         bool    // Output received file to stdout instead of saving
+	// New flag: tcp-read-deadline (in seconds) for TCP inactivity detection.
+	TcpReadDeadline int
 }
 
 func parseArguments() *Arguments {
@@ -564,6 +596,8 @@ func parseArguments() *Arguments {
 	flag.StringVar(&args.OnlyFrom, "only-from", "", "Only accept files from the specified callsign")
 	flag.Float64Var(&args.ExecuteTimeout, "execute-timeout", 0, "Maximum seconds to allow executed file to run (0 means unlimited)")
 	flag.BoolVar(&args.Stdout, "stdout", false, "Output the received file to stdout instead of saving to disk")
+	// New tcp-read-deadline flag (only used when connection == "tcp")
+	flag.IntVar(&args.TcpReadDeadline, "tcp-read-deadline", 600, "Time (in seconds) without data before triggering reconnect (TCP only)")
 	flag.Parse()
 
 	if args.MyCallsign == "" {
@@ -593,11 +627,54 @@ func receiverMain(args *Arguments) {
 			log.Fatalf("Serial connection error: %v", err)
 		}
 	}
+	// Set the initial lastDataTime
+	updateLastDataTime()
+
 	frameChan := make(chan []byte, 100)
 	reader := NewFrameReader(conn, frameChan)
 	go reader.Run()
 	log.Printf("Receiver started. My callsign: %s", strings.ToUpper(args.MyCallsign))
 	transfers := make(map[string]*Transfer)
+
+	// ---------------------
+	// TCP Inactivity Monitor & Reconnect Logic
+	// ---------------------
+	if args.Connection == "tcp" {
+		tcpTimeout := time.Duration(args.TcpReadDeadline) * time.Second
+		go func() {
+			for {
+				time.Sleep(1 * time.Second)
+				lastDataMutex.Lock()
+				last := lastDataTime
+				lastDataMutex.Unlock()
+				if time.Since(last) > tcpTimeout {
+					log.Printf("No data received for %v; triggering reconnect...", tcpTimeout)
+					// Stop the current frame reader and close the connection.
+					reader.Stop()
+					conn.Close()
+					// Attempt to reconnect in a loop.
+					var newConn KISSConnection
+					for {
+						log.Println("Attempting to reconnect in 5 seconds...")
+						time.Sleep(5 * time.Second)
+						newConn, err = newTCPKISSConnection(args.Host, args.Port, false)
+						if err != nil {
+							log.Printf("Reconnect failed: %v", err)
+						} else {
+							break
+						}
+					}
+					conn = newConn
+					// Reset the lastDataTime.
+					updateLastDataTime()
+					// Start a new frame reader with the new connection.
+					reader = NewFrameReader(conn, frameChan)
+					go reader.Run()
+					log.Println("Reconnected successfully to the TCP device.")
+				}
+			}
+		}()
+	}
 
 	// Main receiver loop.
 	for {

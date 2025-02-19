@@ -138,10 +138,17 @@ go build -o kissmonitor monitor.go
       </td>
       <td><code>false</code></td>
     </tr>
+    <tr>
+      <td><code>--decode-ax25</code></td>
+      <td>
+        Attempt to decode all AX.25 packets. This option is mutually exclusive with <code>--ascii</code> and <code>--decode-file-transfer</code>.
+      </td>
+      <td><code>false</code></td>
+    </tr>
   </table>
 
   <h2 id="usage">Usage Examples</h2>
-  <h3>Example 1: Monitor Mode over TCP (Decoding Enabled)</h3>
+  <h3>Example 1: Monitor Mode over TCP (Decoding File Transfer Packets)</h3>
   <p>
     The following command connects to a broadcast server at <code>127.0.0.1</code> on port <code>9001</code> and decodes incoming file transfer packets.
   </p>
@@ -149,7 +156,16 @@ go build -o kissmonitor monitor.go
 go run monitor.go --host=127.0.0.1 --port=9001 --decode-file-transfer
   </pre>
 
-  <h3>Example 2: Monitor Mode with MQTT Publishing</h3>
+  <h3>Example 2: Monitor Mode over TCP (Decoding AX.25 Packets)</h3>
+  <p>
+    The following command connects to a broadcast server and decodes all AX.25 packets.
+    Note that this option cannot be combined with <code>--ascii</code> or <code>--decode-file-transfer</code>.
+  </p>
+  <pre>
+go run monitor.go --host=127.0.0.1 --port=9001 --decode-ax25
+  </pre>
+
+  <h3>Example 3: Monitor Mode with MQTT Publishing</h3>
   <p>
     The following command connects to a broadcast server and publishes all raw frames to an MQTT broker at <code>mqtt.example.com:1883</code>.
   </p>
@@ -157,7 +173,7 @@ go run monitor.go --host=127.0.0.1 --port=9001 --decode-file-transfer
 go run monitor.go --host=127.0.0.1 --port=9001 --mqtt-host=mqtt.example.com --mqtt-port=1883 --mqtt-user=myuser --mqtt-pass=mypassword --mqtt-topic=kiss/frames
   </pre>
 
-  <h3>Example 3: Monitor Mode with ASCII Output</h3>
+  <h3>Example 4: Monitor Mode with ASCII Output</h3>
   <p>
     The following command displays the raw unescaped frames as ASCII text.
   </p>
@@ -175,6 +191,10 @@ go run monitor.go --host=127.0.0.1 --port=9001 --ascii
     </li>
     <li>
       The <code>--decode-file-transfer</code> option instructs the program to parse and print details for file transfer packets (headers, data, and ACK packets).
+    </li>
+    <li>
+      The <code>--decode-ax25</code> option instructs the program to decode all AX.25 packets.
+      This option is mutually exclusive with <code>--ascii</code> and <code>--decode-file-transfer</code>.
     </li>
     <li>
       ACK packets include an <code>ACK Value</code> field which may represent a range (e.g. <code>0001-XXXX</code>) or the final confirmation <code>FIN-ACK</code>.

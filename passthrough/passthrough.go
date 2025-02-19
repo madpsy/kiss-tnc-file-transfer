@@ -77,7 +77,12 @@ func (t *TCPTNCConnection) Send(data []byte) error {
 	t.lock.Lock()
 	defer t.lock.Unlock()
 	_, err := t.conn.Write(data)
-	return err
+	if err != nil {
+		return err
+	}
+	// Broadcast the frame that was sent to the TNC.
+	broadcastToBroadcastClients(data)
+	return nil
 }
 
 func (t *TCPTNCConnection) Recv(timeout time.Duration) ([]byte, error) {
@@ -118,7 +123,12 @@ func (s *SerialTNCConnection) Send(data []byte) error {
 	s.lock.Lock()
 	defer s.lock.Unlock()
 	_, err := s.port.Write(data)
-	return err
+	if err != nil {
+		return err
+	}
+	// Broadcast the frame that was sent to the TNC.
+	broadcastToBroadcastClients(data)
+	return nil
 }
 
 func (s *SerialTNCConnection) Recv(timeout time.Duration) ([]byte, error) {
@@ -242,7 +252,7 @@ func startTCPBroadcastListener(port int) {
 		broadcastClients = append(broadcastClients, conn)
 		broadcastClientsLock.Unlock()
 		log.Printf("Broadcast client connected: %s", conn.RemoteAddr())
-		// We do not spawn a read loop for broadcast clients because we don't expect any data.
+		// No read loop is spawned because broadcast clients do not send data.
 	}
 }
 
@@ -271,15 +281,13 @@ func handleTNCRead(conn TNCConnection) {
 			frames, remaining := extractKISSFrames(buffer)
 			buffer = remaining
 			for _, frame := range frames {
-				// Update the timestamp for TCP connections.
-				if _, ok := conn.(*TCPTNCConnection); ok {
-					lastTNCRecvMutex.Lock()
-					lastTNCRecv = time.Now()
-					lastTNCRecvMutex.Unlock()
-				}
+				// Update the timestamp regardless of connection type.
+				lastTNCRecvMutex.Lock()
+				lastTNCRecv = time.Now()
+				lastTNCRecvMutex.Unlock()
 				// Send the frame to normal clients.
 				broadcastToClients(frame)
-				// Also send the frame to any broadcast clients.
+				// Broadcast the frame to broadcast clients (monitoring the TNC).
 				broadcastToBroadcastClients(frame)
 			}
 		}
@@ -319,17 +327,17 @@ func startInactivityMonitor(conn TNCConnection) {
 // -----------------------------------------------------------------------------
 
 // waitForTurnaroundDelay pauses until at least sendDelay has passed since the last TNC frame was received.
+// If a delay is applied, it logs the amount of delay.
 func waitForTurnaroundDelay() {
 	if sendDelay > 0 {
-		for {
-			lastTNCRecvMutex.Lock()
-			lastRecv := lastTNCRecv
-			lastTNCRecvMutex.Unlock()
-			elapsed := time.Since(lastRecv)
-			if elapsed >= sendDelay {
-				break
-			}
-			time.Sleep(sendDelay - elapsed)
+		lastTNCRecvMutex.Lock()
+		lastRecv := lastTNCRecv
+		lastTNCRecvMutex.Unlock()
+		elapsed := time.Since(lastRecv)
+		if elapsed < sendDelay {
+			remaining := sendDelay - elapsed
+			log.Printf("Applying turnaround delay of %v", remaining)
+			time.Sleep(remaining)
 		}
 	}
 }
@@ -340,7 +348,8 @@ func waitForTurnaroundDelay() {
 
 // handleClientConnection reads from a TCP client and sends any complete KISS frame
 // it receives to the TNC (if connected), applying the turnaround delay if needed.
-// It also broadcasts the frame to any broadcast clients.
+// Note: We no longer broadcast here because the broadcast monitor should only reflect
+// the actual TNC traffic.
 func handleClientConnection(client net.Conn) {
 	defer client.Close()
 	var clientBuffer []byte
@@ -370,8 +379,7 @@ func handleClientConnection(client net.Conn) {
 				} else {
 					log.Printf("No TNC connection available. Dropping data from client %s", client.RemoteAddr())
 				}
-				// Also broadcast the frame to broadcast clients.
-				broadcastToBroadcastClients(frame)
+				// Note: We do not broadcast here.
 			}
 		}
 	}
@@ -428,7 +436,7 @@ func main() {
 	sendDelayFlag := flag.Int("send-delay", 0, "Delay in milliseconds before sending frames to the TNC if we have just received a frame from it (a.k.a. turnaround). It specifies the minimum time which must have passed before we start sending frames.")
 	tcpReadDeadlineFlag := flag.Int("tcp-read-deadline", 600, "TCP read deadline in seconds for the TNC connection (applies only if tnc-connection-type is tcp)")
 	// New flag for TCP broadcast port. No default value is provided.
-	tcpBroadcastPortFlag := flag.Int("tcp-broadcast-port", 0, "TCP port to broadcast all frames (one-way; clients connecting here will only receive data)")
+	tcpBroadcastPortFlag := flag.Int("tcp-broadcast-port", 0, "TCP port to broadcast all TNC frames (one-way; clients connecting here will only receive data)")
 	flag.Parse()
 
 	// Convert the send delay from milliseconds to a time.Duration.
@@ -473,12 +481,13 @@ func main() {
 		setTNCConnection(conn)
 		log.Printf("TNC connection established.")
 
-		// For TCP connections, initialize the last received timestamp.
+		// Initialize the last received timestamp for both connection types.
+		lastTNCRecvMutex.Lock()
+		lastTNCRecv = time.Now()
+		lastTNCRecvMutex.Unlock()
+
+		// Start the inactivity monitor only for TCP connections.
 		if *tncConnType == "tcp" {
-			lastTNCRecvMutex.Lock()
-			lastTNCRecv = time.Now()
-			lastTNCRecvMutex.Unlock()
-			// Start the inactivity monitor for application-level timeout.
 			startInactivityMonitor(conn)
 		}
 
