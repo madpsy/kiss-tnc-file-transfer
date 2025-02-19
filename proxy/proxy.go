@@ -1201,32 +1201,30 @@ func manageTNC2() {
 // -----------------------------------------------------------------------------
 
 func forwardTNC1toTNC2() {
-	for frame := range tnc1FrameChan {
-		currentTNC2Lock.RLock()
-		conn := currentTNC2
-		currentTNC2Lock.RUnlock()
-		if conn != nil {
-			err := conn.SendFrame(buildKISSFrame(frame))
-			if err != nil {
-				log.Printf("Error forwarding frame from TNC1 to TNC2: %v", err)
-			}
-		}
-	}
+    for frame := range tnc1FrameChan {
+        currentTNC2Lock.RLock()
+       	dstConn := currentTNC2
+        currentTNC2Lock.RUnlock()
+        if dstConn != nil {
+            // Process the frame, which will log file transfer details if applicable,
+            // and then forward it to TNC2.
+            processAndForwardPacket(frame, dstConn, "TNC1->TNC2")
+        }
+    }
 }
 
 func forwardTNC2toTNC1() {
-	for frame := range tnc2FrameChan {
-		currentTNC1Lock.RLock()
-		conn := currentTNC1
-		currentTNC1Lock.RUnlock()
-		if conn != nil {
-			err := conn.SendFrame(buildKISSFrame(frame))
-			if err != nil {
-				log.Printf("Error forwarding frame from TNC2 to TNC1: %v", err)
-			}
-		}
-	}
+    for frame := range tnc2FrameChan {
+        currentTNC1Lock.RLock()
+        dstConn := currentTNC1
+        currentTNC1Lock.RUnlock()
+        if dstConn != nil {
+            // Process the frame and forward it to TNC1.
+            processAndForwardPacket(frame, dstConn, "TNC2->TNC1")
+        }
+    }
 }
+
 
 // -----------------------------------------------------------------------------
 // Main: Initialization and Launching of Independent Loops
