@@ -55,49 +55,6 @@ func broadcastToClients(data []byte, lock *sync.Mutex, conns *[]net.Conn) {
 	}
 }
 
-// handlePassThroughRead handles data coming from a pass‑through client
-// and writes it directly to the associated TNC connection (bypassing file‑transfer logic).
-func handlePassThroughRead(client net.Conn, tncConn KISSConnection, name string) {
-	defer client.Close()
-	buf := make([]byte, 1024)
-	for {
-		n, err := client.Read(buf)
-		if err != nil {
-			log.Printf("[Pass‑Through %s] Read error: %v", name, err)
-			return
-		}
-		if n > 0 {
-			err := tncConn.SendFrame(buf[:n])
-			if err != nil {
-				log.Printf("[Pass‑Through %s] Error sending to TNC: %v", name, err)
-				return
-			}
-		}
-	}
-}
-
-// startPassThroughListener starts a TCP listener on the given port.
-func startPassThroughListener(port int, tncConn KISSConnection, ptConns *[]net.Conn, ptLock *sync.Mutex, name string) {
-	addr := fmt.Sprintf("0.0.0.0:%d", port)
-	ln, err := net.Listen("tcp", addr)
-	if err != nil {
-		log.Fatalf("Error starting pass‑through listener on %s: %v", addr, err)
-	}
-	log.Printf("Pass‑through listener for %s started on %s", name, addr)
-	for {
-		client, err := ln.Accept()
-		if err != nil {
-			log.Printf("Error accepting pass‑through client on %s: %v", addr, err)
-			continue
-		}
-		log.Printf("Pass‑through client connected for %s from %s", name, client.RemoteAddr().String())
-		ptLock.Lock()
-		*ptConns = append(*ptConns, client)
-		ptLock.Unlock()
-		go handlePassThroughRead(client, tncConn, name)
-	}
-}
-
 // -----------------------------------------------------------------------------
 // KISS / AX.25 Constants and Helper Functions
 // -----------------------------------------------------------------------------
@@ -371,8 +328,10 @@ func parsePacket(packet []byte) *Packet {
 // KISSConnection Interface and Implementations (TCP and Serial)
 // -----------------------------------------------------------------------------
 
+// Modified KISSConnection now includes SendFrameExcluding.
 type KISSConnection interface {
 	SendFrame(frame []byte) error
+	SendFrameExcluding(frame []byte, exclude net.Conn) error
 	RecvData(timeout time.Duration) ([]byte, error)
 	Close() error
 }
@@ -428,12 +387,18 @@ func newTCPKISSConnection(host string, port int, isServer bool) (*TCPKISSConnect
 }
 
 func (t *TCPKISSConnection) SendFrame(frame []byte) error {
+	return t.SendFrameExcluding(frame, nil)
+}
+
+func (t *TCPKISSConnection) SendFrameExcluding(frame []byte, exclude net.Conn) error {
+	// For client mode or non-server, simply write the frame.
 	if !t.isServer {
 		t.lock.Lock()
 		defer t.lock.Unlock()
 		_, err := t.conn.Write(frame)
 		return err
 	}
+	// For server mode, loop until a connection is available.
 	for {
 		holderInterface := t.atomicConn.Load()
 		holder := holderInterface.(*connHolder)
@@ -531,6 +496,10 @@ func newSerialKISSConnection(portName string, baud int) (*SerialKISSConnection, 
 }
 
 func (s *SerialKISSConnection) SendFrame(frame []byte) error {
+	return s.SendFrameExcluding(frame, nil)
+}
+
+func (s *SerialKISSConnection) SendFrameExcluding(frame []byte, exclude net.Conn) error {
 	s.lock.Lock()
 	defer s.lock.Unlock()
 	_, err := s.ser.Write(frame)
@@ -589,6 +558,12 @@ func (fr *FrameReader) Run() {
 			}
 		}
 		if len(data) > 0 {
+			// Update independent inactivity timestamps.
+			if fr.name == "TNC1" {
+				lastDataTimeTNC1 = time.Now()
+			} else if fr.name == "TNC2" {
+				lastDataTimeTNC2 = time.Now()
+			}
 			fr.buffer = append(fr.buffer, data...)
 			frames, remaining := extractKISSFrames(fr.buffer)
 			fr.buffer = remaining
@@ -600,6 +575,7 @@ func (fr *FrameReader) Run() {
 					inner := f[2 : len(f)-1]
 					unesc := unescapeData(inner)
 					fr.outChan <- unesc
+					// In non‑loop mode, broadcast to pass‑through clients.
 					if !*loop {
 						frameToBroadcast := buildKISSFrame(unesc)
 						if fr.name == "TNC1" {
@@ -618,6 +594,106 @@ func (fr *FrameReader) Run() {
 
 func (fr *FrameReader) Stop() {
 	fr.running = false
+}
+
+// -----------------------------------------------------------------------------
+// Pass‑Through Listener Functions for TNC1 and TNC2
+// -----------------------------------------------------------------------------
+
+func startTNC1PassthroughListener(port int) {
+	addr := fmt.Sprintf("0.0.0.0:%d", port)
+	ln, err := net.Listen("tcp", addr)
+	if err != nil {
+		log.Fatalf("Error starting TNC1 pass‑through listener on %s: %v", addr, err)
+	}
+	log.Printf("TNC1 pass‑through listener started on %s", addr)
+	for {
+		client, err := ln.Accept()
+		if err != nil {
+			log.Printf("Error accepting TNC1 pass‑through client on %s: %v", addr, err)
+			continue
+		}
+		log.Printf("TNC1 pass‑through client connected from %s", client.RemoteAddr().String())
+		ptTNC1Lock.Lock()
+		ptTNC1Conns = append(ptTNC1Conns, client)
+		ptTNC1Lock.Unlock()
+		go handleTNC1PassThroughRead(client)
+	}
+}
+
+func startTNC2PassthroughListener(port int) {
+	addr := fmt.Sprintf("0.0.0.0:%d", port)
+	ln, err := net.Listen("tcp", addr)
+	if err != nil {
+		log.Fatalf("Error starting TNC2 pass‑through listener on %s: %v", addr, err)
+	}
+	log.Printf("TNC2 pass‑through listener started on %s", addr)
+	for {
+		client, err := ln.Accept()
+		if err != nil {
+			log.Printf("Error accepting TNC2 pass‑through client on %s: %v", addr, err)
+			continue
+		}
+		log.Printf("TNC2 pass‑through client connected from %s", client.RemoteAddr().String())
+		ptTNC2Lock.Lock()
+		ptTNC2Conns = append(ptTNC2Conns, client)
+		ptTNC2Lock.Unlock()
+		go handleTNC2PassThroughRead(client)
+	}
+}
+
+func handleTNC1PassThroughRead(client net.Conn) {
+	defer client.Close()
+	buf := make([]byte, 1024)
+	for {
+		n, err := client.Read(buf)
+		if err != nil {
+			if err != io.EOF {
+				log.Printf("Error reading from TNC1 pass‑through client %s: %v", client.RemoteAddr(), err)
+			}
+			return
+		}
+		if n > 0 {
+			currentTNC1Lock.RLock()
+			conn := currentTNC1
+			currentTNC1Lock.RUnlock()
+			if conn == nil {
+				log.Printf("No TNC1 connection available; dropping pass‑through data from %s", client.RemoteAddr())
+				continue
+			}
+			if err := conn.SendFrameExcluding(buf[:n], client); err != nil {
+				log.Printf("Error sending data from TNC1 pass‑through client %s: %v", client.RemoteAddr(), err)
+				return
+			}
+		}
+	}
+}
+
+func handleTNC2PassThroughRead(client net.Conn) {
+	defer client.Close()
+	buf := make([]byte, 1024)
+	for {
+		n, err := client.Read(buf)
+		if err != nil {
+			if err != io.EOF {
+				log.Printf("Error reading from TNC2 pass‑through client %s: %v", client.RemoteAddr(), err)
+			}
+			return
+		}
+		if n > 0 {
+			currentTNC2Lock.RLock()
+			conn := currentTNC2
+			currentTNC2Lock.RUnlock()
+			if conn == nil {
+				log.Printf("No TNC2 connection available; dropping pass‑through data from %s", client.RemoteAddr())
+				continue
+			}
+			if err := conn.SendFrameExcluding(buf[:n], client); err != nil {
+				log.Printf("Error sending data from TNC2 pass‑through client %s: %v", client.RemoteAddr(), err)
+				return
+			}
+		}
+	}
 }
 
 // -----------------------------------------------------------------------------
@@ -641,9 +717,8 @@ type Transfer struct {
 }
 
 var (
-	transfers     = make(map[string]*Transfer)
-	transfersLock sync.Mutex
-	// Instead of a map of exact callsigns, we use a slice of allowed callsign patterns.
+	transfers        = make(map[string]*Transfer)
+	transfersLock    sync.Mutex
 	allowedCallsigns []string
 )
 
@@ -652,6 +727,7 @@ var (
 // -----------------------------------------------------------------------------
 
 var (
+	callsignsFlag       = flag.String("callsigns", "", "Comma delimited list of valid sender/receiver callsigns (optional; supports wildcards)")
 	tnc1ConnType        = flag.String("tnc1-connection-type", "tcp", "Connection type for TNC1: tcp or serial")
 	tnc1Host            = flag.String("tnc1-host", "127.0.0.1", "TCP host for TNC1")
 	tnc1Port            = flag.Int("tnc1-port", 9001, "TCP port for TNC1")
@@ -664,21 +740,33 @@ var (
 	tnc2Baud            = flag.Int("tnc2-baud", 115200, "Baud rate for TNC2 serial connection")
 	tnc1PassthroughPort = flag.Int("tnc1-passthrough-port", 5010, "TCP port for TNC1 pass‑through")
 	tnc2PassthroughPort = flag.Int("tnc2-passthrough-port", 5011, "TCP port for TNC2 pass‑through")
+	tcpReadDeadline     = flag.Int("tcp-read-deadline", 600, "Time (in seconds) without data before triggering reconnect")
+	debug               = flag.Bool("debug", false, "Enable debug logging")
+	saveFiles           = flag.Bool("save-files", false, "Save all files seen by the proxy (prepending <SENDER>_<RECEIVER>_ to filename)")
+	loop                = flag.Bool("loop", false, "Enable loopback mode. In this mode, TNC1 listens on the pass‑through port and TNC2 on the corresponding port. Mutually exclusive with TNC1/TNC2 options.")
 )
 
+// -----------------------------------------------------------------------------
+// Global Variables for Independent Monitoring and Connection Sharing
+// -----------------------------------------------------------------------------
+
 var (
-	callsigns = flag.String("callsigns", "", "Comma delimited list of valid sender/receiver callsigns (optional; supports wildcards)")
-	debug     = flag.Bool("debug", false, "Enable debug logging")
-	saveFiles = flag.Bool("save-files", false, "Save all files seen by the proxy (prepending <SENDER>_<RECEIVER>_ to filename)")
-	loop      = flag.Bool("loop", false, "Enable loopback mode. In this mode, TNC1 listens on the pass‑through port and TNC2 on the corresponding port. Mutually exclusive with TNC1/TNC2 options.")
+	currentTNC1     KISSConnection
+	currentTNC2     KISSConnection
+	currentTNC1Lock sync.RWMutex
+	currentTNC2Lock sync.RWMutex
+
+	tnc1FrameChan = make(chan []byte, 100)
+	tnc2FrameChan = make(chan []byte, 100)
+
+	lastDataTimeTNC1 time.Time
+	lastDataTimeTNC2 time.Time
 )
 
 // -----------------------------------------------------------------------------
 // Wildcard Matching for Callsigns
 // -----------------------------------------------------------------------------
 
-// callsignAllowed returns true if the given callsign matches any of the allowed patterns.
-// Matching is case‑insensitive.
 func callsignAllowed(callsign string) bool {
 	cs := strings.ToUpper(strings.TrimSpace(callsign))
 	for _, pattern := range allowedCallsigns {
@@ -703,7 +791,6 @@ func processAndForwardPacket(pkt []byte, dstConn KISSConnection, direction strin
 	}
 
 	key := canonicalKey(packet.Sender, packet.Receiver, packet.FileID)
-	// Use wildcard matching if allowedCallsigns are specified.
 	if packet.Type != "ack" && len(allowedCallsigns) > 0 {
 		if !callsignAllowed(packet.Sender) || !callsignAllowed(packet.Receiver) {
 			log.Printf("[%s] [FileID: %s] [From: %s To: %s] Dropping packet: callsign not allowed",
@@ -974,15 +1061,183 @@ ForwardPacket:
 }
 
 // -----------------------------------------------------------------------------
-// Main: Connection Setup and Forwarding Loop with Auto-Reconnect
+// Independent Auto‑Reconnect Loops for TNC1 and TNC2
+// -----------------------------------------------------------------------------
+
+func manageTNC1() {
+	for {
+		var conn KISSConnection
+		var err error
+
+		switch strings.ToLower(*tnc1ConnType) {
+		case "tcp":
+			conn, err = newTCPKISSConnection(*tnc1Host, *tnc1Port, false)
+			if err != nil {
+				log.Printf("TNC1: Error creating TCP connection: %v", err)
+				time.Sleep(5 * time.Second)
+				continue
+			}
+		case "serial":
+			if *tnc1SerialPort == "" {
+				log.Fatalf("TNC1: Serial port must be specified for serial connection.")
+			}
+			conn, err = newSerialKISSConnection(*tnc1SerialPort, *tnc1Baud)
+			if err != nil {
+				log.Printf("TNC1: Error creating serial connection: %v", err)
+				time.Sleep(5 * time.Second)
+				continue
+			}
+		default:
+			log.Fatalf("TNC1: Invalid connection type: %s", *tnc1ConnType)
+		}
+
+		currentTNC1Lock.Lock()
+		currentTNC1 = conn
+		currentTNC1Lock.Unlock()
+		lastDataTimeTNC1 = time.Now()
+
+		fr := NewFrameReader(conn, tnc1FrameChan, "TNC1")
+		go fr.Run()
+
+		// Inactivity monitor for TNC1
+		done := make(chan struct{})
+		go func() {
+			deadline := time.Duration(*tcpReadDeadline) * time.Second
+			for {
+				select {
+				case <-done:
+					return
+				default:
+				}
+				time.Sleep(1 * time.Second)
+				if time.Since(lastDataTimeTNC1) > deadline {
+					log.Printf("TNC1: No data received for %v. Reconnecting...", deadline)
+					conn.Close()
+					return
+				}
+			}
+		}()
+
+		// Wait for a fatal error from the frame reader.
+		err = <-fr.errChan
+		log.Printf("TNC1: Connection error detected: %v. Reconnecting...", err)
+		fr.Stop()
+		currentTNC1Lock.Lock()
+		currentTNC1 = nil
+		currentTNC1Lock.Unlock()
+		close(done)
+		time.Sleep(5 * time.Second)
+	}
+}
+
+func manageTNC2() {
+	for {
+		var conn KISSConnection
+		var err error
+
+		switch strings.ToLower(*tnc2ConnType) {
+		case "tcp":
+			conn, err = newTCPKISSConnection(*tnc2Host, *tnc2Port, false)
+			if err != nil {
+				log.Printf("TNC2: Error creating TCP connection: %v", err)
+				time.Sleep(5 * time.Second)
+				continue
+			}
+		case "serial":
+			if *tnc2SerialPort == "" {
+				log.Fatalf("TNC2: Serial port must be specified for serial connection.")
+			}
+			conn, err = newSerialKISSConnection(*tnc2SerialPort, *tnc2Baud)
+			if err != nil {
+				log.Printf("TNC2: Error creating serial connection: %v", err)
+				time.Sleep(5 * time.Second)
+				continue
+			}
+		default:
+			log.Fatalf("TNC2: Invalid connection type: %s", *tnc2ConnType)
+		}
+
+		currentTNC2Lock.Lock()
+		currentTNC2 = conn
+		currentTNC2Lock.Unlock()
+		lastDataTimeTNC2 = time.Now()
+
+		fr := NewFrameReader(conn, tnc2FrameChan, "TNC2")
+		go fr.Run()
+
+		// Inactivity monitor for TNC2
+		done := make(chan struct{})
+		go func() {
+			deadline := time.Duration(*tcpReadDeadline) * time.Second
+			for {
+				select {
+				case <-done:
+					return
+				default:
+				}
+				time.Sleep(1 * time.Second)
+				if time.Since(lastDataTimeTNC2) > deadline {
+					log.Printf("TNC2: No data received for %v. Reconnecting...", deadline)
+					conn.Close()
+					return
+				}
+			}
+		}()
+
+		// Wait for a fatal error from the frame reader.
+		err = <-fr.errChan
+		log.Printf("TNC2: Connection error detected: %v. Reconnecting...", err)
+		fr.Stop()
+		currentTNC2Lock.Lock()
+		currentTNC2 = nil
+		currentTNC2Lock.Unlock()
+		close(done)
+		time.Sleep(5 * time.Second)
+	}
+}
+
+// -----------------------------------------------------------------------------
+// Forwarding Routines: Forward frames between TNC1 and TNC2
+// -----------------------------------------------------------------------------
+
+func forwardTNC1toTNC2() {
+	for frame := range tnc1FrameChan {
+		currentTNC2Lock.RLock()
+		conn := currentTNC2
+		currentTNC2Lock.RUnlock()
+		if conn != nil {
+			err := conn.SendFrame(buildKISSFrame(frame))
+			if err != nil {
+				log.Printf("Error forwarding frame from TNC1 to TNC2: %v", err)
+			}
+		}
+	}
+}
+
+func forwardTNC2toTNC1() {
+	for frame := range tnc2FrameChan {
+		currentTNC1Lock.RLock()
+		conn := currentTNC1
+		currentTNC1Lock.RUnlock()
+		if conn != nil {
+			err := conn.SendFrame(buildKISSFrame(frame))
+			if err != nil {
+				log.Printf("Error forwarding frame from TNC2 to TNC1: %v", err)
+			}
+		}
+	}
+}
+
+// -----------------------------------------------------------------------------
+// Main: Initialization and Launching of Independent Loops
 // -----------------------------------------------------------------------------
 
 func main() {
 	flag.Parse()
 
 	// Build allowed callsign patterns from the provided comma‑delimited list.
-	if *callsigns != "" {
-		for _, s := range strings.Split(*callsigns, ",") {
+	if *callsignsFlag != "" {
+		for _, s := range strings.Split(*callsignsFlag, ",") {
 			s = strings.ToUpper(strings.TrimSpace(s))
 			if s != "" {
 				allowedCallsigns = append(allowedCallsigns, s)
@@ -1005,109 +1260,18 @@ func main() {
 		}
 	}
 
-	// Auto-reconnect loop for non-loop (client) mode.
-	for {
-		var tnc1Conn, tnc2Conn KISSConnection
-		var err error
+	// Launch the pass‑through listeners for TNC1 and TNC2.
+	go startTNC1PassthroughListener(*tnc1PassthroughPort)
+	go startTNC2PassthroughListener(*tnc2PassthroughPort)
 
-		if *loop {
-			log.Printf("Loopback mode enabled. Listening on TCP port %d for TNC1 and %d for TNC2.", *tnc1PassthroughPort, *tnc2PassthroughPort)
-			tnc1Conn, err = newTCPKISSConnection("0.0.0.0", *tnc1PassthroughPort, true)
-			if err != nil {
-				log.Fatalf("Error setting up TNC1 listener: %v", err)
-			}
-			tnc2Conn, err = newTCPKISSConnection("0.0.0.0", *tnc2PassthroughPort, true)
-			if err != nil {
-				log.Fatalf("Error setting up TNC2 listener: %v", err)
-			}
-		} else {
-			switch strings.ToLower(*tnc1ConnType) {
-			case "tcp":
-				tnc1Conn, err = newTCPKISSConnection(*tnc1Host, *tnc1Port, false)
-				if err != nil {
-					log.Printf("Error creating TNC1 TCP connection: %v", err)
-					time.Sleep(5 * time.Second)
-					continue
-				}
-			case "serial":
-				if *tnc1SerialPort == "" {
-					log.Fatalf("TNC1 serial port must be specified for serial connection.")
-				}
-				tnc1Conn, err = newSerialKISSConnection(*tnc1SerialPort, *tnc1Baud)
-				if err != nil {
-					log.Printf("Error creating TNC1 serial connection: %v", err)
-					time.Sleep(5 * time.Second)
-					continue
-				}
-			default:
-				log.Fatalf("Invalid TNC1 connection type: %s", *tnc1ConnType)
-			}
+	// Launch independent auto‑reconnect loops.
+	go manageTNC1()
+	go manageTNC2()
 
-			switch strings.ToLower(*tnc2ConnType) {
-			case "tcp":
-				tnc2Conn, err = newTCPKISSConnection(*tnc2Host, *tnc2Port, false)
-				if err != nil {
-					log.Printf("Error creating TNC2 TCP connection: %v", err)
-					tnc1Conn.Close()
-					time.Sleep(5 * time.Second)
-					continue
-				}
-			case "serial":
-				if *tnc2SerialPort == "" {
-					log.Fatalf("TNC2 serial port must be specified for serial connection.")
-				}
-				tnc2Conn, err = newSerialKISSConnection(*tnc2SerialPort, *tnc2Baud)
-				if err != nil {
-					log.Printf("Error creating TNC2 serial connection: %v", err)
-					tnc1Conn.Close()
-					time.Sleep(5 * time.Second)
-					continue
-				}
-			default:
-				log.Fatalf("Invalid TNC2 connection type: %s", *tnc2ConnType)
-			}
+	// Launch forwarding routines.
+	go forwardTNC1toTNC2()
+	go forwardTNC2toTNC1()
 
-			// Start pass‑through listeners.
-			go startPassThroughListener(*tnc1PassthroughPort, tnc1Conn, &ptTNC1Conns, &ptTNC1Lock, "TNC1")
-			go startPassThroughListener(*tnc2PassthroughPort, tnc2Conn, &ptTNC2Conns, &ptTNC2Lock, "TNC2")
-		}
-
-		tnc1Chan := make(chan []byte, 100)
-		tnc2Chan := make(chan []byte, 100)
-
-		// Create FrameReaders with error channels.
-		fr1 := NewFrameReader(tnc1Conn, tnc1Chan, "TNC1")
-		fr2 := NewFrameReader(tnc2Conn, tnc2Chan, "TNC2")
-		go fr1.Run()
-		go fr2.Run()
-
-		// Start packet processing goroutines.
-		go func() {
-			for pkt := range tnc1Chan {
-				processAndForwardPacket(pkt, tnc2Conn, "TNC1->TNC2")
-			}
-		}()
-		go func() {
-			for pkt := range tnc2Chan {
-				processAndForwardPacket(pkt, tnc1Conn, "TNC2->TNC1")
-			}
-		}()
-
-		log.Printf("Proxy running. Waiting for packets...")
-		// Wait for a reconnect event from either FrameReader.
-		select {
-		case err := <-fr1.errChan:
-			log.Printf("TNC1 connection error detected: %v", err)
-		case err := <-fr2.errChan:
-			log.Printf("TNC2 connection error detected: %v", err)
-		}
-
-		// Cleanup: stop frame readers and close connections.
-		fr1.Stop()
-		fr2.Stop()
-		tnc1Conn.Close()
-		tnc2Conn.Close()
-		log.Printf("Attempting to reconnect in 5 seconds...")
-		time.Sleep(5 * time.Second)
-	}
+	// Block forever.
+	select {}
 }

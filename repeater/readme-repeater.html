@@ -145,6 +145,14 @@ go build -o ax25repeater repeater.go
       </td>
       <td><code>0</code></td>
     </tr>
+    <tr>
+      <td><code>--tcp-read-deadline</code></td>
+      <td>
+        TCP read deadline in seconds for TNC connections (application‑level timeout). If no complete KISS frame is received within this period,
+        the connection is closed and a reconnect is triggered.
+      </td>
+      <td><code>600</code></td>
+    </tr>
   </table>
 
   <h2 id="examples">Examples</h2>
@@ -198,7 +206,7 @@ go run ax25repeater.go --save-files
       The state machine buffers data packets until a complete burst is received, then immediately forwards the burst to the receiver.
     </li>
     <li>
-      <strong>Two‑Way Pass‑Through:</strong> 
+      <strong>Two‑Way Pass‑Through:</strong>
       All KISS frames sent to the TNC are broadcast to any pass‑through clients connected on the specified port.
       In addition, any data received on the pass‑through port from a client is forwarded to the TNC.
     </li>
@@ -213,6 +221,11 @@ go run ax25repeater.go --save-files
       If the transfer was base64‑encoded, each packet is decoded.
       If compression was used, the reassembled data is decompressed via zlib before being saved.
       The file is then stored locally using a unique filename based on the sender, receiver, file ID, and original filename.
+    </li>
+    <li>
+      <strong>TCP Read Deadline:</strong>
+      The <code>--tcp-read-deadline</code> option sets an application‑level timeout for TCP‑based TNC connections.
+      If no complete KISS frame is received within the specified number of seconds, the connection is closed and a reconnect is triggered.
     </li>
   </ul>
 

@@ -123,8 +123,8 @@ go build -o ax25proxy proxy.go
     <tr>
       <td><code>--callsigns</code></td>
       <td>
-        Optional comma‑delimited list of valid sender/receiver callsigns. Supports wildcards and a comma-delimited list. Example: "MM3NDH-14,MM5NDH-*,*-15"
-        When empty, all callsigns are allowed.
+        Optional comma‑delimited list of valid sender/receiver callsigns. Supports wildcards and a comma‑delimited list.
+        Example: <code>"MM3NDH-14,MM5NDH-*,*-15"</code>. When empty, all callsigns are allowed.
       </td>
       <td><em>empty</em></td>
     </tr>
@@ -147,6 +147,13 @@ go build -o ax25proxy proxy.go
         In loop mode the application uses the pass‑through ports for TNC1 and TNC2 and does not use the TNC1/TNC2 file‑transfer options.
       </td>
       <td><code>false</code></td>
+    </tr>
+    <tr>
+      <td><code>--tcp-read-deadline</code></td>
+      <td>
+        TCP read deadline in seconds for TNC connections (application‑level timeout). If no complete KISS frame is received from a TCP‑based TNC within this period, the connection is closed and a reconnect is triggered.
+      </td>
+      <td><code>600</code></td>
     </tr>
   </table>
 
@@ -210,6 +217,10 @@ go run proxy.go --callsigns=N0CALL,*-R --debug
     <li>
       Pass‑through clients receive a copy of every KISS frame received from the configured TNCs.
       If a client sends data, that data is forwarded directly to the corresponding TNC.
+    </li>
+    <li>
+      The <code>--tcp-read-deadline</code> option specifies an application‑level timeout for TCP‑based TNC connections.
+      If no complete KISS frame is received within the specified number of seconds, the connection is closed to trigger a reconnect.
     </li>
   </ul>
 

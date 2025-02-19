@@ -40,8 +40,24 @@ var (
 	saveFiles = flag.Bool("save-files", false, "Save received files locally (reassemble from data packets)")
 	// New flag for send delay (in milliseconds)
 	sendDelay = flag.Int("send-delay", 0, "Minimum delay in milliseconds after the TNC last sent us a frame before sending a frame to the TNC")
+	// NEW: tcp-read-deadline flag (only for TCP TNC)
+	tcpReadDeadline = flag.Int("tcp-read-deadline", 600, "Time (in seconds) without data from TNC before triggering reconnect (only for TCP TNC)")
 )
 
+// Global variable to hold the current TNC connection (updated on reconnect)
+var (
+	globalTNCConn      KISSConnection
+	globalTNCConnMutex sync.RWMutex
+)
+
+// getGlobalTNCConn returns the current TNC connection.
+func getGlobalTNCConn() KISSConnection {
+	globalTNCConnMutex.RLock()
+	defer globalTNCConnMutex.RUnlock()
+	return globalTNCConn
+}
+
+//
 // Instead of a map for allowed callsigns, we now use a slice of patterns.
 var allowedCallsigns []string
 
@@ -295,7 +311,7 @@ func parsePacket(rawFrame []byte) *Packet {
 		seq = int(seqInt)
 		burstTo = int(burstInt)
 	}
-	debugf("Parsed DATA packet: sender=%s, receiver=%s, fileID=%s, seq=%d, burstTo=%d",
+	debugf("Parsed DATA packet: sender=%s, receiver=%s, fileID=%s, seq=%d, burstTo %d",
 		sender, receiver, fileID, seq, burstTo)
 	return &Packet{
 		Type:           "data",
@@ -384,10 +400,9 @@ func broadcastToClients(data []byte, lock *sync.Mutex, conns *[]net.Conn, exclud
 	}
 }
 
-//
 // When a pass‑through client sends data, we want to forward it to the TNC
 // but exclude that client from the broadcast.
-func handlePassThroughRead(client net.Conn, tncConn KISSConnection) {
+func handlePassThroughRead(client net.Conn) {
 	defer client.Close()
 	buf := make([]byte, 1024)
 	for {
@@ -400,6 +415,12 @@ func handlePassThroughRead(client net.Conn, tncConn KISSConnection) {
 		}
 		if n > 0 {
 			debugf("Pass‑through received %d bytes from %s: % X", n, client.RemoteAddr(), buf[:n])
+			// Retrieve the current TNC connection.
+			tncConn := getGlobalTNCConn()
+			if tncConn == nil {
+				log.Printf("No TNC connection available; dropping pass‑through data from %s", client.RemoteAddr())
+				continue
+			}
 			// Send to the TNC; note that we no longer broadcast here.
 			if err := tncConn.SendFrameExcluding(buf[:n], client); err != nil {
 				log.Printf("Error sending data from pass‑through client to TNC: %v", err)
@@ -409,7 +430,9 @@ func handlePassThroughRead(client net.Conn, tncConn KISSConnection) {
 	}
 }
 
-func startPassThroughListener(port int, tncConn KISSConnection) {
+// startPassThroughListener is modified to start the listener once.
+// It no longer takes a tncConn parameter.
+func startPassThroughListener(port int) {
 	addr := fmt.Sprintf("0.0.0.0:%d", port)
 	ln, err := net.Listen("tcp", addr)
 	if err != nil {
@@ -426,7 +449,7 @@ func startPassThroughListener(port int, tncConn KISSConnection) {
 		ptLock.Lock()
 		ptConns = append(ptConns, client)
 		ptLock.Unlock()
-		go handlePassThroughRead(client, tncConn)
+		go handlePassThroughRead(client)
 	}
 }
 
@@ -936,6 +959,9 @@ func main() {
 		log.Printf("--callsigns not set; allowing any callsign.")
 	}
 
+	// Start the pass‑through listener once in a separate goroutine.
+	go startPassThroughListener(*passthroughPort)
+
 	for {
 		tncConn, err := createTNCConnection()
 		if err != nil {
@@ -944,11 +970,33 @@ func main() {
 			continue
 		}
 
-		go startPassThroughListener(*passthroughPort, tncConn)
+		// Update the global TNC connection.
+		globalTNCConnMutex.Lock()
+		globalTNCConn = tncConn
+		globalTNCConnMutex.Unlock()
 
 		frameChan := make(chan []byte, 100)
 		fr := NewFrameReader(tncConn, frameChan)
 		go fr.Run()
+
+		// NEW: Only for TCP TNC connections, start an inactivity monitor.
+		if strings.ToLower(*tncConnType) == "tcp" {
+			go func(conn KISSConnection) {
+				deadline := time.Duration(*tcpReadDeadline) * time.Second
+				for {
+					time.Sleep(1 * time.Second)
+					lastTNCRecvMutex.Lock()
+					last := lastTNCRecvTime
+					lastTNCRecvMutex.Unlock()
+					// If we've received data before and the inactivity period is exceeded…
+					if !last.IsZero() && time.Since(last) > deadline {
+						log.Printf("No data received from TNC for %d seconds; triggering reconnect", *tcpReadDeadline)
+						conn.Close() // Force the FrameReader to error out and break the inner loop.
+						return
+					}
+				}
+			}(tncConn)
+		}
 
 		log.Printf("Repeater running. Waiting for packets...")
 		reconnect := false
