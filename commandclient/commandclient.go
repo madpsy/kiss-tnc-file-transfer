@@ -678,7 +678,8 @@ func main() {
 				log.Printf("GET command requires a filename")
 				continue
 			}
-			expectedFile = tokens[1]
+			expectedFile = strings.Join(tokens[1:], " ")
+
 		}
 
 		output, exitCode, procErr := spawnReceiverProcess(args, expectedFile)

@@ -606,7 +606,7 @@ func main() {
 				go invokeSenderBinary(args, sender, "LIST.txt", listing)
 			} else {
 				log.Printf("Unrecognized command: %s", command)
-				// Optionally, send back an error response if desired.
+				sendResponseWithDetails(conn, cmdID, command, 0, "UNKNOWN COMMAND. AVAILABLE: LIST, GET")
 			}
 		}
 	}

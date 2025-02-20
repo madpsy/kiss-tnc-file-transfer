@@ -474,15 +474,16 @@ func (fr *FrameReader) Run() {
 		data, err := fr.conn.RecvData(100 * time.Millisecond)
 		if err != nil {
 			// Log the error and force an immediate reconnect by setting lastDataTime very old.
-			if err == io.EOF || strings.Contains(err.Error(), "use of closed network connection") {
-				log.Printf("Receive error (connection closed): %v", err)
-			} else {
-				log.Printf("Receive error: %v", err)
-			}
-			// Set lastDataTime to the Unix epoch to force the inactivity monitor to reconnect
-			setLastDataTime(time.Unix(0, 0))
-			fr.running = false
-			break
+			if err != nil {
+    // Suppress logging if the error is due to a closed connection.
+    if !(err == io.EOF || strings.Contains(err.Error(), "use of closed network connection")) {
+        log.Printf("Receive error: %v", err)
+    }
+    setLastDataTime(time.Unix(0, 0))
+    fr.running = false
+    break
+}
+
 		}
 		if len(data) > 0 {
 			// Update global lastDataTime when data is received.
