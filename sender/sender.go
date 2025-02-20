@@ -1303,32 +1303,31 @@ func sendStdin(args *Arguments) error {
 	log.Printf("Total bytes sent: %d bytes in %.2fs (%.2f bytes/s).", totalBytesSent, overallElapsed, overallRate)
 	log.Printf("Total retries: %d.", totalRetries)
 	log.Printf("=====================")
-	finalConfirmationInfo := fmt.Sprintf("%s>%s:%s:ACK:FIN-ACK", padCallsign(args.MyCallsign), padCallsign(args.ReceiverCallsign), fileID)
-	finalConfirmationPkt := append(buildAX25Header(args.MyCallsign, args.ReceiverCallsign), []byte(finalConfirmationInfo)...)
-	finalFrame := buildKISSFrame(finalConfirmationPkt)
-	conn.SendFrame(finalFrame)
-	log.Printf("Sent FIN-ACK after final cumulative ACK. Transfer fully completed.")
-	finalWaitPeriod := 1500*time.Millisecond + time.Duration(args.TimeoutSeconds)*time.Second
-	log.Printf("Listening for re-transmitted ACK for %.2f seconds...", finalWaitPeriod.Seconds())
-	endTime := time.Now().Add(finalWaitPeriod)
-	for time.Now().Before(endTime) {
-		select {
-		case ackPkt := <-frameChan:
-			parsedAck := parsePacket(ackPkt)
-			if parsedAck != nil && parsedAck.Type == "ack" && strings.Contains(parsedAck.Ack, "-") {
-				// Only resend if the ACK is from the expected receiver and the fileID matches.
-				if strings.TrimSpace(parsedAck.Sender) == padCallsign(args.ReceiverCallsign) &&
-					strings.TrimSpace(parsedAck.FileID) == fileID {
-					log.Printf("Re-received cumulative ACK from expected receiver, re-sending final confirmation FIN-ACK.")
-					conn.SendFrame(finalFrame)
-				} else {
-					log.Printf("Ignored ACK from unexpected sender (%s) or mismatched fileID (expected: %s, got: %s).",
-						parsedAck.Sender, fileID, parsedAck.FileID)
-				}
-			}
-		case <-time.After(500 * time.Millisecond):
-		}
-	}
+finalConfirmationInfo := fmt.Sprintf("%s>%s:%s:ACK:FIN-ACK", padCallsign(args.MyCallsign), padCallsign(args.ReceiverCallsign), fileID)
+finalConfirmationPkt := append(buildAX25Header(args.MyCallsign, args.ReceiverCallsign), []byte(finalConfirmationInfo)...)
+finalFrame := buildKISSFrame(finalConfirmationPkt)
+conn.SendFrame(finalFrame)
+log.Printf("Sent FIN-ACK after final cumulative ACK. Transfer fully completed.")
+finalWaitPeriod := 1500 * time.Millisecond + time.Duration(args.TimeoutSeconds)*time.Second
+log.Printf("Listening for re-transmitted ACK for %.2f seconds...", finalWaitPeriod.Seconds())
+endTime := time.Now().Add(finalWaitPeriod)
+for time.Now().Before(endTime) {
+    select {
+    case ackPkt := <-frameChan:
+        parsedAck := parsePacket(ackPkt)
+        if parsedAck != nil && parsedAck.Type == "ack" && strings.Contains(parsedAck.Ack, "-") {
+            // Only check the ACK from the payload (not from AX.25 header).
+            if strings.TrimSpace(parsedAck.FileID) == fileID {
+                log.Printf("Re-received cumulative ACK from expected receiver, re-sending final confirmation FIN-ACK.")
+                conn.SendFrame(finalFrame)
+            } else {
+                log.Printf("Ignored ACK from unexpected sender (%s) or mismatched fileID (expected: %s, got: %s).",
+                    parsedAck.Sender, fileID, parsedAck.FileID)
+            }
+        }
+    case <-time.After(500 * time.Millisecond):
+    }
+}
 	reader.Stop()
 	conn.Close()
 	return nil

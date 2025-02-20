@@ -4,6 +4,7 @@ package main
 import (
 	"bufio"
 	"bytes"
+	"crypto/rand"
 	"flag"
 	"fmt"
 	"go.bug.st/serial"
@@ -18,7 +19,6 @@ import (
 	"strings"
 	"sync"
 	"time"
-	"crypto/rand"
 )
 
 // Global constants for KISS framing.
@@ -54,8 +54,10 @@ type Arguments struct {
 	Baud               int    // used with serial
 	ReceiverPort       int    // port for transparent passthrough (TCP listener)
 	ReceiverBinary     string // path to the receiver binary
+	SenderBinary       string // path to the sender binary
 	Debug              bool   // enable debug logging
-	Directory          string // directory to save files (optional, default current directory)
+	SaveDirectory      string // directory to save files (formerly -directory)
+	ServeDirectory     string // directory to send files from for sender logic
 }
 
 func parseArguments() *Arguments {
@@ -69,8 +71,10 @@ func parseArguments() *Arguments {
 	flag.IntVar(&args.Baud, "baud", 115200, "Baud rate for serial connection")
 	flag.IntVar(&args.ReceiverPort, "receiver-port", 5012, "TCP port for transparent passthrough (default 5012)")
 	flag.StringVar(&args.ReceiverBinary, "receiver-binary", "receiver", "Path to the receiver binary")
+	flag.StringVar(&args.SenderBinary, "sender-binary", "sender", "Path to the sender binary")
 	flag.BoolVar(&args.Debug, "debug", false, "Enable debug logging")
-	flag.StringVar(&args.Directory, "directory", ".", "Directory to save files (optional, default current directory)")
+	flag.StringVar(&args.SaveDirectory, "save-directory", ".", "Directory to save files (optional, default current directory)")
+	flag.StringVar(&args.ServeDirectory, "serve-directory", ".", "Directory to send files from for sender logic")
 	flag.Parse()
 
 	if args.MyCallsign == "" {
@@ -166,6 +170,23 @@ func (s *SerialKISSConnection) Write(b []byte) (int, error) {
 
 func (s *SerialKISSConnection) Close() error {
 	return s.ser.Close()
+}
+
+func getUniqueFilePath(dir, filename string) string {
+	ext := filepath.Ext(filename)                      // e.g., ".txt"
+	baseName := strings.TrimSuffix(filename, ext)      // e.g., "file"
+	candidate := filepath.Join(dir, filename)
+	if _, err := os.Stat(candidate); os.IsNotExist(err) {
+		return candidate // File doesn't exist; use the original name.
+	}
+	// File exists, so keep trying with suffixes until a non-existent filename is found.
+	for i := 1; ; i++ {
+		candidate = filepath.Join(dir, fmt.Sprintf("%s_%d%s", baseName, i, ext))
+		if _, err := os.Stat(candidate); os.IsNotExist(err) {
+			break
+		}
+	}
+	return candidate
 }
 
 // Helper: escapeData applies KISS escaping.
@@ -458,95 +479,157 @@ func handleReceiverConnection(remoteConn net.Conn, b *Broadcaster, underlying io
 // spawnReceiverProcess spawns the receiver process with required arguments.
 // All stderr messages are printed immediately, and stdout is buffered
 // and returned only after the process has completed.
-// If the expected file (extracted from a stderr message) does not match the expected value,
-// the receiver process is killed. It returns the stdout output, the process exit code, and an error.
 func spawnReceiverProcess(args *Arguments, fileid string, expectedFile string) ([]byte, int, error) {
-    recvArgs := []string{
-        "-connection", "tcp",
-        "-host", "localhost",
-        "-port", strconv.Itoa(args.ReceiverPort),
-        "-my-callsign", args.MyCallsign,
-        "-callsigns", args.FileServerCallsign,
-        "-stdout",
-        "-one-file",
-        "-fileid", fileid,
-    }
-    cmd := exec.Command(args.ReceiverBinary, recvArgs...)
+	recvArgs := []string{
+		"-connection", "tcp",
+		"-host", "localhost",
+		"-port", strconv.Itoa(args.ReceiverPort),
+		"-my-callsign", args.MyCallsign,
+		"-callsigns", args.FileServerCallsign,
+		"-stdout",
+		"-one-file",
+		"-fileid", fileid,
+	}
+	cmd := exec.Command(args.ReceiverBinary, recvArgs...)
 
-    stdoutPipe, err := cmd.StdoutPipe()
-    if err != nil {
-        return nil, 0, fmt.Errorf("error getting stdout pipe: %v", err)
-    }
-    stderrPipe, err := cmd.StderrPipe()
-    if err != nil {
-        return nil, 0, fmt.Errorf("error getting stderr pipe: %v", err)
-    }
+	stdoutPipe, err := cmd.StdoutPipe()
+	if err != nil {
+		return nil, 0, fmt.Errorf("error getting stdout pipe: %v", err)
+	}
+	stderrPipe, err := cmd.StderrPipe()
+	if err != nil {
+		return nil, 0, fmt.Errorf("error getting stderr pipe: %v", err)
+	}
 
-    if err := cmd.Start(); err != nil {
-        return nil, 0, fmt.Errorf("error starting receiver process: %v", err)
-    }
+	if err := cmd.Start(); err != nil {
+		return nil, 0, fmt.Errorf("error starting receiver process: %v", err)
+	}
 
-    var stdoutBuf bytes.Buffer
-    var wg sync.WaitGroup
-    wg.Add(2)
+	var stdoutBuf bytes.Buffer
+	var wg sync.WaitGroup
+	wg.Add(2)
 
-    // Process stdout: collect the output.
-    go func() {
-        scanner := bufio.NewScanner(stdoutPipe)
-        for scanner.Scan() {
-            line := scanner.Text()
-            stdoutBuf.WriteString(line + "\n")
-        }
-        wg.Done()
-    }()
+	// Process stdout: collect the output.
+	go func() {
+		scanner := bufio.NewScanner(stdoutPipe)
+		for scanner.Scan() {
+			line := scanner.Text()
+			stdoutBuf.WriteString(line + "\n")
+		}
+		wg.Done()
+	}()
 
-    // Process stderr: print all lines immediately.
-    go func() {
-        scanner := bufio.NewScanner(stderrPipe)
-        for scanner.Scan() {
-            line := scanner.Text()
-            fmt.Println(line)
-            // Removed the filename regex check.
-        }
-        wg.Done()
-    }()
+	// Process stderr: print all lines immediately.
+	go func() {
+		scanner := bufio.NewScanner(stderrPipe)
+		for scanner.Scan() {
+			line := scanner.Text()
+			fmt.Println(line)
+		}
+		wg.Done()
+	}()
 
-    // Create channel to capture process exit.
-    doneChan := make(chan error, 1)
-    go func() {
-        doneChan <- cmd.Wait()
-    }()
+	// Create channel to capture process exit.
+	doneChan := make(chan error, 1)
+	go func() {
+		doneChan <- cmd.Wait()
+	}()
 
-    // Setup channel for Ctrl-C.
-    sigChan := make(chan os.Signal, 1)
-    signal.Notify(sigChan, os.Interrupt)
-    defer signal.Stop(sigChan)
+	// Setup channel for Ctrl-C.
+	sigChan := make(chan os.Signal, 1)
+	signal.Notify(sigChan, os.Interrupt)
+	defer signal.Stop(sigChan)
 
-    var procErr error
-    select {
-    case <-sigChan:
-        if killErr := cmd.Process.Kill(); killErr != nil {
-            procErr = fmt.Errorf("failed to kill receiver process: %v", killErr)
-        } else {
-            procErr = fmt.Errorf("receiver process killed by user")
-        }
-        procErr = <-doneChan
-    case procErr = <-doneChan:
-        // Process terminated normally.
-    }
+	var procErr error
+	select {
+	case <-sigChan:
+		if killErr := cmd.Process.Kill(); killErr != nil {
+			procErr = fmt.Errorf("failed to kill receiver process: %v", killErr)
+		} else {
+			procErr = fmt.Errorf("receiver process killed by user")
+		}
+		procErr = <-doneChan
+	case procErr = <-doneChan:
+		// Process terminated normally.
+	}
 
-    wg.Wait()
+	wg.Wait()
 
-    exitCode := 0
-    if procErr != nil {
-        if exitError, ok := procErr.(*exec.ExitError); ok {
-            exitCode = exitError.ExitCode()
-        } else {
-            exitCode = 1
-        }
-    }
+	exitCode := 0
+	if procErr != nil {
+		if exitError, ok := procErr.(*exec.ExitError); ok {
+			exitCode = exitError.ExitCode()
+		} else {
+			exitCode = 1
+		}
+	}
 
-    return stdoutBuf.Bytes(), exitCode, procErr
+	return stdoutBuf.Bytes(), exitCode, procErr
+}
+
+// spawnSenderProcess spawns the sender process for a PUT command.
+// It uses the same options as the receiver process except using -stdin instead of -stdout,
+// and adds -receiver-callsign with the file server's callsign.
+// It reads the file (from the serve-directory) and pipes its contents to the sender's stdin.
+func spawnSenderProcess(args *Arguments, fileid string, filename string) (int, error) {
+	senderArgs := []string{
+		"-connection", "tcp",
+		"-host", "localhost",
+		"-port", strconv.Itoa(args.ReceiverPort),
+		"-my-callsign", args.MyCallsign,
+		"-stdin",
+		"-fileid", fileid,
+		"-receiver-callsign", args.FileServerCallsign,
+		"-file-name", filename, // Added file-name argument
+	}
+	cmd := exec.Command(args.SenderBinary, senderArgs...)
+
+	stdinPipe, err := cmd.StdinPipe()
+	if err != nil {
+		return 1, fmt.Errorf("error getting stdin pipe: %v", err)
+	}
+	stderrPipe, err := cmd.StderrPipe()
+	if err != nil {
+		return 1, fmt.Errorf("error getting stderr pipe: %v", err)
+	}
+
+	if err := cmd.Start(); err != nil {
+		return 1, fmt.Errorf("error starting sender process: %v", err)
+	}
+
+	// Read file content from the serve directory.
+	filePath := filepath.Join(args.ServeDirectory, filename)
+	fileData, err := os.ReadFile(filePath)
+	if err != nil {
+		return 1, fmt.Errorf("error reading file %s: %v", filePath, err)
+	}
+
+	_, err = stdinPipe.Write(fileData)
+	if err != nil {
+		return 1, fmt.Errorf("error writing to sender process stdin: %v", err)
+	}
+	stdinPipe.Close()
+
+	// Process stderr: print all lines immediately.
+	go func() {
+		scanner := bufio.NewScanner(stderrPipe)
+		for scanner.Scan() {
+			line := scanner.Text()
+			fmt.Println(line)
+		}
+	}()
+
+	err = cmd.Wait()
+	exitCode := 0
+	if err != nil {
+		if exitError, ok := err.(*exec.ExitError); ok {
+			exitCode = exitError.ExitCode()
+		} else {
+			exitCode = 1
+		}
+		return exitCode, err
+	}
+	return exitCode, nil
 }
 
 // ------------------ Main ------------------
@@ -602,7 +685,7 @@ func main() {
 
 	log.Printf("Command Client started. My callsign: %s, File Server callsign: %s",
 		strings.ToUpper(args.MyCallsign), strings.ToUpper(args.FileServerCallsign))
-	log.Printf("Enter commands (e.g. LIST, GET filename, etc.):")
+	log.Printf("Enter commands (e.g. LIST, GET filename, PUT filename, etc.):")
 
 	scanner := bufio.NewScanner(os.Stdin)
 	for {
@@ -613,6 +696,26 @@ func main() {
 		commandLine := scanner.Text()
 		if strings.TrimSpace(commandLine) == "" {
 			continue
+		}
+
+		// If the command is a PUT, verify that the file is accessible before sending.
+		tokens := strings.Fields(commandLine)
+		if len(tokens) > 0 && strings.ToUpper(tokens[0]) == "PUT" {
+			idx := strings.Index(commandLine, " ")
+			if idx == -1 {
+				log.Printf("PUT command requires a filename")
+				continue
+			}
+			filename := strings.TrimSpace(commandLine[idx:])
+			if filename == "" {
+				log.Printf("PUT command requires a filename")
+				continue
+			}
+			filePath := filepath.Join(args.ServeDirectory, filename)
+			if _, err := os.Stat(filePath); err != nil {
+				log.Printf("Cannot read file %s: %v", filePath, err)
+				continue
+			}
 		}
 
 		// Build and send the command (which now includes a 2-char ID).
@@ -646,13 +749,14 @@ func main() {
 			fmt.Println("##########")
 		}
 
-		// For GET or LIST commands, also spawn the receiver process to get file data.
-		tokens := strings.Fields(commandLine)
+		// For LIST, GET, or PUT commands, spawn the appropriate process.
+		// (Note: The file existence check for PUT has already been performed.)
+		tokens = strings.Fields(commandLine)
 		if len(tokens) == 0 {
 			continue
 		}
 		cmdType := strings.ToUpper(tokens[0])
-		if cmdType != "LIST" && cmdType != "GET" {
+		if cmdType != "LIST" && cmdType != "GET" && cmdType != "PUT" {
 			continue
 		}
 
@@ -670,26 +774,46 @@ func main() {
 				continue
 			}
 			expectedFile = strings.Join(tokens[1:], " ")
-
+		} else if cmdType == "PUT" {
+			// Use the entire remainder of the command line as the filename.
+			idx := strings.Index(commandLine, " ")
+			if idx == -1 {
+				log.Printf("PUT command requires a filename")
+				continue
+			}
+			expectedFile = strings.TrimSpace(commandLine[idx:])
+			if expectedFile == "" {
+				log.Printf("PUT command requires a filename")
+				continue
+			}
 		}
 
-		output, exitCode, procErr := spawnReceiverProcess(args, cmdID, expectedFile)
-		if exitCode == 0 {
-			if cmdType == "LIST" {
-				fmt.Println("LIST contents:\n")
-				fmt.Print(string(output))
-			} else if cmdType == "GET" {
-				// Save the file to the specified directory.
-				filePath := filepath.Join(args.Directory, expectedFile)
-				err = os.WriteFile(filePath, output, 0644)
-				if err != nil {
-					log.Printf("Error writing to file %s: %v", filePath, err)
-				} else {
-					log.Printf("Saved output to %s", filePath)
-				}
+		if cmdType == "PUT" {
+			exitCode, procErr := spawnSenderProcess(args, cmdID, expectedFile)
+			if exitCode == 0 {
+				log.Printf("PUT command successful: sent %s", expectedFile)
+			} else {
+				log.Printf("Sender process error: %v", procErr)
 			}
-		} else {
-			log.Printf("Receiver process error: %v", procErr)
+		} else { // LIST or GET
+			output, exitCode, procErr := spawnReceiverProcess(args, cmdID, expectedFile)
+			if exitCode == 0 {
+				if cmdType == "LIST" {
+					fmt.Println("LIST contents:\n")
+					fmt.Print(string(output))
+				} else if cmdType == "GET" {
+					// Determine a unique file path to avoid overwriting an existing file.
+					uniqueFilePath := getUniqueFilePath(args.SaveDirectory, expectedFile)
+					err = os.WriteFile(uniqueFilePath, output, 0644)
+					if err != nil {
+						log.Printf("Error writing to file %s: %v", uniqueFilePath, err)
+					} else {
+						log.Printf("Saved output to %s", uniqueFilePath)
+					}
+				}
+			} else {
+				log.Printf("Receiver process error: %v", procErr)
+			}
 		}
 	}
 	if err := scanner.Err(); err != nil {

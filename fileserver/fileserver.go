@@ -17,6 +17,7 @@ import (
 	"strings"
 	"sync"
 	"time"
+	"sort"
 )
 
 // Global constants for KISS framing.
@@ -30,16 +31,19 @@ var serverCallsign string
 
 // Command-line arguments structure.
 type Arguments struct {
-	MyCallsign       string // your own callsign
-	Connection       string // "tcp" or "serial"
-	Host             string // used with TCP
-	Port             int    // used with TCP
-	SerialPort       string // used with serial
-	Baud             int    // used with serial
-	AllowedCallsigns string // comma-delimited list for filtering sender callsigns
-	Directory        string // directory to serve files from (mandatory)
-	SenderBinary     string // path to the binary used to send files (mandatory)
-	SenderPort       int    // TCP port for transparent passthrough (default 5011)
+	MyCallsign     string // your own callsign
+	Connection     string // "tcp" or "serial"
+	Host           string // used with TCP
+	Port           int    // used with TCP
+	SerialPort     string // used with serial
+	Baud           int    // used with serial
+	GetCallsigns   string // comma-delimited list for filtering GET sender callsigns (supports wildcards)
+	PutCallsigns   string // comma-delimited list for filtering PUT sender callsigns (supports wildcards)
+	ServeDirectory string // directory to serve files from (mandatory)
+	SaveDirectory  string // where received files should be saved (default current directory)
+	SenderBinary   string // path to the binary used to send files (mandatory)
+	ReceiverBinary string // path to the binary used to receive files (default "receiver")
+	SenderPort     int    // TCP port for transparent passthrough (default 5011)
 }
 
 func parseArguments() *Arguments {
@@ -50,9 +54,12 @@ func parseArguments() *Arguments {
 	flag.IntVar(&args.Port, "port", 9001, "TCP port (if connection is tcp)")
 	flag.StringVar(&args.SerialPort, "serial-port", "", "Serial port (e.g., COM3 or /dev/ttyUSB0)")
 	flag.IntVar(&args.Baud, "baud", 115200, "Baud rate for serial connection")
-	flag.StringVar(&args.AllowedCallsigns, "callsigns", "", "Comma delimited list of allowed sender callsign patterns (supports wildcards, e.g. MM5NDH-*,*-15)")
-	flag.StringVar(&args.Directory, "directory", "", "Directory to serve files from (mandatory)")
+	flag.StringVar(&args.GetCallsigns, "get-callsigns", "", "Comma delimited list of allowed sender callsign patterns for GET command (supports wildcards, e.g. MM5NDH-*,*-15)")
+	flag.StringVar(&args.PutCallsigns, "put-callsigns", "", "Comma delimited list of allowed sender callsign patterns for PUT command (supports wildcards)")
+	flag.StringVar(&args.ServeDirectory, "serve-directory", "", "Directory to serve files from (mandatory)")
+	flag.StringVar(&args.SaveDirectory, "save-directory", ".", "Directory where received files should be saved (default current directory)")
 	flag.StringVar(&args.SenderBinary, "sender-binary", "", "Path to the binary used to send files (mandatory)")
+	flag.StringVar(&args.ReceiverBinary, "receiver-binary", "receiver", "Path to the binary used to receive files (default 'receiver')")
 	flag.IntVar(&args.SenderPort, "sender-port", 5011, "TCP port for transparent passthrough (default 5011)")
 	flag.Parse()
 
@@ -62,8 +69,8 @@ func parseArguments() *Arguments {
 	if args.Connection == "serial" && args.SerialPort == "" {
 		log.Fatalf("--serial-port is required for serial connection.")
 	}
-	if args.Directory == "" {
-		log.Fatalf("--directory is required.")
+	if args.ServeDirectory == "" {
+		log.Fatalf("--serve-directory is required.")
 	}
 	if args.SenderBinary == "" {
 		log.Fatalf("--sender-binary is required.")
@@ -327,12 +334,31 @@ func createResponsePacket(cmdID string, status int, msg string) []byte {
 	return []byte(responseText)
 }
 
-// Global slice for allowed sender callsigns.
-var allowedCallsigns []string
+// Global slices for allowed sender callsigns for GET and PUT.
+var getAllowedCallsigns []string
+var putAllowedCallsigns []string
 
-func callsignAllowed(cs string) bool {
+func callsignAllowedForGet(cs string) bool {
+	// If no restrictions provided, allow all.
+	if len(getAllowedCallsigns) == 0 {
+		return true
+	}
 	cs = strings.ToUpper(strings.TrimSpace(cs))
-	for _, pattern := range allowedCallsigns {
+	for _, pattern := range getAllowedCallsigns {
+		if match, err := filepath.Match(pattern, cs); err == nil && match {
+			return true
+		}
+	}
+	return false
+}
+
+func callsignAllowedForPut(cs string) bool {
+	// If no restrictions provided, allow all.
+	if len(putAllowedCallsigns) == 0 {
+		return true
+	}
+	cs = strings.ToUpper(strings.TrimSpace(cs))
+	for _, pattern := range putAllowedCallsigns {
 		if match, err := filepath.Match(pattern, cs); err == nil && match {
 			return true
 		}
@@ -345,13 +371,32 @@ func listFiles(dir string) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	var names []string
+
+	// Filter out directories and files starting with a dot.
+	var files []os.FileInfo
 	for _, entry := range entries {
-		if !entry.IsDir() {
-			names = append(names, entry.Name())
+		if !entry.IsDir() && !strings.HasPrefix(entry.Name(), ".") {
+			files = append(files, entry)
 		}
 	}
-	return strings.Join(names, "\n"), nil
+
+	// Sort files alphanumerically by filename.
+	sort.Slice(files, func(i, j int) bool {
+		return strings.ToLower(files[i].Name()) < strings.ToLower(files[j].Name())
+	})
+
+	var output strings.Builder
+
+	// Write header.
+	output.WriteString(fmt.Sprintf("%-30s %-20s %10s\n", "File Name", "Modified Date", "Size"))
+	output.WriteString(strings.Repeat("-", 65) + "\n")
+
+	// Write file details.
+	for _, file := range files {
+		modTime := file.ModTime().Format("2006-01-02 15:04:05")
+		output.WriteString(fmt.Sprintf("%-30s %-20s %10d\n", file.Name(), modTime, file.Size()))
+	}
+	return output.String(), nil
 }
 
 // --- Broadcaster ---
@@ -509,21 +554,117 @@ func invokeSenderBinary(args *Arguments, receiverCallsign, fileName, inputData, 
 	}
 }
 
+// --- Invoking the Receiver Binary ---
+// For a PUT command, this function attempts to start the receiver binary.
+// It first tries to obtain stdout and stderr pipes and calls cmd.Start().
+// If starting fails (for example, if the binary is not found), it returns an error.
+// If starting succeeds, it spawns a goroutine to capture stdout (the received file)
+// and write it to a file in the save directory.
+func invokeReceiverBinary(args *Arguments, senderCallsign, fileName, cmdID string) error {
+	var cmdArgs []string
+	cmdArgs = append(cmdArgs, "-connection=tcp", "-host=localhost", fmt.Sprintf("-port=%d", args.SenderPort))
+	cmdArgs = append(cmdArgs, fmt.Sprintf("-my-callsign=%s", args.MyCallsign))
+	cmdArgs = append(cmdArgs, fmt.Sprintf("-callsigns=%s", senderCallsign))
+	cmdArgs = append(cmdArgs, fmt.Sprintf("-fileid=%s", cmdID))
+        cmdArgs = append(cmdArgs, fmt.Sprintf("-one-file"))
+	cmdArgs = append(cmdArgs, fmt.Sprintf("-stdout"))
+	fullCmd := fmt.Sprintf("%s %s", args.ReceiverBinary, strings.Join(cmdArgs, " "))
+	log.Printf("Invoking receiver binary: %s", fullCmd)
+
+	cmd := exec.Command(args.ReceiverBinary, cmdArgs...)
+	stdoutPipe, err := cmd.StdoutPipe()
+	if err != nil {
+		return fmt.Errorf("Error obtaining stdout pipe: %v", err)
+	}
+	stderrPipe, err := cmd.StderrPipe()
+	if err != nil {
+		return fmt.Errorf("Error obtaining stderr pipe: %v", err)
+	}
+	if err := cmd.Start(); err != nil {
+		return fmt.Errorf("Error starting receiver binary: %v", err)
+	}
+
+	// Spawn goroutine to log any stderr output.
+	go func() {
+		scanner := bufio.NewScanner(stderrPipe)
+		for scanner.Scan() {
+			log.Printf("[receiver stderr] %s", scanner.Text())
+		}
+		if err := scanner.Err(); err != nil {
+			log.Printf("Error reading receiver stderr: %v", err)
+		}
+	}()
+
+	// Spawn goroutine to capture stdout and save the file.
+	go func() {
+		output, err := io.ReadAll(stdoutPipe)
+		if err != nil {
+			log.Printf("Error reading receiver stdout: %v", err)
+			return
+		}
+		if err := cmd.Wait(); err != nil {
+			log.Printf("Receiver binary exited with error: %v", err)
+			return
+		}
+		// Write the output to the specified file in the save directory.
+		savePath := filepath.Join(args.SaveDirectory, fileName)
+		// If the file exists, append _1, _2, etc. before the extension.
+		if _, err := os.Stat(savePath); err == nil {
+			baseName := strings.TrimSuffix(fileName, filepath.Ext(fileName))
+			ext := filepath.Ext(fileName)
+			counter := 1
+			for {
+				newFileName := fmt.Sprintf("%s_%d%s", baseName, counter, ext)
+				newPath := filepath.Join(args.SaveDirectory, newFileName)
+				if _, err := os.Stat(newPath); os.IsNotExist(err) {
+					savePath = newPath
+					break
+				}
+				counter++
+			}
+		}
+		err = ioutil.WriteFile(savePath, output, 0644)
+		if err != nil {
+			log.Printf("Error writing received file to %s: %v", savePath, err)
+			return
+		}
+		log.Printf("Received file saved to %s", savePath)
+
+	}()
+	return nil
+}
+
 func main() {
 	args := parseArguments()
 	serverCallsign = strings.ToUpper(args.MyCallsign)
-	log.Printf("Serving files from directory: %s", args.Directory)
+	log.Printf("Serving files from directory: %s", args.ServeDirectory)
 	log.Printf("Sender binary set to: %s", args.SenderBinary)
-	if args.AllowedCallsigns != "" {
-		for _, cs := range strings.Split(args.AllowedCallsigns, ",") {
+	log.Printf("Receiver binary set to: %s", args.ReceiverBinary)
+
+	// Populate allowed GET callsigns.
+	if args.GetCallsigns != "" {
+		for _, cs := range strings.Split(args.GetCallsigns, ",") {
 			cs = strings.ToUpper(strings.TrimSpace(cs))
 			if cs != "" {
-				allowedCallsigns = append(allowedCallsigns, cs)
+				getAllowedCallsigns = append(getAllowedCallsigns, cs)
 			}
 		}
-		log.Printf("Allowed sender callsign patterns: %v", allowedCallsigns)
+		log.Printf("Allowed GET sender callsign patterns: %v", getAllowedCallsigns)
 	} else {
-		log.Printf("No callsign filtering enabled.")
+		log.Printf("No GET callsign filtering enabled.")
+	}
+
+	// Populate allowed PUT callsigns.
+	if args.PutCallsigns != "" {
+		for _, cs := range strings.Split(args.PutCallsigns, ",") {
+			cs = strings.ToUpper(strings.TrimSpace(cs))
+			if cs != "" {
+				putAllowedCallsigns = append(putAllowedCallsigns, cs)
+			}
+		}
+		log.Printf("Allowed PUT sender callsign patterns: %v", putAllowedCallsigns)
+	} else {
+		log.Printf("No PUT callsign filtering enabled.")
 	}
 
 	// Establish the underlying KISS connection.
@@ -568,22 +709,22 @@ func main() {
 			if !ok {
 				continue
 			}
-			if len(allowedCallsigns) > 0 && !callsignAllowed(sender) {
-				log.Printf("Dropping command from sender %s: not allowed.", sender)
-				continue
-			}
-			log.Printf("Received command '%s' with ID '%s' from sender %s", command, cmdID, sender)
 			upperCmd := strings.ToUpper(command)
 			// Process GET command
 			if strings.HasPrefix(upperCmd, "GET ") {
+				if !callsignAllowedForGet(sender) {
+					log.Printf("Dropping GET command from sender %s: not allowed.", sender)
+					continue
+				}
 				fileName := strings.TrimSpace(command[4:])
-				fullPath := filepath.Join(args.Directory, fileName)
+				fullPath := filepath.Join(args.ServeDirectory, fileName)
 				content, err := ioutil.ReadFile(fullPath)
 				if err != nil {
-					log.Printf("Requested file '%s' does not exist in directory %s", fileName, args.Directory)
+					log.Printf("Requested file '%s' does not exist in directory %s", fileName, args.ServeDirectory)
 					sendResponseWithDetails(conn, cmdID, command, 0, "CANNOT FIND/READ FILE")
 					continue
 				}
+				// Double-check file read.
 				_, err = ioutil.ReadFile(fullPath)
 				if err != nil {
 					log.Printf("Error reading file '%s': %v", fullPath, err)
@@ -592,8 +733,8 @@ func main() {
 				}
 				sendResponseWithDetails(conn, cmdID, command, 1, "GET OK")
 				go invokeSenderBinary(args, sender, fileName, string(content), cmdID)
-			} else if upperCmd == "LIST" {
-				listing, err := listFiles(args.Directory)
+			} else if strings.HasPrefix(upperCmd, "LIST") {
+				listing, err := listFiles(args.ServeDirectory)
 				if err != nil {
 					log.Printf("Error listing files: %v", err)
 					sendResponseWithDetails(conn, cmdID, command, 0, "LIST CANNOT READ")
@@ -601,13 +742,27 @@ func main() {
 				}
 				// Send the RSP packet indicating LIST is OK.
 				sendResponseWithDetails(conn, cmdID, command, 1, "LIST OK")
-
 				// Invoke the sender binary to send the listing as LIST.txt.
-				// This call is done in a separate goroutine so it doesn't block further command processing.
 				go invokeSenderBinary(args, sender, "LIST.txt", listing, cmdID)
+			} else if strings.HasPrefix(upperCmd, "PUT ") {
+				// Process PUT command for receiving files.
+				if !callsignAllowedForPut(sender) {
+					log.Printf("PUT command from sender %s not allowed.", sender)
+					sendResponseWithDetails(conn, cmdID, command, 0, "CALLSIGN NOT ALLOWED")
+					continue
+				}
+				fileName := strings.TrimSpace(command[4:])
+				// Attempt to start the receiver binary synchronously.
+				err := invokeReceiverBinary(args, sender, fileName, cmdID)
+				if err != nil {
+					log.Printf("Receiver binary error: %v", err)
+					sendResponseWithDetails(conn, cmdID, command, 0, "PUT FAILED: CANNOT START RECEIVER")
+				} else {
+					sendResponseWithDetails(conn, cmdID, command, 1, "PUT OK - WAITING FOR FILE")
+				}
 			} else {
 				log.Printf("Unrecognized command: %s", command)
-				sendResponseWithDetails(conn, cmdID, command, 0, "UNKNOWN COMMAND. AVAILABLE: LIST, GET")
+				sendResponseWithDetails(conn, cmdID, command, 0, "UNKNOWN COMMAND. AVAILABLE: LIST, GET, PUT")
 			}
 		}
 	}
