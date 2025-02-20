@@ -712,28 +712,32 @@ func main() {
 			upperCmd := strings.ToUpper(command)
 			// Process GET command
 			if strings.HasPrefix(upperCmd, "GET ") {
-				if !callsignAllowedForGet(sender) {
-					log.Printf("Dropping GET command from sender %s: not allowed.", sender)
-					continue
-				}
-				fileName := strings.TrimSpace(command[4:])
-				fullPath := filepath.Join(args.ServeDirectory, fileName)
-				content, err := ioutil.ReadFile(fullPath)
-				if err != nil {
-					log.Printf("Requested file '%s' does not exist in directory %s", fileName, args.ServeDirectory)
-					sendResponseWithDetails(conn, cmdID, command, 0, "CANNOT FIND/READ FILE")
-					continue
-				}
-				// Double-check file read.
-				_, err = ioutil.ReadFile(fullPath)
-				if err != nil {
-					log.Printf("Error reading file '%s': %v", fullPath, err)
-					sendResponseWithDetails(conn, cmdID, command, 0, "GET FAILED")
-					continue
-				}
-				sendResponseWithDetails(conn, cmdID, command, 1, "GET OK")
-				go invokeSenderBinary(args, sender, fileName, string(content), cmdID)
-			} else if strings.HasPrefix(upperCmd, "LIST") {
+    if !callsignAllowedForGet(sender) {
+        log.Printf("Dropping GET command from sender %s: not allowed.", sender)
+        
+        // Send a response packet indicating the GET request is not allowed.
+        sendResponseWithDetails(conn, cmdID, command, 0, "CALLSIGN NOT ALLOWED")
+        
+        continue
+    }
+    fileName := strings.TrimSpace(command[4:])
+    fullPath := filepath.Join(args.ServeDirectory, fileName)
+    content, err := ioutil.ReadFile(fullPath)
+    if err != nil {
+        log.Printf("Requested file '%s' does not exist in directory %s", fileName, args.ServeDirectory)
+        sendResponseWithDetails(conn, cmdID, command, 0, "CANNOT FIND/READ FILE")
+        continue
+    }
+    // Double-check file read.
+    _, err = ioutil.ReadFile(fullPath)
+    if err != nil {
+        log.Printf("Error reading file '%s': %v", fullPath, err)
+        sendResponseWithDetails(conn, cmdID, command, 0, "GET FAILED")
+        continue
+    }
+    sendResponseWithDetails(conn, cmdID, command, 1, "GET OK")
+    go invokeSenderBinary(args, sender, fileName, string(content), cmdID)
+} else if strings.HasPrefix(upperCmd, "LIST") {
 				listing, err := listFiles(args.ServeDirectory)
 				if err != nil {
 					log.Printf("Error listing files: %v", err)
