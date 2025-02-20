@@ -39,6 +39,7 @@ type Arguments struct {
 	AllowedCallsigns string // comma-delimited list for filtering sender callsigns
 	Directory        string // directory to serve files from (mandatory)
 	SenderBinary     string // path to the binary used to send files (mandatory)
+	SenderPort       int    // TCP port for transparent passthrough (default 5011)
 }
 
 func parseArguments() *Arguments {
@@ -52,6 +53,7 @@ func parseArguments() *Arguments {
 	flag.StringVar(&args.AllowedCallsigns, "callsigns", "", "Comma delimited list of allowed sender callsign patterns (supports wildcards, e.g. MM5NDH-*,*-15)")
 	flag.StringVar(&args.Directory, "directory", "", "Directory to serve files from (mandatory)")
 	flag.StringVar(&args.SenderBinary, "sender-binary", "", "Path to the binary used to send files (mandatory)")
+	flag.IntVar(&args.SenderPort, "sender-port", 5011, "TCP port for transparent passthrough (default 5011)")
 	flag.Parse()
 
 	if args.MyCallsign == "" {
@@ -72,6 +74,7 @@ func parseArguments() *Arguments {
 // KISSConnection is the minimal interface we need.
 type KISSConnection interface {
 	RecvData(timeout time.Duration) ([]byte, error)
+	Write([]byte) (int, error)
 	Close() error
 }
 
@@ -107,6 +110,10 @@ func (t *TCPKISSConnection) RecvData(timeout time.Duration) ([]byte, error) {
 	return buf[:n], nil
 }
 
+func (t *TCPKISSConnection) Write(b []byte) (int, error) {
+	return t.conn.Write(b)
+}
+
 func (t *TCPKISSConnection) Close() error {
 	return t.conn.Close()
 }
@@ -127,7 +134,6 @@ func newSerialKISSConnection(portName string, baud int) (*SerialKISSConnection, 
 	if err != nil {
 		return nil, err
 	}
-	// Set a read timeout.
 	if err := ser.SetReadTimeout(100 * time.Millisecond); err != nil {
 		return nil, err
 	}
@@ -145,6 +151,10 @@ func (s *SerialKISSConnection) RecvData(timeout time.Duration) ([]byte, error) {
 		return nil, err
 	}
 	return buf[:n], nil
+}
+
+func (s *SerialKISSConnection) Write(b []byte) (int, error) {
+	return s.ser.Write(b)
 }
 
 func (s *SerialKISSConnection) Close() error {
@@ -174,6 +184,50 @@ func unescapeData(data []byte) []byte {
 	return out.Bytes()
 }
 
+// Helper: escapeData applies KISS escaping.
+func escapeData(data []byte) []byte {
+	var out bytes.Buffer
+	for _, b := range data {
+		if b == KISS_FLAG {
+			out.WriteByte(0xDB)
+			out.WriteByte(0xDC)
+		} else if b == 0xDB {
+			out.WriteByte(0xDB)
+			out.WriteByte(0xDD)
+		} else {
+			out.WriteByte(b)
+		}
+	}
+	return out.Bytes()
+}
+
+// sendResponse wraps the payload in a KISS frame and writes it directly to the connection.
+func sendResponse(conn KISSConnection, responsePayload []byte) error {
+	escaped := escapeData(responsePayload)
+	frame := []byte{KISS_FLAG, KISS_CMD_DATA}
+	frame = append(frame, escaped...)
+	frame = append(frame, KISS_FLAG)
+	_, err := conn.Write(frame)
+	return err
+}
+
+// sendResponseWithDetails builds the response packet, logs the details, and sends it.
+func sendResponseWithDetails(conn KISSConnection, cmdID, command string, status int, msg string) error {
+	responsePayload := createResponsePacket(cmdID, status, msg)
+	escaped := escapeData(responsePayload)
+	frame := []byte{KISS_FLAG, KISS_CMD_DATA}
+	frame = append(frame, escaped...)
+	frame = append(frame, KISS_FLAG)
+
+	statusText := "FAILED"
+	if status == 1 {
+		statusText = "SUCCESS"
+	}
+	log.Printf("Sending RSP packet for command '%s' (ID: %s): %s - %s", command, cmdID, statusText, msg)
+	_, err := conn.Write(frame)
+	return err
+}
+
 // Helper: extractKISSFrames extracts complete KISS frames from a buffer.
 func extractKISSFrames(data []byte) ([][]byte, []byte) {
 	var frames [][]byte
@@ -195,8 +249,6 @@ func extractKISSFrames(data []byte) ([][]byte, []byte) {
 }
 
 // encodeAX25Address now supports SSIDs.
-// It splits the callsign on "-" (if present), pads/truncates the base callsign to 6 characters,
-// and encodes an optional SSID (if any) in the lower 4 bits of the 7th byte.
 func encodeAX25Address(callsign string, isLast bool) []byte {
 	parts := strings.Split(callsign, "-")
 	base := strings.ToUpper(strings.TrimSpace(parts[0]))
@@ -213,7 +265,6 @@ func encodeAX25Address(callsign string, isLast bool) []byte {
 	for i := 0; i < 6; i++ {
 		addr[i] = base[i] << 1
 	}
-	// Encode the SSID into the lower 4 bits (shifted left by 1) plus the constant 0x60.
 	addr[6] = byte((ssid & 0x0F) << 1) | 0x60
 	if isLast {
 		addr[6] |= 0x01
@@ -221,8 +272,7 @@ func encodeAX25Address(callsign string, isLast bool) []byte {
 	return addr
 }
 
-// decodeAX25Address decodes a 7-byte AX.25 address field,
-// reconstructing the base callsign and appending the SSID if non-zero.
+// decodeAX25Address decodes a 7-byte AX.25 address field.
 func decodeAX25Address(addr []byte) string {
 	if len(addr) < 7 {
 		return ""
@@ -239,39 +289,47 @@ func decodeAX25Address(addr []byte) string {
 	return base
 }
 
-// parseCommandPacket tries to parse a command packet.
-// It now expects an unescaped packet with at least 80 bytes:
-// 16 bytes AX.25 header + 64 bytes command info field.
-func parseCommandPacket(packet []byte) (sender, command string, ok bool) {
+// parseCommandPacket now extracts the 2-character ID after "CMD:".
+func parseCommandPacket(packet []byte) (sender, cmdID, command string, ok bool) {
 	if len(packet) < 80 {
-		return "", "", false
+		return "", "", "", false
 	}
 	header := packet[:16]
-
-	// Extract destination callsign from the first 7 bytes.
 	dest := decodeAX25Address(header[0:7])
 	if dest != serverCallsign {
 		log.Printf("Dropping packet: destination %s does not match our callsign %s", dest, serverCallsign)
-		return "", "", false
+		return "", "", "", false
 	}
-
-	// Now extract 64 bytes of command info.
 	infoField := packet[16:80]
 	infoStr := strings.TrimSpace(string(infoField))
 	if !strings.HasPrefix(infoStr, "CMD:") {
-		return "", "", false
+		return "", "", "", false
 	}
-	command = strings.TrimSpace(infoStr[4:])
-
-	// The sender's callsign is stored in the second 7-byte block of the header.
+	// Ensure there is room for a 2-character ID
+	if len(infoStr) < 6 {
+		return "", "", "", false
+	}
+	cmdID = infoStr[4:6]
+	command = strings.TrimSpace(infoStr[6:])
 	sender = decodeAX25Address(header[7:14])
-	return sender, command, true
+	return sender, cmdID, command, true
+}
+
+// createResponsePacket builds the response payload.
+// The response format is "RSP:<cmdID> <status> <message>" padded or truncated to 64 bytes.
+func createResponsePacket(cmdID string, status int, msg string) []byte {
+	responseText := fmt.Sprintf("RSP:%s %d %s", cmdID, status, msg)
+	if len(responseText) > 64 {
+		responseText = responseText[:64]
+	} else {
+		responseText = responseText + strings.Repeat(" ", 64-len(responseText))
+	}
+	return []byte(responseText)
 }
 
 // Global slice for allowed sender callsigns.
 var allowedCallsigns []string
 
-// callsignAllowed returns true if the given callsign matches any allowed pattern.
 func callsignAllowed(cs string) bool {
 	cs = strings.ToUpper(strings.TrimSpace(cs))
 	for _, pattern := range allowedCallsigns {
@@ -282,7 +340,6 @@ func callsignAllowed(cs string) bool {
 	return false
 }
 
-// listFiles returns a newline-separated list of file names in the specified directory.
 func listFiles(dir string) (string, error) {
 	entries, err := ioutil.ReadDir(dir)
 	if err != nil {
@@ -297,29 +354,112 @@ func listFiles(dir string) (string, error) {
 	return strings.Join(names, "\n"), nil
 }
 
-// invokeSenderBinary constructs and executes the sender binary.
-// It passes the following arguments:
-//   - Connection options (-connection, and either -host/-port or -serial-port/-baud)
-//   - -my-callsign (our own callsign)
-//   - -receiver-callsign (set to the sender’s callsign from the command packet)
-//   - -stdin flag (tells sender-binary to read from stdin)
-//   - -file-name (as specified)
-// If inputData is non-empty, it is piped to the sender binary via stdin;
-// otherwise, os.Stdin is used.
-//
-// This version streams the sender binary's output in real time.
+// --- Broadcaster ---
+// This helper will allow multiple goroutines (the command processor and transparent passthrough)
+// to receive the same data coming from the underlying KISS connection.
+type Broadcaster struct {
+	subscribers map[chan []byte]struct{}
+	lock        sync.Mutex
+}
+
+func NewBroadcaster() *Broadcaster {
+	return &Broadcaster{
+		subscribers: make(map[chan []byte]struct{}),
+	}
+}
+
+func (b *Broadcaster) Subscribe() chan []byte {
+	ch := make(chan []byte, 100)
+	b.lock.Lock()
+	b.subscribers[ch] = struct{}{}
+	b.lock.Unlock()
+	return ch
+}
+
+func (b *Broadcaster) Unsubscribe(ch chan []byte) {
+	b.lock.Lock()
+	delete(b.subscribers, ch)
+	close(ch)
+	b.lock.Unlock()
+}
+
+func (b *Broadcaster) Broadcast(data []byte) {
+	b.lock.Lock()
+	defer b.lock.Unlock()
+	for ch := range b.subscribers {
+		select {
+		case ch <- data:
+		default:
+		}
+	}
+}
+
+// startKISSReader continuously reads from the underlying connection and broadcasts data.
+func startKISSReader(conn KISSConnection, b *Broadcaster) {
+	for {
+		data, err := conn.RecvData(100 * time.Millisecond)
+		if err != nil {
+			if err != io.EOF {
+				log.Printf("Underlying read error: %v", err)
+			}
+			break
+		}
+		if len(data) > 0 {
+			b.Broadcast(data)
+		}
+	}
+}
+
+// --- Transparent Passthrough Handler ---
+// This function relays data in both directions between the connected client and the underlying KISS connection.
+func handleTransparentConnection(remoteConn net.Conn, b *Broadcaster, conn KISSConnection) {
+	defer remoteConn.Close()
+	log.Printf("Accepted transparent connection from %s", remoteConn.RemoteAddr())
+	// Start forwarding data from the transparent connection to the underlying KISS connection.
+	go func() {
+		_, err := io.Copy(conn, remoteConn)
+		if err != nil && !strings.Contains(err.Error(), "use of closed network connection") {
+			log.Printf("Error copying from transparent client to underlying: %v", err)
+		}
+	}()
+	// Subscribe to the broadcaster to forward underlying data to the transparent client.
+	sub := b.Subscribe()
+	defer b.Unsubscribe(sub)
+	for data := range sub {
+		_, err := remoteConn.Write(data)
+		if err != nil {
+			return
+		}
+	}
+}
+
+// startTransparentListener listens on the SenderPort and handles transparent connections.
+func startTransparentListener(port int, b *Broadcaster, conn KISSConnection) {
+	addr := fmt.Sprintf(":%d", port)
+	listener, err := net.Listen("tcp", addr)
+	if err != nil {
+		log.Fatalf("Transparent listener error: %v", err)
+	}
+	defer listener.Close()
+	log.Printf("Transparent sender listener active on %s", addr)
+	for {
+		remoteConn, err := listener.Accept()
+		if err != nil {
+			log.Printf("Error accepting transparent connection: %v", err)
+			continue
+		}
+		go handleTransparentConnection(remoteConn, b, conn)
+	}
+}
+
+// --- Invoking the Sender Binary ---
+// This function is still used for sending files (for GET file transfers) via the sender binary.
 func invokeSenderBinary(args *Arguments, receiverCallsign, fileName, inputData string) {
 	var cmdArgs []string
-	cmdArgs = append(cmdArgs, fmt.Sprintf("-connection=%s", args.Connection))
-	if strings.ToLower(args.Connection) == "tcp" {
-		cmdArgs = append(cmdArgs, fmt.Sprintf("-host=%s", args.Host), fmt.Sprintf("-port=%d", args.Port))
-	} else {
-		cmdArgs = append(cmdArgs, fmt.Sprintf("-serial-port=%s", args.SerialPort), fmt.Sprintf("-baud=%d", args.Baud))
-	}
+	cmdArgs = append(cmdArgs, "-connection=tcp", "-host=localhost", fmt.Sprintf("-port=%d", args.SenderPort))
 	cmdArgs = append(cmdArgs, fmt.Sprintf("-my-callsign=%s", args.MyCallsign))
 	cmdArgs = append(cmdArgs, fmt.Sprintf("-receiver-callsign=%s", receiverCallsign))
-	cmdArgs = append(cmdArgs, "-stdin")
-	cmdArgs = append(cmdArgs, fmt.Sprintf("-file-name=%s", fileName))
+	cmdArgs = append(cmdArgs, "-stdin", "-file-name="+fileName)
 	fullCmd := fmt.Sprintf("%s %s", args.SenderBinary, strings.Join(cmdArgs, " "))
 	log.Printf("Invoking sender binary: %s", fullCmd)
 
@@ -329,8 +469,6 @@ func invokeSenderBinary(args *Arguments, receiverCallsign, fileName, inputData s
 	} else {
 		cmd.Stdin = os.Stdin
 	}
-
-	// Set up pipes for stdout and stderr.
 	stdoutPipe, err := cmd.StdoutPipe()
 	if err != nil {
 		log.Printf("Error obtaining stdout pipe: %v", err)
@@ -341,14 +479,10 @@ func invokeSenderBinary(args *Arguments, receiverCallsign, fileName, inputData s
 		log.Printf("Error obtaining stderr pipe: %v", err)
 		return
 	}
-
-	// Start the command.
 	if err := cmd.Start(); err != nil {
 		log.Printf("Error starting sender binary: %v", err)
 		return
 	}
-
-	// Stream stdout.
 	go func() {
 		scanner := bufio.NewScanner(stdoutPipe)
 		for scanner.Scan() {
@@ -358,8 +492,6 @@ func invokeSenderBinary(args *Arguments, receiverCallsign, fileName, inputData s
 			log.Printf("Error reading sender stdout: %v", err)
 		}
 	}()
-
-	// Stream stderr.
 	go func() {
 		scanner := bufio.NewScanner(stderrPipe)
 		for scanner.Scan() {
@@ -369,8 +501,6 @@ func invokeSenderBinary(args *Arguments, receiverCallsign, fileName, inputData s
 			log.Printf("Error reading sender stderr: %v", err)
 		}
 	}()
-
-	// Wait for the command to complete.
 	if err := cmd.Wait(); err != nil {
 		log.Printf("Sender binary exited with error: %v", err)
 	} else {
@@ -380,13 +510,9 @@ func invokeSenderBinary(args *Arguments, receiverCallsign, fileName, inputData s
 
 func main() {
 	args := parseArguments()
-
-	// Set server callsign from the parsed arguments.
 	serverCallsign = strings.ToUpper(args.MyCallsign)
-
 	log.Printf("Serving files from directory: %s", args.Directory)
 	log.Printf("Sender binary set to: %s", args.SenderBinary)
-
 	if args.AllowedCallsigns != "" {
 		for _, cs := range strings.Split(args.AllowedCallsigns, ",") {
 			cs = strings.ToUpper(strings.TrimSpace(cs))
@@ -399,6 +525,7 @@ func main() {
 		log.Printf("No callsign filtering enabled.")
 	}
 
+	// Establish the underlying KISS connection.
 	var conn KISSConnection
 	var err error
 	if strings.ToLower(args.Connection) == "tcp" {
@@ -416,59 +543,70 @@ func main() {
 
 	log.Printf("File Server started. My callsign: %s", serverCallsign)
 
-	var buffer []byte
-	for {
-		data, err := conn.RecvData(100 * time.Millisecond)
-		if err != nil {
-			log.Printf("Receive error: %v", err)
-			time.Sleep(100 * time.Millisecond)
-			continue
-		}
-		if len(data) > 0 {
-			buffer = append(buffer, data...)
-			frames, remaining := extractKISSFrames(buffer)
-			buffer = remaining
-			for _, frame := range frames {
-				if len(frame) < 2 || frame[0] != KISS_FLAG || frame[len(frame)-1] != KISS_FLAG {
-					continue
-				}
-				inner := frame[2 : len(frame)-1]
-				unesc := unescapeData(inner)
-				sender, command, ok := parseCommandPacket(unesc)
-				if !ok {
-					continue
-				}
-				if len(allowedCallsigns) > 0 && !callsignAllowed(sender) {
-					log.Printf("Dropping command from sender %s: not allowed.", sender)
-					continue
-				}
-				log.Printf("Received command '%s' from sender %s", command, sender)
+	// Create a broadcaster to distribute data read from the underlying connection.
+	broadcaster := NewBroadcaster()
+	go startKISSReader(conn, broadcaster)
+	// Start the transparent passthrough listener.
+	go startTransparentListener(args.SenderPort, broadcaster, conn)
 
-				upperCmd := strings.ToUpper(command)
-				if strings.HasPrefix(upperCmd, "GET ") {
-					// Everything after "GET " is the filename, supporting spaces.
-					fileName := strings.TrimSpace(command[4:])
-					fullPath := filepath.Join(args.Directory, fileName)
-					if _, err := os.Stat(fullPath); err != nil {
-						log.Printf("Requested file '%s' does not exist in directory %s", fileName, args.Directory)
-						continue
-					}
-					data, err := ioutil.ReadFile(fullPath)
-					if err != nil {
-						log.Printf("Error reading file '%s': %v", fullPath, err)
-						continue
-					}
-					invokeSenderBinary(args, sender, fileName, string(data))
-				} else if upperCmd == "LIST" {
-					fileList, err := listFiles(args.Directory)
-					if err != nil {
-						log.Printf("Error listing files: %v", err)
-						continue
-					}
-					invokeSenderBinary(args, sender, "LIST.txt", fileList)
-				} else {
-					log.Printf("Unrecognized command: %s", command)
+	// Command processing: subscribe to the broadcaster.
+	cmdSub := broadcaster.Subscribe()
+	defer broadcaster.Unsubscribe(cmdSub)
+	var buffer []byte
+	for data := range cmdSub {
+		buffer = append(buffer, data...)
+		frames, remaining := extractKISSFrames(buffer)
+		buffer = remaining
+		for _, frame := range frames {
+			if len(frame) < 2 || frame[0] != KISS_FLAG || frame[len(frame)-1] != KISS_FLAG {
+				continue
+			}
+			inner := frame[2 : len(frame)-1]
+			unesc := unescapeData(inner)
+			sender, cmdID, command, ok := parseCommandPacket(unesc)
+			if !ok {
+				continue
+			}
+			if len(allowedCallsigns) > 0 && !callsignAllowed(sender) {
+				log.Printf("Dropping command from sender %s: not allowed.", sender)
+				continue
+			}
+			log.Printf("Received command '%s' with ID '%s' from sender %s", command, cmdID, sender)
+			upperCmd := strings.ToUpper(command)
+			// Process GET command
+			if strings.HasPrefix(upperCmd, "GET ") {
+				fileName := strings.TrimSpace(command[4:])
+				fullPath := filepath.Join(args.Directory, fileName)
+				content, err := ioutil.ReadFile(fullPath)
+				if err != nil {
+					log.Printf("Requested file '%s' does not exist in directory %s", fileName, args.Directory)
+					sendResponseWithDetails(conn, cmdID, command, 0, "CANNOT FIND/READ FILE")
+					continue
 				}
+				_, err = ioutil.ReadFile(fullPath)
+				if err != nil {
+					log.Printf("Error reading file '%s': %v", fullPath, err)
+					sendResponseWithDetails(conn, cmdID, command, 0, "GET FAILED")
+					continue
+				}
+				sendResponseWithDetails(conn, cmdID, command, 1, "GET OK")
+				go invokeSenderBinary(args, sender, fileName, string(content))
+			} else if upperCmd == "LIST" {
+				listing, err := listFiles(args.Directory)
+				if err != nil {
+					log.Printf("Error listing files: %v", err)
+					sendResponseWithDetails(conn, cmdID, command, 0, "LIST CANNOT READ")
+					continue
+				}
+				// Send the RSP packet indicating LIST is OK.
+				sendResponseWithDetails(conn, cmdID, command, 1, "LIST OK")
+
+				// Invoke the sender binary to send the listing as LIST.txt.
+				// This call is done in a separate goroutine so it doesn't block further command processing.
+				go invokeSenderBinary(args, sender, "LIST.txt", listing)
+			} else {
+				log.Printf("Unrecognized command: %s", command)
+				// Optionally, send back an error response if desired.
 			}
 		}
 	}

@@ -13,11 +13,13 @@ import (
 	"os"
 	"os/exec"
 	"os/signal"
+	"path/filepath"
 	"regexp"
 	"strconv"
 	"strings"
 	"sync"
 	"time"
+	"crypto/rand"
 )
 
 // Global constants for KISS framing.
@@ -28,6 +30,19 @@ const (
 
 // Global debug flag.
 var debugEnabled bool
+
+// Global command counter for generating 2-character command IDs.
+var cmdCounter int
+
+func generateCmdID() string {
+	b := make([]byte, 1)
+	if _, err := rand.Read(b); err != nil {
+		// Fallback to counter if randomness fails.
+		cmdCounter++
+		return fmt.Sprintf("%02X", cmdCounter%256)
+	}
+	return fmt.Sprintf("%02X", b[0])
+}
 
 // Command-line arguments structure.
 type Arguments struct {
@@ -41,6 +56,7 @@ type Arguments struct {
 	ReceiverPort       int    // port for transparent passthrough (TCP listener)
 	ReceiverBinary     string // path to the receiver binary
 	Debug              bool   // enable debug logging
+	Directory          string // directory to save files (optional, default current directory)
 }
 
 func parseArguments() *Arguments {
@@ -55,6 +71,7 @@ func parseArguments() *Arguments {
 	flag.IntVar(&args.ReceiverPort, "receiver-port", 5012, "TCP port for transparent passthrough (default 5012)")
 	flag.StringVar(&args.ReceiverBinary, "receiver-binary", "receiver", "Path to the receiver binary")
 	flag.BoolVar(&args.Debug, "debug", false, "Enable debug logging")
+	flag.StringVar(&args.Directory, "directory", ".", "Directory to save files (optional, default current directory)")
 	flag.Parse()
 
 	if args.MyCallsign == "" {
@@ -167,6 +184,29 @@ func escapeData(data []byte) []byte {
 	return out.Bytes()
 }
 
+// Helper: unescapeData reverses KISS escaping.
+func unescapeData(data []byte) []byte {
+	var out bytes.Buffer
+	for i := 0; i < len(data); {
+		b := data[i]
+		if b == 0xDB && i+1 < len(data) {
+			nxt := data[i+1]
+			if nxt == 0xDC {
+				out.WriteByte(KISS_FLAG)
+				i += 2
+				continue
+			} else if nxt == 0xDD {
+				out.WriteByte(0xDB)
+				i += 2
+				continue
+			}
+		}
+		out.WriteByte(b)
+		i++
+	}
+	return out.Bytes()
+}
+
 // buildKISSFrame wraps the packet in a KISS frame.
 func buildKISSFrame(packet []byte) []byte {
 	escaped := escapeData(packet)
@@ -211,16 +251,46 @@ func buildAX25Header(source, destination string) []byte {
 }
 
 // buildCommandPacket creates an 80-byte command packet.
-func buildCommandPacket(myCallsign, fileServerCallsign, commandLine string) []byte {
+// The new format is "CMD:" + <2-char cmdID> + " " + <command text>
+// (The rest of the 64-byte info field is padded or truncated.)
+func buildCommandPacket(myCallsign, fileServerCallsign, commandText string) ([]byte, string) {
 	header := buildAX25Header(myCallsign, fileServerCallsign)
-	info := "CMD:" + commandLine
+	cmdID := generateCmdID() // Randomized CMD ID.
+	info := "CMD:" + cmdID + " " + commandText
 	if len(info) > 64 {
 		info = info[:64]
 	} else {
 		info = info + strings.Repeat(" ", 64-len(info))
 	}
 	packet := append(header, []byte(info)...)
-	return packet
+	return packet, cmdID
+}
+
+// parseResponsePacket parses a 64-byte response payload in the format:
+// "RSP:<cmdID> <status> <message>"
+func parseResponsePacket(payload []byte) (cmdID string, status int, msg string, ok bool) {
+	str := strings.TrimSpace(string(payload))
+	if !strings.HasPrefix(str, "RSP:") {
+		return "", 0, "", false
+	}
+	// Expected format: RSP:XX <status> <message>
+	parts := strings.Fields(str)
+	if len(parts) < 2 {
+		return "", 0, "", false
+	}
+	if len(parts[0]) < 5 {
+		return "", 0, "", false
+	}
+	cmdID = parts[0][4:6]
+	st, err := strconv.Atoi(parts[1])
+	if err != nil {
+		return "", 0, "", false
+	}
+	status = st
+	if len(parts) > 2 {
+		msg = strings.Join(parts[2:], " ")
+	}
+	return cmdID, status, msg, true
 }
 
 // ------------------ Broadcaster ------------------
@@ -287,6 +357,69 @@ func startUnderlyingReader(underlying io.Reader, b *Broadcaster) {
 			b.Broadcast(data)
 		}
 	}
+}
+
+// waitForResponse waits for a complete KISS frame from the broadcaster that contains a response.
+// It returns the unescaped 64-byte payload.
+func waitForResponse(b *Broadcaster, timeout time.Duration, expectedCmdID string) ([]byte, error) {
+	sub := b.Subscribe()
+	defer b.Unsubscribe(sub)
+	timeoutTimer := time.NewTimer(timeout)
+	defer timeoutTimer.Stop()
+	var buffer []byte
+	for {
+		select {
+		case data := <-sub:
+			buffer = append(buffer, data...)
+			frames, remaining := extractKISSFrames(buffer)
+			buffer = remaining
+			for _, frame := range frames {
+				if len(frame) < 2 || frame[0] != KISS_FLAG || frame[len(frame)-1] != KISS_FLAG {
+					continue
+				}
+				inner := frame[2 : len(frame)-1]
+				payload := unescapeData(inner)
+				if len(payload) == 64 {
+					respCmdID, _, _, ok := parseResponsePacket(payload)
+					if !ok {
+						// Malformed response; ignore.
+						continue
+					}
+					if respCmdID != expectedCmdID {
+						if debugEnabled {
+							log.Printf("Ignoring response with mismatched CMD ID: got %s, expected %s", respCmdID, expectedCmdID)
+						}
+						// Ignore this response.
+						continue
+					}
+					// Optionally, add file server callsign validation here if that info were available.
+					return payload, nil
+				}
+			}
+		case <-timeoutTimer.C:
+			return nil, fmt.Errorf("timeout waiting for response with CMD ID %s", expectedCmdID)
+		}
+	}
+}
+
+// extractKISSFrames extracts complete KISS frames from a buffer.
+func extractKISSFrames(data []byte) ([][]byte, []byte) {
+	var frames [][]byte
+	for {
+		start := bytes.IndexByte(data, KISS_FLAG)
+		if start == -1 {
+			break
+		}
+		end := bytes.IndexByte(data[start+1:], KISS_FLAG)
+		if end == -1 {
+			break
+		}
+		end = start + 1 + end
+		frame := data[start : end+1]
+		frames = append(frames, frame)
+		data = data[end+1:]
+	}
+	return frames, data
 }
 
 // handleReceiverConnection uses the broadcaster so that only new data is sent to the receiver.
@@ -491,8 +624,8 @@ func main() {
 			continue
 		}
 
-		// Build and send the command.
-		packet := buildCommandPacket(args.MyCallsign, args.FileServerCallsign, commandLine)
+		// Build and send the command (which now includes a 2-char ID).
+		packet, cmdID := buildCommandPacket(args.MyCallsign, args.FileServerCallsign, commandLine)
 		frame := buildKISSFrame(packet)
 		err := conn.SendFrame(frame)
 		if err != nil {
@@ -501,13 +634,39 @@ func main() {
 		}
 		log.Printf("Sent command: %s", commandLine)
 
-		// Check if the command is LIST or GET.
+		// Wait for the direct response from the server.
+		respPayload, err := waitForResponse(broadcaster, 5*time.Second, cmdID)
+		if err != nil {
+			log.Printf("Error waiting for response: %v", err)
+			continue
+		}
+		_, status, msg, ok := parseResponsePacket(respPayload)
+		if !ok {
+			log.Printf("Received malformed response")
+			continue
+		}
+		if status == 1 {
+			fmt.Println("##########")
+			fmt.Println("Success:", msg)
+			fmt.Println("##########")
+		} else {
+			fmt.Println("##########")
+			fmt.Println("Failed:", msg)
+			fmt.Println("##########")
+		}
+
+		// For GET or LIST commands, also spawn the receiver process to get file data.
 		tokens := strings.Fields(commandLine)
 		if len(tokens) == 0 {
 			continue
 		}
 		cmdType := strings.ToUpper(tokens[0])
 		if cmdType != "LIST" && cmdType != "GET" {
+			continue
+		}
+
+		// Only proceed with file transfer if the response was a success.
+		if status != 1 {
 			continue
 		}
 
@@ -524,24 +683,20 @@ func main() {
 
 		output, exitCode, procErr := spawnReceiverProcess(args, expectedFile)
 		if exitCode == 0 {
-			fmt.Println("##########")
-			fmt.Println("SUCCESS")
-			fmt.Println("##########")
 			if cmdType == "LIST" {
 				fmt.Println("LIST contents:\n")
 				fmt.Print(string(output))
 			} else if cmdType == "GET" {
-				err = os.WriteFile(expectedFile, output, 0644)
+				// Save the file to the specified directory.
+				filePath := filepath.Join(args.Directory, expectedFile)
+				err = os.WriteFile(filePath, output, 0644)
 				if err != nil {
-					log.Printf("Error writing to file %s: %v", expectedFile, err)
+					log.Printf("Error writing to file %s: %v", filePath, err)
 				} else {
-					log.Printf("Saved output to %s", expectedFile)
+					log.Printf("Saved output to %s", filePath)
 				}
 			}
 		} else {
-			fmt.Println("##########")
-			fmt.Println("FAILED")
-			fmt.Println("##########")
 			log.Printf("Receiver process error: %v", procErr)
 		}
 	}
