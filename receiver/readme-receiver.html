@@ -44,10 +44,13 @@
       <strong>Execution Option:</strong> If specified via command‑line, the Receiver can execute the received file using <code>bash</code> instead of saving it.
     </li>
     <li>
-      <strong>Output to STDOUT:</strong> With the <code>--stdout</code> option, the file contents are sent directly to standard output instead of being saved to disk (the filename is only used in log messages). It may be desirable to also specify the -one-file option when using this feature.
+      <strong>Output to STDOUT:</strong> With the <code>--stdout</code> option, the file contents are sent directly to standard output instead of being saved to disk (the filename is only used in log messages). It may be desirable to also specify the <code>--one-file</code> option when using this feature.
     </li>
     <li>
       <strong>Auto‑ACK Mechanism:</strong> The Receiver sends cumulative ACK packets back to the sender to confirm receipt of packets and manage retries.
+    </li>
+    <li>
+      <strong>Sender Callsign Filtering:</strong> With the <code>--callsigns</code> option, the Receiver will only process packets if the sender’s callsign matches one of the allowed patterns. Wildcards are supported (for example, <code>MM5NDH-*</code> or <code>*-15</code>). Note that only the sender’s callsign is checked in this receiver‑only application.
     </li>
   </ul>
 
@@ -154,9 +157,16 @@ go build -o ax25receiver receiver.go
     <tr>
       <td><code>--stdout</code></td>
       <td>
-        If set, the received file is output directly to standard output instead of being saved to disk. The filename is used only in log messages.
+        If set, the received file is output directly to standard output instead of being saved to disk.
       </td>
       <td><code>false</code></td>
+    </tr>
+    <tr>
+      <td><code>--callsigns</code></td>
+      <td>
+        A comma‑delimited list of allowed sender callsign patterns. Only packets with a sender that matches one of these patterns will be processed. Wildcards are supported (e.g. <code>MM5NDH-*</code> or <code>*-15</code>).
+      </td>
+      <td><em>empty</em></td>
     </tr>
   </table>
 
@@ -188,7 +198,7 @@ go run receiver.go --my-callsign=N0CALL --connection=tcp --host=127.0.0.1 --port
 
   <h3>Example 4: Output File to STDOUT</h3>
   <p>
-    With the <code>--stdout</code> option, the received file will be output directly to standard output rather than being saved. This example will exit after one file has been received.
+    With the <code>--stdout</code> option, the received file will be output directly to standard output rather than being saved.
   </p>
   <pre>
 go run receiver.go --my-callsign=N0CALL --connection=tcp --host=127.0.0.1 --port=9001 --stdout --one-file
@@ -200,6 +210,14 @@ go run receiver.go --my-callsign=N0CALL --connection=tcp --host=127.0.0.1 --port
   </p>
   <pre>
 go run receiver.go --my-callsign=N0CALL --connection=tcp --host=127.0.0.1 --port=9001 --replace --one-file
+  </pre>
+
+  <h3>Example 6: Filter by Sender Callsign</h3>
+  <p>
+    The following example uses the <code>--callsigns</code> option. Only packets sent from a sender matching one of the allowed patterns (for example, <code>MM5NDH-*</code> or <code>*-15</code>) will be processed.
+  </p>
+  <pre>
+go run receiver.go --my-callsign=N0CALL --connection=tcp --host=127.0.0.1 --port=9001 --callsigns=MM5NDH-*,*-15
   </pre>
 
   <h2 id="notes">Additional Notes</h2>
@@ -218,6 +236,9 @@ go run receiver.go --my-callsign=N0CALL --connection=tcp --host=127.0.0.1 --port
     </li>
     <li>
       When the <code>--stdout</code> flag is used, the file content is written to standard output. This option is useful for piping the output to another program or command.
+    </li>
+    <li>
+      <strong>Sender Filtering:</strong> With the <code>--callsigns</code> option, only the sender’s callsign is checked against the allowed patterns. This ensures that the Receiver processes only packets from approved senders.
     </li>
   </ul>
 

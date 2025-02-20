@@ -21,6 +21,7 @@ import (
 	"strings"
 	"sync"
 	"time"
+	"path/filepath"
 )
 
 // ---------------------
@@ -57,6 +58,22 @@ const (
 	KISS_CMD_DATA = 0x00
 	CHUNK_SIZE    = 205
 )
+
+var allowedCallsigns []string
+
+// ---------------------
+// Helper Functions
+// ---------------------
+
+func callsignAllowed(callsign string) bool {
+    cs := strings.ToUpper(strings.TrimSpace(callsign))
+    for _, pattern := range allowedCallsigns {
+        if match, err := filepath.Match(pattern, cs); err == nil && match {
+            return true
+        }
+    }
+    return false
+}
 
 // ---------------------
 // KISS / AX.25 Utility Functions
@@ -577,8 +594,8 @@ type Arguments struct {
 	OnlyFrom       string  // Only accept files from the specified callsign.
 	ExecuteTimeout float64 // Maximum seconds to allow executed file to run (0 means unlimited)
 	Stdout         bool    // Output received file to stdout instead of saving
-	// New flag: tcp-read-deadline (in seconds) for TCP inactivity detection.
-	TcpReadDeadline int
+	TcpReadDeadline int    // tcp-read-deadline (in seconds) for TCP inactivity detection.
+        AllowedCallsigns string  // allowed sender callsigns
 }
 
 func parseArguments() *Arguments {
@@ -596,8 +613,8 @@ func parseArguments() *Arguments {
 	flag.StringVar(&args.OnlyFrom, "only-from", "", "Only accept files from the specified callsign")
 	flag.Float64Var(&args.ExecuteTimeout, "execute-timeout", 0, "Maximum seconds to allow executed file to run (0 means unlimited)")
 	flag.BoolVar(&args.Stdout, "stdout", false, "Output the received file to stdout instead of saving to disk")
-	// New tcp-read-deadline flag (only used when connection == "tcp")
 	flag.IntVar(&args.TcpReadDeadline, "tcp-read-deadline", 600, "Time (in seconds) without data before triggering reconnect (TCP only)")
+        flag.StringVar(&args.AllowedCallsigns, "callsigns", "", "Comma delimited list of valid sender callsigns (optional; supports wildcards, e.g. MM5NDH-*,*-15)")
 	flag.Parse()
 
 	if args.MyCallsign == "" {
@@ -614,6 +631,15 @@ func parseArguments() *Arguments {
 // ---------------------
 
 func receiverMain(args *Arguments) {
+	if args.AllowedCallsigns != "" {
+	    for _, cs := range strings.Split(args.AllowedCallsigns, ",") {
+	        cs = strings.ToUpper(strings.TrimSpace(cs))
+	        if cs != "" {
+	            allowedCallsigns = append(allowedCallsigns, cs)
+	        }
+	    }
+	    log.Printf("Allowed callsign patterns: %v", allowedCallsigns)
+	}
 	var conn KISSConnection
 	var err error
 	if args.Connection == "tcp" {
@@ -698,6 +724,15 @@ func receiverMain(args *Arguments) {
 			if strings.ToUpper(strings.TrimSpace(receiverStr)) != localCS {
 				log.Printf("Packet intended for %s, not me (%s). Ignoring.", receiverStr, localCS)
 				continue
+			}
+
+			// If allowed callsigns are set, filter based on them.
+			if len(allowedCallsigns) > 0 {
+			    if !callsignAllowed(parsed.Sender) {
+			        log.Printf("Dropping packet for file %s from %s: sender callsign not allowed",
+			            parsed.FileID, parsed.Sender)
+			        continue
+    				}
 			}
 
 			// If the transfer has not yet started, only accept header packets (seq == 1)
