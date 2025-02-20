@@ -766,7 +766,7 @@ func main() {
 				}
 			} else {
 				log.Printf("Unrecognized command: %s", command)
-				sendResponseWithDetails(conn, cmdID, command, 0, "UNKNOWN COMMAND. AVAILABLE: LIST, GET, PUT")
+				sendResponseWithDetails(conn, cmdID, command, 0, "AVAILABLE: LIST, GET [FILE], PUT [FILE]")
 			}
 		}
 	}
