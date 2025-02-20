@@ -546,6 +546,7 @@ type Arguments struct {
 	Base64                bool   // when true, encode payload as Base64 after compression
 	Stdin                 bool   // When true, read file to send from standard input (mutually exclusive with -file and -file-directory)
 	FileName              string // Name to use as the file name in the header when reading from stdin
+	FileID                string // Optional file ID (must be 2 alphanumeric characters)
 }
 
 func parseArguments() *Arguments {
@@ -569,6 +570,7 @@ func parseArguments() *Arguments {
 	flag.BoolVar(&args.Base64, "base64", false, "Encode file payload in base64 after compression")
 	flag.BoolVar(&args.Stdin, "stdin", false, "Read file to send from standard input (mutually exclusive with -file and -file-directory)")
 	flag.StringVar(&args.FileName, "file-name", "", "Name to use as the file name in the header when reading from stdin (required with -stdin)")
+	flag.StringVar(&args.FileID, "fileid", "", "Optional 2-character alphanumeric file ID (only valid with -file or -stdin)")	
 	flag.Parse()
 
 	args.Compress = !(*noCompress)
@@ -583,7 +585,21 @@ func parseArguments() *Arguments {
 	if args.Stdin && args.FileName == "" {
 		log.Fatalf("When using -stdin, you must specify -file-name.")
 	}
-	// In file-directory mode, we ignore the -file value.
+        if args.FileID != "" {
+            // Only allowed with -file or -stdin.
+            if args.FileDirectory != "" {
+                log.Fatalf("-fileid is not valid when using -file-directory.")
+            }
+            if len(args.FileID) != 2 {
+                log.Fatalf("-fileid must be exactly 2 characters.")
+            }
+            // Check that both characters are alphanumeric.
+            for _, ch := range args.FileID {
+                if !(('A' <= ch && ch <= 'Z') || ('a' <= ch && ch <= 'z') || ('0' <= ch && ch <= '9')) {
+                    log.Fatalf("-fileid must be alphanumeric (A-Z, a-z, 0-9).")
+                }
+            }
+        }
 	return args
 }
 
@@ -625,7 +641,13 @@ func sendFile(args *Arguments) error {
 	compressedSize := len(finalData)
 	md5sum := md5.Sum(fileData)
 	md5Hash := hex.EncodeToString(md5sum[:])
-	fileID := generateFileID()
+	var fileID string
+	if args.FileID != "" {
+	    fileID = args.FileID
+	} else {
+	    fileID = generateFileID()
+	}
+
 	// Compute the encoding method value to be sent (0=binary, 1=base64)
 	var encodingMethod byte = 0
 	if args.Base64 {
@@ -762,6 +784,10 @@ func sendFile(args *Arguments) error {
 						continue
 					}
 					if parsed.Type == "ack" {
+						 if strings.TrimSpace(parsed.FileID) != fileID {
+							 log.Printf("Ignored ACK due to fileID mismatch (expected: %s, got: %s).", fileID, parsed.FileID)
+							 continue
+						}
 						return parsed.Ack
 					}
 				case <-time.After(100 * time.Millisecond):
@@ -972,9 +998,15 @@ func sendStdin(args *Arguments) error {
 		finalData = fileData
 	}
 	compressedSize := len(finalData)
+	// Compute MD5 and assign file ID.
 	md5sum := md5.Sum(fileData)
 	md5Hash := hex.EncodeToString(md5sum[:])
-	fileID := generateFileID()
+	var fileID string
+	if args.FileID != "" {
+	    fileID = args.FileID
+	} else {
+	    fileID = generateFileID()
+	}
 	var encodingMethod byte = 0
 	if args.Base64 {
 		encodingMethod = 1
@@ -1113,6 +1145,10 @@ func sendStdin(args *Arguments) error {
 						continue
 					}
 					if parsed.Type == "ack" {
+						if strings.TrimSpace(parsed.FileID) != fileID {
+							log.Printf("Ignored ACK due to fileID mismatch (expected: %s, got: %s).", fileID, parsed.FileID)
+       							continue
+						}
 						return parsed.Ack
 					}
 				case <-time.After(100 * time.Millisecond):

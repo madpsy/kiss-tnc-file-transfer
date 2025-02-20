@@ -597,6 +597,7 @@ type Arguments struct {
 	Stdout         bool    // Output received file to stdout instead of saving
 	TcpReadDeadline int    // tcp-read-deadline (in seconds) for TCP inactivity detection.
         AllowedCallsigns string  // allowed sender callsigns
+	FileID          string  // Specify file ID
 }
 
 func parseArguments() *Arguments {
@@ -615,6 +616,7 @@ func parseArguments() *Arguments {
 	flag.BoolVar(&args.Stdout, "stdout", false, "Output the received file to stdout instead of saving to disk")
 	flag.IntVar(&args.TcpReadDeadline, "tcp-read-deadline", 600, "Time (in seconds) without data before triggering reconnect (TCP only)")
         flag.StringVar(&args.AllowedCallsigns, "callsigns", "", "Comma delimited list of valid sender callsigns (optional; supports wildcards, e.g. MM5NDH-*,*-15)")
+	flag.StringVar(&args.FileID, "fileid", "", "Specify file ID (2 alphanumeric characters). Only allowed with --one-file.")	
 	flag.Parse()
 
 	if args.MyCallsign == "" {
@@ -623,6 +625,20 @@ func parseArguments() *Arguments {
 	if args.Connection == "serial" && args.SerialPort == "" {
 		log.Fatalf("--serial-port is required for serial connection.")
 	}
+	if args.FileID != "" {
+	   if !args.OneFile {
+	     log.Fatalf("--fileid can only be used with --one-file.")
+       }
+       if len(args.FileID) != 2 {
+           log.Fatalf("--fileid must be exactly 2 characters long.")
+       }
+       // Check that each character is alphanumeric.
+       for _, ch := range args.FileID {
+           if !(('0' <= ch && ch <= '9') || ('A' <= ch && ch <= 'Z') || ('a' <= ch && ch <= 'z')) {
+               log.Fatalf("--fileid must contain only alphanumeric characters.")
+           }
+         }
+       }
 	return args
 }
 
@@ -714,6 +730,10 @@ func receiverMain(args *Arguments) {
 			if parsed.Type == "ack" {
 				log.Printf("Received an ACK packet (ignored on receiver).")
 				continue
+			}
+			if args.FileID != "" && parsed.FileID != args.FileID {
+			   log.Printf("Ignoring packet: fileid mismatch (got %s, expected %s).", parsed.FileID, args.FileID)
+			   continue
 			}
 			seq := parsed.Seq
 			fileID := parsed.FileID

@@ -454,12 +454,13 @@ func startTransparentListener(port int, b *Broadcaster, conn KISSConnection) {
 
 // --- Invoking the Sender Binary ---
 // This function is still used for sending files (for GET file transfers) via the sender binary.
-func invokeSenderBinary(args *Arguments, receiverCallsign, fileName, inputData string) {
+func invokeSenderBinary(args *Arguments, receiverCallsign, fileName, inputData, cmdID string) {
 	var cmdArgs []string
 	cmdArgs = append(cmdArgs, "-connection=tcp", "-host=localhost", fmt.Sprintf("-port=%d", args.SenderPort))
 	cmdArgs = append(cmdArgs, fmt.Sprintf("-my-callsign=%s", args.MyCallsign))
 	cmdArgs = append(cmdArgs, fmt.Sprintf("-receiver-callsign=%s", receiverCallsign))
 	cmdArgs = append(cmdArgs, "-stdin", "-file-name="+fileName)
+	cmdArgs = append(cmdArgs, fmt.Sprintf("-fileid=%s", cmdID))
 	fullCmd := fmt.Sprintf("%s %s", args.SenderBinary, strings.Join(cmdArgs, " "))
 	log.Printf("Invoking sender binary: %s", fullCmd)
 
@@ -590,7 +591,7 @@ func main() {
 					continue
 				}
 				sendResponseWithDetails(conn, cmdID, command, 1, "GET OK")
-				go invokeSenderBinary(args, sender, fileName, string(content))
+				go invokeSenderBinary(args, sender, fileName, string(content), cmdID)
 			} else if upperCmd == "LIST" {
 				listing, err := listFiles(args.Directory)
 				if err != nil {
@@ -603,7 +604,7 @@ func main() {
 
 				// Invoke the sender binary to send the listing as LIST.txt.
 				// This call is done in a separate goroutine so it doesn't block further command processing.
-				go invokeSenderBinary(args, sender, "LIST.txt", listing)
+				go invokeSenderBinary(args, sender, "LIST.txt", listing, cmdID)
 			} else {
 				log.Printf("Unrecognized command: %s", command)
 				sendResponseWithDetails(conn, cmdID, command, 0, "UNKNOWN COMMAND. AVAILABLE: LIST, GET")

@@ -14,7 +14,6 @@ import (
 	"os/exec"
 	"os/signal"
 	"path/filepath"
-	"regexp"
 	"strconv"
 	"strings"
 	"sync"
@@ -461,101 +460,93 @@ func handleReceiverConnection(remoteConn net.Conn, b *Broadcaster, underlying io
 // and returned only after the process has completed.
 // If the expected file (extracted from a stderr message) does not match the expected value,
 // the receiver process is killed. It returns the stdout output, the process exit code, and an error.
-func spawnReceiverProcess(args *Arguments, expectedFile string) ([]byte, int, error) {
-	recvArgs := []string{
-		"-connection", "tcp",
-		"-host", "localhost",
-		"-port", strconv.Itoa(args.ReceiverPort),
-		"-my-callsign", args.MyCallsign,
-		"-callsigns", args.FileServerCallsign,
-		"-stdout",
-		"-one-file",
-	}
-	cmd := exec.Command(args.ReceiverBinary, recvArgs...)
+func spawnReceiverProcess(args *Arguments, fileid string, expectedFile string) ([]byte, int, error) {
+    recvArgs := []string{
+        "-connection", "tcp",
+        "-host", "localhost",
+        "-port", strconv.Itoa(args.ReceiverPort),
+        "-my-callsign", args.MyCallsign,
+        "-callsigns", args.FileServerCallsign,
+        "-stdout",
+        "-one-file",
+        "-fileid", fileid,
+    }
+    cmd := exec.Command(args.ReceiverBinary, recvArgs...)
 
-	stdoutPipe, err := cmd.StdoutPipe()
-	if err != nil {
-		return nil, 0, fmt.Errorf("error getting stdout pipe: %v", err)
-	}
-	stderrPipe, err := cmd.StderrPipe()
-	if err != nil {
-		return nil, 0, fmt.Errorf("error getting stderr pipe: %v", err)
-	}
+    stdoutPipe, err := cmd.StdoutPipe()
+    if err != nil {
+        return nil, 0, fmt.Errorf("error getting stdout pipe: %v", err)
+    }
+    stderrPipe, err := cmd.StderrPipe()
+    if err != nil {
+        return nil, 0, fmt.Errorf("error getting stderr pipe: %v", err)
+    }
 
-	if err := cmd.Start(); err != nil {
-		return nil, 0, fmt.Errorf("error starting receiver process: %v", err)
-	}
+    if err := cmd.Start(); err != nil {
+        return nil, 0, fmt.Errorf("error starting receiver process: %v", err)
+    }
 
-	var stdoutBuf bytes.Buffer
-	var wg sync.WaitGroup
-	wg.Add(2)
+    var stdoutBuf bytes.Buffer
+    var wg sync.WaitGroup
+    wg.Add(2)
 
-	// Process stdout: collect the output.
-	go func() {
-		scanner := bufio.NewScanner(stdoutPipe)
-		for scanner.Scan() {
-			line := scanner.Text()
-			stdoutBuf.WriteString(line + "\n")
-		}
-		wg.Done()
-	}()
+    // Process stdout: collect the output.
+    go func() {
+        scanner := bufio.NewScanner(stdoutPipe)
+        for scanner.Scan() {
+            line := scanner.Text()
+            stdoutBuf.WriteString(line + "\n")
+        }
+        wg.Done()
+    }()
 
-	// Process stderr: print all lines immediately and check for file info.
-	regex := regexp.MustCompile(`\(File:\s*([^,]+),\s*ID:`)
-	go func() {
-		scanner := bufio.NewScanner(stderrPipe)
-		for scanner.Scan() {
-			line := scanner.Text()
-			fmt.Println(line)
-			if expectedFile != "" {
-				if m := regex.FindStringSubmatch(line); m != nil {
-					actual := m[1]
-					if actual != expectedFile {
-						fmt.Printf("Expected file %s but got %s. Killing receiver process.\n", expectedFile, actual)
-						cmd.Process.Kill()
-					}
-				}
-			}
-		}
-		wg.Done()
-	}()
+    // Process stderr: print all lines immediately.
+    go func() {
+        scanner := bufio.NewScanner(stderrPipe)
+        for scanner.Scan() {
+            line := scanner.Text()
+            fmt.Println(line)
+            // Removed the filename regex check.
+        }
+        wg.Done()
+    }()
 
-	// Create channel to capture process exit.
-	doneChan := make(chan error, 1)
-	go func() {
-		doneChan <- cmd.Wait()
-	}()
+    // Create channel to capture process exit.
+    doneChan := make(chan error, 1)
+    go func() {
+        doneChan <- cmd.Wait()
+    }()
 
-	// Setup channel for Ctrl-C.
-	sigChan := make(chan os.Signal, 1)
-	signal.Notify(sigChan, os.Interrupt)
-	defer signal.Stop(sigChan)
+    // Setup channel for Ctrl-C.
+    sigChan := make(chan os.Signal, 1)
+    signal.Notify(sigChan, os.Interrupt)
+    defer signal.Stop(sigChan)
 
-	var procErr error
-	select {
-	case <-sigChan:
-		if killErr := cmd.Process.Kill(); killErr != nil {
-			procErr = fmt.Errorf("failed to kill receiver process: %v", killErr)
-		} else {
-			procErr = fmt.Errorf("receiver process killed by user")
-		}
-		procErr = <-doneChan
-	case procErr = <-doneChan:
-		// Process terminated normally.
-	}
+    var procErr error
+    select {
+    case <-sigChan:
+        if killErr := cmd.Process.Kill(); killErr != nil {
+            procErr = fmt.Errorf("failed to kill receiver process: %v", killErr)
+        } else {
+            procErr = fmt.Errorf("receiver process killed by user")
+        }
+        procErr = <-doneChan
+    case procErr = <-doneChan:
+        // Process terminated normally.
+    }
 
-	wg.Wait()
+    wg.Wait()
 
-	exitCode := 0
-	if procErr != nil {
-		if exitError, ok := procErr.(*exec.ExitError); ok {
-			exitCode = exitError.ExitCode()
-		} else {
-			exitCode = 1
-		}
-	}
+    exitCode := 0
+    if procErr != nil {
+        if exitError, ok := procErr.(*exec.ExitError); ok {
+            exitCode = exitError.ExitCode()
+        } else {
+            exitCode = 1
+        }
+    }
 
-	return stdoutBuf.Bytes(), exitCode, procErr
+    return stdoutBuf.Bytes(), exitCode, procErr
 }
 
 // ------------------ Main ------------------
@@ -632,7 +623,7 @@ func main() {
 			log.Printf("Error sending command: %v", err)
 			continue
 		}
-		log.Printf("Sent command: %s", commandLine)
+		log.Printf("Sent command: %s [%s]", commandLine, cmdID)
 
 		// Wait for the direct response from the server.
 		respPayload, err := waitForResponse(broadcaster, 5*time.Second, cmdID)
@@ -682,7 +673,7 @@ func main() {
 
 		}
 
-		output, exitCode, procErr := spawnReceiverProcess(args, expectedFile)
+		output, exitCode, procErr := spawnReceiverProcess(args, cmdID, expectedFile)
 		if exitCode == 0 {
 			if cmdType == "LIST" {
 				fmt.Println("LIST contents:\n")
