@@ -610,7 +610,6 @@ func parseArguments() *Arguments {
 	flag.BoolVar(&args.OneFile, "one-file", false, "Exit after successfully receiving one file")
 	flag.StringVar(&args.Execute, "execute", "", "If received file's name matches this, execute it with bash instead of saving")
 	flag.BoolVar(&args.Replace, "replace", false, "Overwrite existing files if a new file is received with the same name")
-	flag.StringVar(&args.OnlyFrom, "only-from", "", "Only accept files from the specified callsign")
 	flag.Float64Var(&args.ExecuteTimeout, "execute-timeout", 0, "Maximum seconds to allow executed file to run (0 means unlimited)")
 	flag.BoolVar(&args.Stdout, "stdout", false, "Output the received file to stdout instead of saving to disk")
 	flag.IntVar(&args.TcpReadDeadline, "tcp-read-deadline", 600, "Time (in seconds) without data before triggering reconnect (TCP only)")

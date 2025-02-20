@@ -1,0 +1,638 @@
+.qmake.stash
+017_files-readme(1).html
+017_files-readme.html
+1.png
+2.png
+2_Towers.jpg
+3.png
+4.png
+5.png
+51wh7QtuOJL._SL1001_.jpg
+6.png
+91783456.jpg
+9W3FAB-13_pressure_weather.csv
+APLG.csv
+APLRG.csv
+APRS101.PDF
+APRS101_1.PDF
+CE2LOH-10_snr_distance.csv
+E74D0262-BB58-40FB-89B3-EA1DADF9CE18.MP4
+EA5DHO-10_snr_distance.csv
+G4DDP-10_coverage.geojson
+G4DDP-10_coverage.kml
+Garage Switch_1733243772.tar.gz
+HT_2.7.14.3_APKPure(1).xapk
+HT_2.7.14.3_APKPure.xapk
+IMG_6046.jpg
+KD9PKP-10_dew_point_weather.csv
+KD9PKP-10_pressure_weather.csv
+KD9PKP-10_temperature_weather.csv
+LSAInvoice145.docx
+LSAInvoice145.pdf
+LSAInvoice146.pdf
+LSAInvoice147.pdf
+LSAInvoice148-1.pdf
+LSAInvoice148.docx
+LSAInvoice148.pdf
+LoRa_APRS_Tracker-BTMod(1).zip
+MB7UKL-10_telemetry.csv
+MB7UWS-2_battery.csv
+MM3NDH-14_MM3NDH-11_a9_APRS101.PDF
+MM3NDH-14_telemetry(1).csv
+MM3NDH-14_telemetry.csv
+Nathan EdgeSwitch_1733243768.tar.gz
+OCUKSIN25000030.pdf
+OELpt-kW.html
+ON1TG-13_wind_speed_weather.csv
+PWP222 Remote Host Protocol Version 2.txt
+PXL_20231125_154141959(1).jpg
+PXL_20231125_154141959.jpg
+PXL_20231125_154531061.jpg
+PXL_20240502_072220321.jpg
+PXL_20240619_112924469.jpg
+PXL_20240619_112929972.jpg
+PXL_20250124_164354619.jpg
+STDIN
+Screencast 2024-12-10 13:26:22.mp4
+Screenshot_2024-12-04_11-26-11.png
+Screenshot_2024-12-04_11-53-33.png
+Screenshot_2024-12-04_12-10-29.png
+Screenshot_2024-12-07_10-15-25.png
+Screenshot_2024-12-13_19-07-33.png
+Screenshot_2024-12-13_19-21-35.png
+Screenshot_2024-12-13_19-24-00.png
+Screenshot_2024-12-13_19-24-13.png
+Screenshot_2024-12-14_00-26-43.png
+Screenshot_2024-12-20_23-27-40.png
+Screenshot_2024-12-21_12-45-41.png
+Screenshot_2024-12-21_12-46-42.png
+Screenshot_2024-12-21_16-59-40.png
+Screenshot_2024-12-21_17-06-42.png
+Screenshot_2024-12-24_11-52-24.png
+Screenshot_2024-12-27_14-38-33.png
+Screenshot_2024-12-29_12-56-09.png
+Screenshot_2024-12-29_15-04-45.png
+Screenshot_2024-12-29_15-07-43.png
+Screenshot_2024-12-31_09-42-16.png
+Screenshot_2024-12-31_12-45-18.png
+Screenshot_2024-12-31_14-23-22.png
+Screenshot_2025-01-03_16-17-17.png
+Screenshot_2025-01-03_17-08-29.png
+Screenshot_2025-01-09_10-09-57.png
+Screenshot_2025-01-10_23-11-41.png
+Screenshot_2025-01-11_15-46-07.png
+Screenshot_2025-01-11_16-18-37.png
+Screenshot_2025-01-11_19-39-25.png
+Screenshot_2025-01-11_19-57-42.png
+Screenshot_2025-01-11_20-00-05.png
+Screenshot_2025-01-13_12-43-21.png
+Screenshot_2025-01-13_12-50-38.png
+Screenshot_2025-01-13_16-08-47.png
+Screenshot_2025-01-13_16-45-03.png
+Screenshot_2025-01-13_17-00-49.png
+Screenshot_2025-01-15_12-32-00.png
+Screenshot_2025-01-15_12-34-00.png
+Screenshot_2025-01-16_22-53-54.png
+Screenshot_2025-01-16_23-48-14.png
+Screenshot_2025-01-17_00-22-25.png
+Screenshot_2025-01-17_12-09-30.png
+Screenshot_2025-01-17_22-23-14.png
+Screenshot_2025-01-18_10-23-32.png
+Screenshot_2025-01-19_11-18-17.png
+Screenshot_2025-01-19_13-55-37.png
+Screenshot_2025-01-20_08-02-32.png
+Screenshot_2025-01-20_08-05-17.png
+Screenshot_2025-01-21_17-19-27.png
+Screenshot_2025-01-21_17-58-03.png
+Screenshot_2025-01-21_18-01-38.png
+Screenshot_2025-01-21_18-05-11.png
+Screenshot_2025-01-21_18-09-08.png
+Screenshot_2025-01-21_20-05-00.png
+Screenshot_2025-01-21_20-18-48.png
+Screenshot_2025-01-21_20-20-20.png
+Screenshot_2025-01-21_20-44-04.png
+Screenshot_2025-01-21_20-47-25.png
+Screenshot_2025-01-21_21-31-54.png
+Screenshot_2025-01-21_21-33-28.png
+Screenshot_2025-01-21_21-40-06.png
+Screenshot_2025-01-21_21-53-26.png
+Screenshot_2025-01-21_22-25-44.png
+Screenshot_2025-01-21_22-26-03.png
+Screenshot_2025-01-21_22-28-52.png
+Screenshot_2025-01-21_22-29-12.png
+Screenshot_2025-01-21_22-46-31.png
+Screenshot_2025-01-21_23-14-42.png
+Screenshot_2025-01-21_23-17-21.png
+Screenshot_2025-01-21_23-19-57.png
+Screenshot_2025-01-21_23-21-42.png
+Screenshot_2025-01-21_23-21-56.png
+Screenshot_2025-01-21_23-45-24.png
+Screenshot_2025-01-21_23-58-28.png
+Screenshot_2025-01-21_23-58-53.png
+Screenshot_2025-01-22_00-29-43.png
+Screenshot_2025-01-22_00-41-52.png
+Screenshot_2025-01-22_00-42-59.png
+Screenshot_2025-01-22_02-53-13.png
+Screenshot_2025-01-22_16-31-33.png
+Screenshot_2025-01-22_16-49-54.png
+Screenshot_2025-01-22_16-56-39.png
+Screenshot_2025-01-22_16-56-48.png
+Screenshot_2025-01-22_17-14-49.png
+Screenshot_2025-01-22_17-42-21.png
+Screenshot_2025-01-24_08-36-49.png
+Screenshot_2025-01-24_13-32-19.png
+Screenshot_2025-01-24_14-27-10.png
+Screenshot_2025-01-24_15-22-37.png
+Screenshot_2025-01-24_15-50-54.png
+Screenshot_2025-01-24_16-35-24.png
+Screenshot_2025-01-24_17-34-14.png
+Screenshot_2025-01-24_18-18-34.png
+Screenshot_2025-01-24_18-19-17.png
+Screenshot_2025-01-24_18-24-17.png
+Screenshot_2025-01-24_20-16-54.png
+Screenshot_2025-01-24_20-47-31.png
+Screenshot_2025-01-24_20-47-55.png
+Screenshot_2025-01-24_21-46-58.png
+Screenshot_2025-01-24_22-27-28.png
+Screenshot_2025-01-25_13-42-34.png
+Screenshot_2025-01-25_14-21-32.png
+Screenshot_2025-01-26_12-55-52.png
+Screenshot_2025-01-28_09-05-14.png
+Screenshot_2025-01-29_17-29-25.png
+Screenshot_2025-01-29_17-29-46.png
+Screenshot_2025-01-29_18-30-58.png
+Screenshot_2025-01-29_18-35-24.png
+Screenshot_2025-01-29_22-23-26.png
+Screenshot_2025-01-29_22-28-39.png
+Screenshot_2025-01-30_09-32-12.png
+Screenshot_2025-01-30_09-54-32.png
+Screenshot_2025-01-31_17-33-49.png
+Screenshot_2025-02-07_12-36-10.png
+Screenshot_2025-02-09_05-55-56 (1).png
+Screenshot_2025-02-09_05-55-56(1).png
+Screenshot_2025-02-09_05-55-56(2).png
+Screenshot_2025-02-09_05-55-56.png
+Screenshot_2025-02-09_19-15-14.png
+Screenshot_2025-02-12_08-36-25.png
+Screenshot_2025-02-12_09-29-36.png
+Screenshot_2025-02-14_01-10-08.png
+Screenshot_2025-02-14_01-53-28.png
+Screenshot_2025-02-14_02-43-07.png
+SingleImageSearch
+SunSDR2DX_test_report.pdf
+VGC_VR_N76_Manual_EN_c9ac.pdf
+WLED_0.15.0_ESP32-S3_16MB_opi.bin
+WLED_0.15.0_ESP32.bin
+aprs.png
+aprsfi (1) (1).ico
+aprsfi (1) (2).ico
+aprsfi (1).ico
+aprsfi (10).ico
+aprsfi (11).ico
+aprsfi (12).ico
+aprsfi (13).ico
+aprsfi (14).ico
+aprsfi (15).ico
+aprsfi (2).ico
+aprsfi (3)(1).ico
+aprsfi (3)(2).ico
+aprsfi (3)(3).ico
+aprsfi (3)(4).ico
+aprsfi (3).ico
+aprsfi (4).ico
+aprsfi (5).ico
+aprsfi (6).ico
+aprsfi (7).ico
+aprsfi (8).ico
+aprsfi (9).ico
+aprsfi(1).ico
+aprsfi(10).ico
+aprsfi(11).ico
+aprsfi(12).ico
+aprsfi(13).ico
+aprsfi(14).ico
+aprsfi(15).ico
+aprsfi(16).ico
+aprsfi(17).ico
+aprsfi(18).ico
+aprsfi(19).ico
+aprsfi(2).ico
+aprsfi(20).ico
+aprsfi(21).ico
+aprsfi(22).ico
+aprsfi(23).ico
+aprsfi(24).ico
+aprsfi(25).ico
+aprsfi(26).ico
+aprsfi(27).ico
+aprsfi(28).ico
+aprsfi(29).ico
+aprsfi(3).ico
+aprsfi(30).ico
+aprsfi(31).ico
+aprsfi(32).ico
+aprsfi(33).ico
+aprsfi(34).ico
+aprsfi(35).ico
+aprsfi(36).ico
+aprsfi(37).ico
+aprsfi(38).ico
+aprsfi(39).ico
+aprsfi(4).ico
+aprsfi(40).ico
+aprsfi(41).ico
+aprsfi(42).ico
+aprsfi(43).ico
+aprsfi(44).ico
+aprsfi(45).ico
+aprsfi(46).ico
+aprsfi(47).ico
+aprsfi(48).ico
+aprsfi(49).ico
+aprsfi(5).ico
+aprsfi(50).ico
+aprsfi(51).ico
+aprsfi(52).ico
+aprsfi(53).ico
+aprsfi(54).ico
+aprsfi(55).ico
+aprsfi(56).ico
+aprsfi(57).ico
+aprsfi(58).ico
+aprsfi(59).ico
+aprsfi(6).ico
+aprsfi(60).ico
+aprsfi(61).ico
+aprsfi(62).ico
+aprsfi(63).ico
+aprsfi(64).ico
+aprsfi(65).ico
+aprsfi(66).ico
+aprsfi(7).ico
+aprsfi(8).ico
+aprsfi(9).ico
+aprsfi.ico
+backup.swb
+boarding_pass.pdf
+bot.py
+comp.png
+core backup.swb
+digipeater-marker.png
+discord-0.0.76.deb
+discord-0.0.78.deb
+discord-0.0.84.deb
+distance_based(1).csv
+distance_based.csv
+elevation.png
+file_from_MM3NDH-11.bin
+file_from_MM3NDH-11_0.bin
+files.html
+gmaps (1).png
+gmaps (2)(1).png
+gmaps (2).png
+gmaps(1)(1) (1)(1)(1).png
+gmaps(1)(1) (1)(1)(2).png
+gmaps(1)(1) (1)(1)(3).png
+gmaps(1)(1) (1)(1)(4).png
+gmaps(1)(1) (1)(1)(5).png
+gmaps(1)(1) (1)(1)(6).png
+gmaps(1)(1) (1)(1)(7).png
+gmaps(1)(1) (1)(1)(8)(1).png
+gmaps(1)(1) (1)(1)(8)(10).png
+gmaps(1)(1) (1)(1)(8)(2).png
+gmaps(1)(1) (1)(1)(8)(3).png
+gmaps(1)(1) (1)(1)(8)(4).png
+gmaps(1)(1) (1)(1)(8)(5).png
+gmaps(1)(1) (1)(1)(8)(6).png
+gmaps(1)(1) (1)(1)(8)(7).png
+gmaps(1)(1) (1)(1)(8)(8).png
+gmaps(1)(1) (1)(1)(8)(9).png
+gmaps(1)(1) (1)(1)(8).png
+gmaps(1)(1) (1)(1).png
+gmaps(1)(1) (1)(2).png
+gmaps(1)(1) (1)(3).png
+gmaps(1)(1) (1)(4).png
+gmaps(1)(1) (1).png
+gmaps(1)(1)(1).png
+gmaps(1)(1)(2).png
+gmaps(1)(1)(3).png
+gmaps(1)(1)(4).png
+gmaps(1)(1)(5).png
+gmaps(1)(1)(6).png
+gmaps(1)(1).png
+gmaps(1).png
+gmaps.png
+iGateConfigurationBackup.json
+image.png
+jsuteat.png
+kilsyth repeater.jpg
+kilsyth repeater.jpg-2.jpg
+lcimg-faa1d902-8857-40b2-b4cb-1e2fc09d7e35.jpeg
+logs(1) (1).html
+logs(1).html
+logs(2)(1).html
+logs(2).html
+logs(3).html
+logs.html
+loralive.ico
+m2-res_480p.mp4
+map.html
+mb7ukl-10_telemetry(1).csv
+mb7ukl-10_telemetry.csv
+messages(1).html
+messages.html
+mikrotik-lte-20250109-1008.backup
+mm3ndh-14_telemetry(1).csv
+mm3ndh-14_telemetry(2).csv
+mm3ndh-14_telemetry(3).csv
+mm3ndh-14_telemetry(4).csv
+mm3ndh-14_telemetry(5).csv
+mm3ndh-14_telemetry(6).csv
+mm3ndh-14_telemetry(7).csv
+mm3ndh-14_telemetry(8).csv
+mm3ndh-14_telemetry.csv
+nathan backup.swb
+onefile (1).png
+onefile (2).png
+onefile(1).png
+onefile(10).png
+onefile(11).png
+onefile(12).png
+onefile(13).png
+onefile(14) (1).png
+onefile(14) (2).png
+onefile(14) (2)_1(1).png
+onefile(14) (2)_1(10).png
+onefile(14) (2)_1(11).png
+onefile(14) (2)_1(12).png
+onefile(14) (2)_1(13).png
+onefile(14) (2)_1(14).png
+onefile(14) (2)_1(15).png
+onefile(14) (2)_1(16).png
+onefile(14) (2)_1(2).png
+onefile(14) (2)_1(3).png
+onefile(14) (2)_1(4).png
+onefile(14) (2)_1(5).png
+onefile(14) (2)_1(6).png
+onefile(14) (2)_1(7).png
+onefile(14) (2)_1(8).png
+onefile(14) (2)_1(9).png
+onefile(14) (2)_1.png
+onefile(14).png
+onefile(2).png
+onefile(3).png
+onefile(4).png
+onefile(5).png
+onefile(6).png
+onefile(7).png
+onefile(8).png
+onefile(9).png
+onefile.png
+ota_update.bin
+packets(1).png
+packets(2).png
+packets.png
+protocol-readme (1).html
+protocol-readme (10).html
+protocol-readme (2).html
+protocol-readme (3).html
+protocol-readme (4).html
+protocol-readme (5).html
+protocol-readme (6).html
+protocol-readme (7).html
+protocol-readme (8).html
+protocol-readme (9).html
+protocol-readme(1).html
+protocol-readme(2).html
+protocol-readme(3).html
+protocol-readme.html
+qo100_cabinet.jpg
+qrzcom (1).ico
+qrzcom(1).ico
+qrzcom(10).ico
+qrzcom(100).ico
+qrzcom(101).ico
+qrzcom(102).ico
+qrzcom(103).ico
+qrzcom(104).ico
+qrzcom(105).ico
+qrzcom(106).ico
+qrzcom(107).ico
+qrzcom(108).ico
+qrzcom(109).ico
+qrzcom(11).ico
+qrzcom(110).ico
+qrzcom(111).ico
+qrzcom(112).ico
+qrzcom(113).ico
+qrzcom(114).ico
+qrzcom(115).ico
+qrzcom(116).ico
+qrzcom(117).ico
+qrzcom(12).ico
+qrzcom(13).ico
+qrzcom(14).ico
+qrzcom(15).ico
+qrzcom(16).ico
+qrzcom(17).ico
+qrzcom(18).ico
+qrzcom(19).ico
+qrzcom(2).ico
+qrzcom(20).ico
+qrzcom(21).ico
+qrzcom(22).ico
+qrzcom(23).ico
+qrzcom(24).ico
+qrzcom(25).ico
+qrzcom(26).ico
+qrzcom(27).ico
+qrzcom(28).ico
+qrzcom(29).ico
+qrzcom(3).ico
+qrzcom(30).ico
+qrzcom(31).ico
+qrzcom(32).ico
+qrzcom(33).ico
+qrzcom(34).ico
+qrzcom(35).ico
+qrzcom(36).ico
+qrzcom(37).ico
+qrzcom(38).ico
+qrzcom(39).ico
+qrzcom(4).ico
+qrzcom(40).ico
+qrzcom(41).ico
+qrzcom(42).ico
+qrzcom(43).ico
+qrzcom(44).ico
+qrzcom(45).ico
+qrzcom(46).ico
+qrzcom(47).ico
+qrzcom(48).ico
+qrzcom(49).ico
+qrzcom(5).ico
+qrzcom(50).ico
+qrzcom(51).ico
+qrzcom(52).ico
+qrzcom(53).ico
+qrzcom(54).ico
+qrzcom(55).ico
+qrzcom(56).ico
+qrzcom(57).ico
+qrzcom(58).ico
+qrzcom(59).ico
+qrzcom(6).ico
+qrzcom(60).ico
+qrzcom(61).ico
+qrzcom(62).ico
+qrzcom(63).ico
+qrzcom(64).ico
+qrzcom(65).ico
+qrzcom(66).ico
+qrzcom(67).ico
+qrzcom(68).ico
+qrzcom(69).ico
+qrzcom(7).ico
+qrzcom(70).ico
+qrzcom(71).ico
+qrzcom(72).ico
+qrzcom(73).ico
+qrzcom(74).ico
+qrzcom(75).ico
+qrzcom(76).ico
+qrzcom(77).ico
+qrzcom(78).ico
+qrzcom(79).ico
+qrzcom(8).ico
+qrzcom(80).ico
+qrzcom(81).ico
+qrzcom(82).ico
+qrzcom(83).ico
+qrzcom(84).ico
+qrzcom(85).ico
+qrzcom(86).ico
+qrzcom(87).ico
+qrzcom(88).ico
+qrzcom(89).ico
+qrzcom(9)(1).ico
+qrzcom(9).ico
+qrzcom(90).ico
+qrzcom(91).ico
+qrzcom(92).ico
+qrzcom(93).ico
+qrzcom(94).ico
+qrzcom(95).ico
+qrzcom(96).ico
+qrzcom(97).ico
+qrzcom(98).ico
+qrzcom(99).ico
+qrzcom.ico
+qrzcom1(1).ico
+qrzcom1.ico
+readme-websockets(1).html
+readme-websockets(2).html
+readme-websockets(3).html
+readme-websockets(4).html
+readme-websockets(5).html
+readme-websockets.html
+receiver.go
+roof.jpg
+s56ds_10_iv3scp_10.csv
+send-msg.png
+settings(1).html
+settings.html
+test (1).sh
+test (1).txt
+test(1).sh
+test(1).txt
+test(10).sh
+test(10).txt
+test(11).sh
+test(11).txt
+test(12).sh
+test(12).txt
+test(13).sh
+test(13).txt
+test(14).sh
+test(14).txt
+test(15).sh
+test(15).txt
+test(16).sh
+test(16).txt
+test(17).sh
+test(17).txt
+test(18).sh
+test(18).txt
+test(19).sh
+test(19).txt
+test(2).sh
+test(2).txt
+test(20).sh
+test(20).txt
+test(21).sh
+test(21).txt
+test(22).sh
+test(22).txt
+test(23).sh
+test(23).txt
+test(24).sh
+test(24).txt
+test(25).sh
+test(25).txt
+test(26).sh
+test(26).txt
+test(27).sh
+test(27).txt
+test(28).sh
+test(28).txt
+test(29).sh
+test(29).txt
+test(3).sh
+test(3).txt
+test(30).sh
+test(30).txt
+test(4).sh
+test(4).txt
+test(5).sh
+test(5).txt
+test(6).sh
+test(6).txt
+test(7).sh
+test(7).txt
+test(8).sh
+test(8).txt
+test(9).sh
+test(9).txt
+test.html
+test.sh
+test.txt
+tnc-map.png
+tnc-rx.tar.gz
+tnc-telemetry.png
+tnc.py
+tnc.tar.gz
+track_multi.html
+treadmill.png
+ttgo-t-beam-v1_2.zip
+tx_callsign_F5ZVD-4.csv
+tx_callsign_G0TQM-3.csv
+tx_callsign_IZ5IMA-7(1).csv
+tx_callsign_IZ5IMA-7.csv
+tx_callsign_KJ7NCH-10.csv
+tx_callsign_MM0XXP-10.csv
+umt-10.png
+unknown_countries(1).csv
+unknown_countries(2).csv
+unknown_countries(3).csv
+unknown_countries(4).csv
+unknown_countries(5).csv
+unknown_countries.csv
+websockets(1).go
+websockets(2).go
+websockets(3).go
+websockets.go
+xfer(1).3gp
+xfer.3gp
+xfer.mov
+xrpi32
+xrpi64
