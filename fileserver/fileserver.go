@@ -372,7 +372,7 @@ func listFiles(dir string) (string, error) {
 		return "", err
 	}
 
-	// Filter out directories and files starting with a dot.
+	// Filter out directories and hidden files.
 	var files []os.FileInfo
 	for _, entry := range entries {
 		if !entry.IsDir() && !strings.HasPrefix(entry.Name(), ".") {
@@ -380,21 +380,39 @@ func listFiles(dir string) (string, error) {
 		}
 	}
 
-	// Sort files alphanumerically by filename.
+	// Sort files alphanumerically.
 	sort.Slice(files, func(i, j int) bool {
 		return strings.ToLower(files[i].Name()) < strings.ToLower(files[j].Name())
 	})
 
-	var output strings.Builder
+	// Determine dynamic widths for the "File Name" and "Size" columns.
+	maxNameLen := len("File Name")
+	maxSizeWidth := len("Size")
+	for _, file := range files {
+		if len(file.Name()) > maxNameLen {
+			maxNameLen = len(file.Name())
+		}
+		sizeStr := fmt.Sprintf("%d", file.Size())
+		if len(sizeStr) > maxSizeWidth {
+			maxSizeWidth = len(sizeStr)
+		}
+	}
 
-	// Write header.
-	output.WriteString(fmt.Sprintf("%-30s %-20s %10s\n", "File Name", "Modified Date", "Size"))
-	output.WriteString(strings.Repeat("-", 65) + "\n")
+	// "Modified Date" column remains fixed at 20 characters.
+	headerFormat := fmt.Sprintf("%%-%ds %%-%ds %%%ds\n", maxNameLen, 20, maxSizeWidth)
+	rowFormat := fmt.Sprintf("%%-%ds %%-%ds %%%dd\n", maxNameLen, 20, maxSizeWidth)
+
+	var output strings.Builder
+	output.WriteString(fmt.Sprintf(headerFormat, "File Name", "Modified Date", "Size"))
+
+	// Build and write a separator line.
+	separatorLen := maxNameLen + 1 + 20 + 1 + maxSizeWidth
+	output.WriteString(strings.Repeat("-", separatorLen) + "\n")
 
 	// Write file details.
 	for _, file := range files {
 		modTime := file.ModTime().Format("2006-01-02 15:04:05")
-		output.WriteString(fmt.Sprintf("%-30s %-20s %10d\n", file.Name(), modTime, file.Size()))
+		output.WriteString(fmt.Sprintf(rowFormat, file.Name(), modTime, file.Size()))
 	}
 	return output.String(), nil
 }
