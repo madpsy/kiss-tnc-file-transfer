@@ -13,7 +13,6 @@ import (
 	"net"
 	"os"
 	"os/exec"
-	"os/signal"
 	"path/filepath"
 	"strconv"
 	"strings"
@@ -505,72 +504,39 @@ func spawnReceiverProcess(args *Arguments, fileid string, expectedFile string) (
 		return nil, 0, fmt.Errorf("error starting receiver process: %v", err)
 	}
 
-	var stdoutBuf bytes.Buffer
-	var wg sync.WaitGroup
-	wg.Add(2)
-
-	// Process stdout: collect the output.
-	go func() {
-		scanner := bufio.NewScanner(stdoutPipe)
-		for scanner.Scan() {
-			line := scanner.Text()
-			if debugEnabled {
-				fmt.Println(line) // Only print stdout if debug is enabled.
-			}
-			stdoutBuf.WriteString(line + "\n") // Capture stdout in buffer regardless.
-		}
-		wg.Done()
-	}()
-
-	// Process stderr: print all lines only if debugEnabled is true.
+	// Stream stderr output in real time.
 	go func() {
 		scanner := bufio.NewScanner(stderrPipe)
 		for scanner.Scan() {
 			line := scanner.Text()
 			if debugEnabled {
-				fmt.Println(line) // Only print stderr if debug is enabled.
+				fmt.Println(line)
 			}
 		}
-		wg.Done()
+		// Optionally, check for scanner.Err() if needed.
 	}()
 
-	// Create channel to capture process exit.
-	doneChan := make(chan error, 1)
-	go func() {
-		doneChan <- cmd.Wait()
-	}()
-
-	// Setup channel for Ctrl-C.
-	sigChan := make(chan os.Signal, 1)
-	signal.Notify(sigChan, os.Interrupt)
-	defer signal.Stop(sigChan)
-
-	var procErr error
-	select {
-	case <-sigChan:
-		if killErr := cmd.Process.Kill(); killErr != nil {
-			procErr = fmt.Errorf("failed to kill receiver process: %v", killErr)
-		} else {
-			procErr = fmt.Errorf("receiver process killed by user")
-		}
-		procErr = <-doneChan
-	case procErr = <-doneChan:
-		// Process terminated normally.
+	// Read stdout completely (for binary file content).
+	output, err := io.ReadAll(stdoutPipe)
+	if err != nil {
+		return nil, 0, fmt.Errorf("error reading stdout: %v", err)
 	}
 
-	wg.Wait()
-
+	// Wait for the process to finish.
+	err = cmd.Wait()
 	exitCode := 0
-	if procErr != nil {
-		if exitError, ok := procErr.(*exec.ExitError); ok {
+	if err != nil {
+		if exitError, ok := err.(*exec.ExitError); ok {
 			exitCode = exitError.ExitCode()
 		} else {
 			exitCode = 1
 		}
+		return output, exitCode, err
 	}
 
-	return stdoutBuf.Bytes(), exitCode, procErr
+	return output, exitCode, nil
 }
+
 
 // spawnSenderProcess spawns the sender process for a PUT command.
 // It uses the same options as the receiver process except using -stdin instead of -stdout,

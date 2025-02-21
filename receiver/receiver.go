@@ -872,17 +872,18 @@ func receiverMain(args *Arguments) {
 						break
 					}
 					// Use the encoding method from the header.
-					if transfer.EncodingMethod == 1 {
-						decoded, err := base64.StdEncoding.DecodeString(string(part))
-						if err != nil {
-							log.Printf("Error decoding base64 for packet %d: %v", i, err)
-							complete = false
-							break
-						}
-						fileDataBuffer.Write(decoded)
-					} else {
-						fileDataBuffer.Write(part)
-					}
+		if transfer.EncodingMethod == 1 {
+    decoded, err := base64.StdEncoding.DecodeString(string(part))
+    if err != nil {
+        log.Printf("Error decoding base64 for packet %d: %v", i, err)
+        complete = false
+        break
+    }
+    fileDataBuffer.Write(decoded)
+} else {
+    fileDataBuffer.Write(part)
+}
+
 				}
 				if !complete {
 					continue
