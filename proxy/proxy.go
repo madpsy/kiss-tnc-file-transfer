@@ -213,9 +213,17 @@ func parsePacket(packet []byte) *Packet {
 		rspInfo := packet[16:80]
 		strInfo := string(rspInfo)
 		if strings.HasPrefix(strInfo, "RSP:") || strings.HasPrefix(strInfo, "CMD:") {
+			var sender, receiver string
+			// If the packet contains enough bytes, decode the addresses from the header.
+			if len(packet) >= 14 {
+				receiver = decodeAX25Address(packet[0:7])
+				sender = decodeAX25Address(packet[7:14])
+			}
 			return &Packet{
-				Type:    "cmdrsp", // Use "cmdrsp" (or "rsp") as desired.
-				RawInfo: strInfo,
+				Type:     "cmdrsp", // Could be "rsp" as desired.
+				Sender:   sender,
+				Receiver: receiver,
+				RawInfo:  strInfo,
 			}
 		}
 	}
@@ -339,6 +347,7 @@ func parsePacket(packet []byte) *Packet {
 		EncodingMethod: encodingMethod,
 	}
 }
+
 
 // -----------------------------------------------------------------------------
 // KISSConnection Interface and Implementations (TCP and Serial)
@@ -793,10 +802,24 @@ func callsignAllowed(callsign string) bool {
 	return false
 }
 
-// -----------------------------------------------------------------------------
-// Packet Processing and Forwarding Logic
-// -----------------------------------------------------------------------------
+// decodeAX25Address decodes a 7‑byte AX.25 address into a callsign.
+// Each of the first 6 bytes is right‐shifted by one to recover the ASCII characters,
+// and the 7th byte holds the SSID (in its lower 4 bits). Extra spaces are trimmed.
+func decodeAX25Address(addr []byte) string {
+	b := make([]byte, 6)
+	for i := 0; i < 6; i++ {
+		b[i] = addr[i] >> 1
+	}
+	cs := strings.TrimSpace(string(b))
+	ssid := (addr[6] >> 1) & 0x0F
+	if ssid > 0 {
+		cs = fmt.Sprintf("%s-%d", cs, ssid)
+	}
+	return cs
+}
 
+// processAndForwardPacket processes a raw packet (already unescaped from KISS framing)
+// and then forwards it appropriately based on its type (CMD/RSP, ACK, header, or data).
 func processAndForwardPacket(pkt []byte, dstConn KISSConnection, direction string) {
 	packet := parsePacket(pkt)
 	if packet == nil {
@@ -806,8 +829,16 @@ func processAndForwardPacket(pkt []byte, dstConn KISSConnection, direction strin
 		return
 	}
 
-	key := canonicalKey(packet.Sender, packet.Receiver, packet.FileID)
+	// For all non-ACK packets, enforce allowed callsigns if specified.
+	// For CMD/RSP packets, if the sender or receiver is empty, try to decode them from the raw packet header.
 	if packet.Type != "ack" && len(allowedCallsigns) > 0 {
+		if packet.Type == "cmdrsp" && (strings.TrimSpace(packet.Sender) == "" || strings.TrimSpace(packet.Receiver) == "") {
+			// Ensure we have enough bytes (at least 14) in the raw packet to decode addresses.
+			if len(pkt) >= 14 {
+				packet.Receiver = decodeAX25Address(pkt[0:7])
+				packet.Sender = decodeAX25Address(pkt[7:14])
+			}
+		}
 		if !callsignAllowed(packet.Sender) || !callsignAllowed(packet.Receiver) {
 			log.Printf("[%s] [FileID: %s] [From: %s To: %s] Dropping packet: callsign not allowed",
 				direction, packet.FileID, packet.Sender, packet.Receiver)
@@ -815,22 +846,22 @@ func processAndForwardPacket(pkt []byte, dstConn KISSConnection, direction strin
 		}
 	}
 
-	transfersLock.Lock()
-	transfer, exists := transfers[key]
-	if exists && !transfer.FinAckTime.IsZero() {
-		if time.Since(transfer.FinAckTime) > time.Duration(transfer.TimeoutSeconds)*time.Second {
-			log.Printf("[%s] [FileID: %s] [From: %s To: %s] Transfer timeout expired. Dropping packet.",
-				direction, packet.FileID, packet.Sender, packet.Receiver)
-			delete(transfers, key)
-			transfersLock.Unlock()
-			return
+	// Special-case: CMD/RSP packets are forwarded immediately.
+	if packet.Type == "cmdrsp" {
+		log.Printf("[%s] [FileID: %s] [From: %s To: %s] CMD/RSP packet received; forwarding without header check.",
+			direction, packet.FileID, packet.Sender, packet.Receiver)
+		frame := buildKISSFrame(pkt)
+		if err := dstConn.SendFrame(frame); err != nil {
+			log.Printf("[%s] [FileID: %s] [From: %s To: %s] Error forwarding CMD/RSP packet: %v",
+				direction, packet.FileID, packet.Sender, packet.Receiver, err)
 		}
+		return
 	}
-	transfersLock.Unlock()
 
+	// Process ACK packets.
 	if packet.Type == "ack" {
 		transfersLock.Lock()
-		transfer, exists := transfers[key]
+		transfer, exists := transfers[canonicalKey(packet.Sender, packet.Receiver, packet.FileID)]
 		if exists {
 			if strings.Contains(packet.Ack, "FIN-ACK") {
 				if transfer.FinAckTime.IsZero() {
@@ -845,7 +876,7 @@ func processAndForwardPacket(pkt []byte, dstConn KISSConnection, direction strin
 				if !transfer.FinAckTime.IsZero() && time.Since(transfer.FinAckTime) > time.Duration(transfer.TimeoutSeconds)*time.Second {
 					log.Printf("[%s] [FileID: %s] [From: %s To: %s] Transfer timeout expired. Dropping ACK packet.",
 						direction, packet.FileID, packet.Sender, packet.Receiver)
-					delete(transfers, key)
+					delete(transfers, canonicalKey(packet.Sender, packet.Receiver, packet.FileID))
 					transfersLock.Unlock()
 					return
 				}
@@ -867,6 +898,7 @@ func processAndForwardPacket(pkt []byte, dstConn KISSConnection, direction strin
 		return
 	}
 
+	// Process header packets (data packets with sequence number 1).
 	if packet.Seq == 1 {
 		headerStr := string(packet.Payload)
 		fields := strings.Split(headerStr, "|")
@@ -915,7 +947,7 @@ func processAndForwardPacket(pkt []byte, dstConn KISSConnection, direction strin
 			return
 		}
 		compress := compFlag == "1"
-		var encStr string = "binary"
+		encStr := "binary"
 		if encodingMethodVal == 1 {
 			encStr = "base64"
 		}
@@ -931,7 +963,7 @@ func processAndForwardPacket(pkt []byte, dstConn KISSConnection, direction strin
 		log.Printf("           Total Packets  : %d", totalPackets)
 		log.Printf("           Encoding Method: %s", encStr)
 		transfersLock.Lock()
-		transfers[key] = &Transfer{
+		transfers[canonicalKey(packet.Sender, packet.Receiver, packet.FileID)] = &Transfer{
 			Sender:         packet.Sender,
 			Receiver:       packet.Receiver,
 			FileID:         packet.FileID,
@@ -957,8 +989,9 @@ func processAndForwardPacket(pkt []byte, dstConn KISSConnection, direction strin
 		return
 	}
 
+	// Process remaining data packets.
 	transfersLock.Lock()
-	transfer, exists = transfers[key]
+	transfer, exists := transfers[canonicalKey(packet.Sender, packet.Receiver, packet.FileID)]
 	transfersLock.Unlock()
 	if !exists {
 		log.Printf("[%s] [FileID: %s] [From: %s To: %s] Dropping data packet seq %d: header not seen",
@@ -970,7 +1003,7 @@ func processAndForwardPacket(pkt []byte, dstConn KISSConnection, direction strin
 			log.Printf("[%s] [FileID: %s] [From: %s To: %s] Transfer timeout expired. Dropping data packet seq %d.",
 				direction, packet.FileID, packet.Sender, packet.Receiver, packet.Seq)
 			transfersLock.Lock()
-			delete(transfers, key)
+			delete(transfers, canonicalKey(packet.Sender, packet.Receiver, packet.FileID))
 			transfersLock.Unlock()
 			return
 		}
@@ -1076,6 +1109,9 @@ ForwardPacket:
 	}
 }
 
+
+
+
 // -----------------------------------------------------------------------------
 // Independent Auto‑Reconnect Loops for TNC1 and TNC2
 // -----------------------------------------------------------------------------
@@ -1085,26 +1121,36 @@ func manageTNC1() {
 		var conn KISSConnection
 		var err error
 
-		switch strings.ToLower(*tnc1ConnType) {
-		case "tcp":
-			conn, err = newTCPKISSConnection(*tnc1Host, *tnc1Port, false)
+		if *loop {
+			// In loop mode, listen on the TNC1 passthrough port.
+			conn, err = newTCPKISSConnection("0.0.0.0", *tnc1PassthroughPort, true)
 			if err != nil {
-				log.Printf("TNC1: Error creating TCP connection: %v", err)
+				log.Printf("TNC1 (Loop Mode): Error creating TCP listener on port %d: %v", *tnc1PassthroughPort, err)
 				time.Sleep(5 * time.Second)
 				continue
 			}
-		case "serial":
-			if *tnc1SerialPort == "" {
-				log.Fatalf("TNC1: Serial port must be specified for serial connection.")
+		} else {
+			switch strings.ToLower(*tnc1ConnType) {
+			case "tcp":
+				conn, err = newTCPKISSConnection(*tnc1Host, *tnc1Port, false)
+				if err != nil {
+					log.Printf("TNC1: Error creating TCP connection: %v", err)
+					time.Sleep(5 * time.Second)
+					continue
+				}
+			case "serial":
+				if *tnc1SerialPort == "" {
+					log.Fatalf("TNC1: Serial port must be specified for serial connection.")
+				}
+				conn, err = newSerialKISSConnection(*tnc1SerialPort, *tnc1Baud)
+				if err != nil {
+					log.Printf("TNC1: Error creating serial connection: %v", err)
+					time.Sleep(5 * time.Second)
+					continue
+				}
+			default:
+				log.Fatalf("TNC1: Invalid connection type: %s", *tnc1ConnType)
 			}
-			conn, err = newSerialKISSConnection(*tnc1SerialPort, *tnc1Baud)
-			if err != nil {
-				log.Printf("TNC1: Error creating serial connection: %v", err)
-				time.Sleep(5 * time.Second)
-				continue
-			}
-		default:
-			log.Fatalf("TNC1: Invalid connection type: %s", *tnc1ConnType)
 		}
 
 		currentTNC1Lock.Lock()
@@ -1151,26 +1197,36 @@ func manageTNC2() {
 		var conn KISSConnection
 		var err error
 
-		switch strings.ToLower(*tnc2ConnType) {
-		case "tcp":
-			conn, err = newTCPKISSConnection(*tnc2Host, *tnc2Port, false)
+		if *loop {
+			// In loop mode, listen on the TNC2 passthrough port.
+			conn, err = newTCPKISSConnection("0.0.0.0", *tnc2PassthroughPort, true)
 			if err != nil {
-				log.Printf("TNC2: Error creating TCP connection: %v", err)
+				log.Printf("TNC2 (Loop Mode): Error creating TCP listener on port %d: %v", *tnc2PassthroughPort, err)
 				time.Sleep(5 * time.Second)
 				continue
 			}
-		case "serial":
-			if *tnc2SerialPort == "" {
-				log.Fatalf("TNC2: Serial port must be specified for serial connection.")
+		} else {
+			switch strings.ToLower(*tnc2ConnType) {
+			case "tcp":
+				conn, err = newTCPKISSConnection(*tnc2Host, *tnc2Port, false)
+				if err != nil {
+					log.Printf("TNC2: Error creating TCP connection: %v", err)
+					time.Sleep(5 * time.Second)
+					continue
+				}
+			case "serial":
+				if *tnc2SerialPort == "" {
+					log.Fatalf("TNC2: Serial port must be specified for serial connection.")
+				}
+				conn, err = newSerialKISSConnection(*tnc2SerialPort, *tnc2Baud)
+				if err != nil {
+					log.Printf("TNC2: Error creating serial connection: %v", err)
+					time.Sleep(5 * time.Second)
+					continue
+				}
+			default:
+				log.Fatalf("TNC2: Invalid connection type: %s", *tnc2ConnType)
 			}
-			conn, err = newSerialKISSConnection(*tnc2SerialPort, *tnc2Baud)
-			if err != nil {
-				log.Printf("TNC2: Error creating serial connection: %v", err)
-				time.Sleep(5 * time.Second)
-				continue
-			}
-		default:
-			log.Fatalf("TNC2: Invalid connection type: %s", *tnc2ConnType)
 		}
 
 		currentTNC2Lock.Lock()
@@ -1274,9 +1330,11 @@ func main() {
 		}
 	}
 
-	// Launch the pass‑through listeners for TNC1 and TNC2.
-	go startTNC1PassthroughListener(*tnc1PassthroughPort)
-	go startTNC2PassthroughListener(*tnc2PassthroughPort)
+	// Only start pass‑through listeners if loop mode is disabled.
+	if !*loop {
+		go startTNC1PassthroughListener(*tnc1PassthroughPort)
+		go startTNC2PassthroughListener(*tnc2PassthroughPort)
+	}
 
 	// Launch independent auto‑reconnect loops.
 	go manageTNC1()

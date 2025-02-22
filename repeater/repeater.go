@@ -187,44 +187,50 @@ type Packet struct {
 	RawFrame       []byte // the original raw frame (with KISS framing)
 }
 
-//
-// parsePacket now expects the full raw frame, strips the first two and last byte,
-// unescapes the inner data, and uses that for parsing. It also saves the raw frame.
+// decodeAX25Address converts a 7-byte AX.25 address into a string.
+// Each of the first 6 bytes is shifted right by 1 to recover the ASCII characters,
+// and the 7th byte contains the SSID (in its lower 4 bits).
+func decodeAX25Address(addr []byte) string {
+	s := ""
+	for i := 0; i < 6; i++ {
+		s += string(addr[i] >> 1)
+	}
+	s = strings.TrimSpace(s)
+	ssid := (addr[6] >> 1) & 0x0F
+	if ssid > 0 {
+		s += "-" + strconv.Itoa(int(ssid))
+	}
+	return s
+}
+
 func parsePacket(rawFrame []byte) *Packet {
 	// Basic sanity check: frame should start and end with KISS_FLAG.
 	if len(rawFrame) < 4 || rawFrame[0] != KISS_FLAG || rawFrame[len(rawFrame)-1] != KISS_FLAG {
 		debugf("Invalid frame format")
 		return nil
 	}
-	// Remove the KISS framing (first 2 bytes and last byte).
+
+	// Remove the KISS framing and unescape the inner data.
 	inner := rawFrame[2 : len(rawFrame)-1]
 	unesc := unescapeData(inner)
 
-	// Check for new-style RSP packet with header.
-	// Expect unescaped payload to be at least 80 bytes (16-byte header + 64-byte info field)
-	if len(unesc) >= 80 {
-		info := unesc[16:80]
-		if strings.HasPrefix(string(info), "RSP:") {
-			return &Packet{
-				Type:     "cmdrsp", // or "rsp" as preferred
-				RawInfo:  string(info),
-				RawFrame: rawFrame,
-			}
-		}
-	}
-
-	// Otherwise, assume the packet contains a 16-byte AX.25 header.
+	// Ensure there's at least a 16-byte AX.25 header.
 	if len(unesc) < 16 {
 		debugf("Packet too short: %d bytes", len(unesc))
 		return nil
 	}
+
+	// The first 16 bytes are the AX.25 header.
+	header := unesc[:16]
+	// The remainder is the info field (and payload).
 	infoAndPayload := unesc[16:]
 	if len(infoAndPayload) == 0 {
 		debugf("No info/payload found")
 		return nil
 	}
 	prefix := string(infoAndPayload[:min(50, len(infoAndPayload))])
-	// Check for ACK packets.
+
+	// ----- ACK Packet Branch -----
 	if strings.Contains(prefix, "ACK:") {
 		fields := strings.Split(string(infoAndPayload), ":")
 		if len(fields) >= 4 {
@@ -263,16 +269,26 @@ func parsePacket(rawFrame []byte) *Packet {
 			RawInfo:  string(infoAndPayload),
 			RawFrame: rawFrame,
 		}
-	} else if strings.HasPrefix(prefix, "CMD:") {
-		// CMD packets come with the header already stripped.
+	}
+
+	// ----- CMD/RSP Packet Branch -----
+	if strings.HasPrefix(prefix, "CMD:") || strings.HasPrefix(prefix, "RSP:") {
+		// Instead of expecting callsign info in the info field, decode it from the AX.25 header.
+		// In the header, bytes 0-6 contain the destination address and bytes 7-13 contain the source address.
+		receiver := decodeAX25Address(header[0:7])
+		sender := decodeAX25Address(header[7:14])
+		infoStr := string(infoAndPayload) // Typically 64 bytes.
 		return &Packet{
 			Type:     "cmdrsp",
-			RawInfo:  string(infoAndPayload),
+			Sender:   sender,
+			Receiver: receiver,
+			FileID:   "", // CMD/RSP packets do not include a fileID.
+			RawInfo:  infoStr,
 			RawFrame: rawFrame,
 		}
 	}
 
-	// Otherwise, treat the packet as a data packet.
+	// ----- DATA Packet Branch -----
 	var infoField, payload []byte
 	if len(infoAndPayload) >= 27 && string(infoAndPayload[23:27]) == "0001" {
 		idx := bytes.IndexByte(infoAndPayload[27:], ':')
@@ -285,6 +301,7 @@ func parsePacket(rawFrame []byte) *Packet {
 		debugf("Detected header packet via marker. InfoField: %s", string(infoField))
 	} else {
 		if len(infoAndPayload) < 32 {
+			debugf("DATA packet too short: %d bytes", len(infoAndPayload))
 			return nil
 		}
 		infoField = infoAndPayload[:32]
@@ -346,6 +363,7 @@ func parsePacket(rawFrame []byte) *Packet {
 		RawFrame:       rawFrame,
 	}
 }
+
 
 func min(a, b int) int {
 	if a < b {
@@ -741,10 +759,18 @@ func processPacket(rawFrame []byte, conn KISSConnection) {
 		return
 	}
 	if packet.Type == "cmdrsp" {
-	        log.Printf("[Repeater] CMD/RSP packet received. Forwarding immediately: %s", packet.RawInfo)
-	        conn.SendFrame(rawFrame)
-        	return
-    	}
+	    // Check allowed callsigns for CMD/RSP packets as well.
+	    if *callsigns != "" {
+	        if !callsignAllowed(packet.Sender) || !callsignAllowed(packet.Receiver) {
+	            log.Printf("[Repeater] Dropping CMD/RSP packet for fileID %s from %s -> %s: callsign not allowed",
+	                packet.FileID, packet.Sender, packet.Receiver)
+	            return
+	        }
+	    }
+	    log.Printf("[Repeater] CMD/RSP packet received. Forwarding immediately: %s", packet.RawInfo)
+	    conn.SendFrame(rawFrame)
+	    return
+	}
 	// --- Logging improvements ---
 	if packet.Type == "ack" {
 		log.Printf("[Repeater] ACK packet from %s -> %s for fileID %s: %s",
