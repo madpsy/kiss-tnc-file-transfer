@@ -191,15 +191,29 @@ type Packet struct {
 // parsePacket now expects the full raw frame, strips the first two and last byte,
 // unescapes the inner data, and uses that for parsing. It also saves the raw frame.
 func parsePacket(rawFrame []byte) *Packet {
-	// Basic sanity check: frame should start and end with KISS_FLAG and have at least 4 bytes.
+	// Basic sanity check: frame should start and end with KISS_FLAG.
 	if len(rawFrame) < 4 || rawFrame[0] != KISS_FLAG || rawFrame[len(rawFrame)-1] != KISS_FLAG {
 		debugf("Invalid frame format")
 		return nil
 	}
-	// Remove the first 2 bytes (KISS_FLAG and command) and the last KISS_FLAG.
+	// Remove the KISS framing (first 2 bytes and last byte).
 	inner := rawFrame[2 : len(rawFrame)-1]
 	unesc := unescapeData(inner)
-	// Now, unesc is the same as what was previously passed to parsePacket.
+
+	// Check for new-style RSP packet with header.
+	// Expect unescaped payload to be at least 80 bytes (16-byte header + 64-byte info field)
+	if len(unesc) >= 80 {
+		info := unesc[16:80]
+		if strings.HasPrefix(string(info), "RSP:") {
+			return &Packet{
+				Type:     "cmdrsp", // or "rsp" as preferred
+				RawInfo:  string(info),
+				RawFrame: rawFrame,
+			}
+		}
+	}
+
+	// Otherwise, assume the packet contains a 16-byte AX.25 header.
 	if len(unesc) < 16 {
 		debugf("Packet too short: %d bytes", len(unesc))
 		return nil
@@ -210,7 +224,7 @@ func parsePacket(rawFrame []byte) *Packet {
 		return nil
 	}
 	prefix := string(infoAndPayload[:min(50, len(infoAndPayload))])
-	// Check for ACK packet.
+	// Check for ACK packets.
 	if strings.Contains(prefix, "ACK:") {
 		fields := strings.Split(string(infoAndPayload), ":")
 		if len(fields) >= 4 {
@@ -249,9 +263,16 @@ func parsePacket(rawFrame []byte) *Packet {
 			RawInfo:  string(infoAndPayload),
 			RawFrame: rawFrame,
 		}
+	} else if strings.HasPrefix(prefix, "CMD:") {
+		// CMD packets come with the header already stripped.
+		return &Packet{
+			Type:     "cmdrsp",
+			RawInfo:  string(infoAndPayload),
+			RawFrame: rawFrame,
+		}
 	}
 
-	// Otherwise, it's a data packet.
+	// Otherwise, treat the packet as a data packet.
 	var infoField, payload []byte
 	if len(infoAndPayload) >= 27 && string(infoAndPayload[23:27]) == "0001" {
 		idx := bytes.IndexByte(infoAndPayload[27:], ':')
@@ -270,7 +291,6 @@ func parsePacket(rawFrame []byte) *Packet {
 		payload = infoAndPayload[32:]
 		debugf("Using fixed-length split. InfoField: %s", string(infoField))
 	}
-
 	var encodingMethod byte = 0
 	infoStr := string(infoField)
 	parts := strings.Split(infoStr, ":")
@@ -311,7 +331,7 @@ func parsePacket(rawFrame []byte) *Packet {
 		seq = int(seqInt)
 		burstTo = int(burstInt)
 	}
-	debugf("Parsed DATA packet: sender=%s, receiver=%s, fileID=%s, seq=%d, burstTo %d",
+	debugf("Parsed DATA packet: sender=%s, receiver=%s, fileID=%s, seq=%d, burstTo=%d",
 		sender, receiver, fileID, seq, burstTo)
 	return &Packet{
 		Type:           "data",
@@ -720,7 +740,11 @@ func processPacket(rawFrame []byte, conn KISSConnection) {
 		log.Printf("[Repeater] Could not parse packet.")
 		return
 	}
-
+	if packet.Type == "cmdrsp" {
+	        log.Printf("[Repeater] CMD/RSP packet received. Forwarding immediately: %s", packet.RawInfo)
+	        conn.SendFrame(rawFrame)
+        	return
+    	}
 	// --- Logging improvements ---
 	if packet.Type == "ack" {
 		log.Printf("[Repeater] ACK packet from %s -> %s for fileID %s: %s",

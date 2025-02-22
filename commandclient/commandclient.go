@@ -285,8 +285,8 @@ func buildCommandPacket(myCallsign, fileServerCallsign, commandText string) ([]b
 	return packet, cmdID
 }
 
-// parseResponsePacket parses a 64-byte response payload in the format:
-// "RSP:<cmdID> <status> <message>"
+// parseResponsePacket parses a 64-byte response info field in the format:
+// "RSP:<cmdID> <status> <message>".
 func parseResponsePacket(payload []byte) (cmdID string, status int, msg string, ok bool) {
 	str := strings.TrimSpace(string(payload))
 	if !strings.HasPrefix(str, "RSP:") {
@@ -398,22 +398,33 @@ func waitForResponse(b *Broadcaster, timeout time.Duration, expectedCmdID string
 				}
 				inner := frame[2 : len(frame)-1]
 				payload := unescapeData(inner)
-				if len(payload) == 64 {
-					respCmdID, _, _, ok := parseResponsePacket(payload)
-					if !ok {
-						// Malformed response; ignore.
-						continue
+				var info []byte
+				if len(payload) == 80 {
+					// New RSP packet with header: skip the 16-byte header.
+					info = payload[16:]
+				} else if len(payload) == 64 {
+					// Old style RSP packet without header.
+					info = payload
+				} else {
+					if debugEnabled {
+						log.Printf("Ignoring frame with unexpected payload length: %d", len(payload))
 					}
-					if respCmdID != expectedCmdID {
-						if debugEnabled {
-							log.Printf("Ignoring response with mismatched CMD ID: got %s, expected %s", respCmdID, expectedCmdID)
-						}
-						// Ignore this response.
-						continue
-					}
-					// Optionally, add file server callsign validation here if that info were available.
-					return payload, nil
+					continue
 				}
+				respCmdID, _, _, ok := parseResponsePacket(info)
+				if !ok {
+					if debugEnabled {
+						log.Printf("Malformed RSP info field")
+					}
+					continue
+				}
+				if respCmdID != expectedCmdID {
+					if debugEnabled {
+						log.Printf("Ignoring response with mismatched CMD ID: got %s, expected %s", respCmdID, expectedCmdID)
+					}
+					continue
+				}
+				return info, nil
 			}
 		case <-timeoutTimer.C:
 			return nil, fmt.Errorf("timeout waiting for response with CMD ID %s", expectedCmdID)
@@ -702,7 +713,7 @@ func main() {
 		log.Printf("Sent command: %s [%s]", commandLine, cmdID)
 
 		// Wait for the direct response from the server.
-		respPayload, err := waitForResponse(broadcaster, 5*time.Second, cmdID)
+		respPayload, err := waitForResponse(broadcaster, 10*time.Second, cmdID)
 		if err != nil {
 			log.Printf("Error waiting for response: %v", err)
 			continue

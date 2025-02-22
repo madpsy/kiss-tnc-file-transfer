@@ -199,13 +199,28 @@ type Packet struct {
 }
 
 func parsePacket(packet []byte) *Packet {
+	// Require at least 16 bytes for the AX.25 header.
 	if len(packet) < 16 {
 		return nil
 	}
+	// infoAndPayload holds the bytes after the 16-byte header.
 	infoAndPayload := packet[16:]
 	if len(infoAndPayload) == 0 {
 		return nil
 	}
+	// If the unescaped packet is at least 80 bytes, then the info field is defined as bytes 16 to 80.
+	if len(packet) >= 80 {
+		rspInfo := packet[16:80]
+		strInfo := string(rspInfo)
+		if strings.HasPrefix(strInfo, "RSP:") || strings.HasPrefix(strInfo, "CMD:") {
+			return &Packet{
+				Type:    "cmdrsp", // Use "cmdrsp" (or "rsp") as desired.
+				RawInfo: strInfo,
+			}
+		}
+	}
+
+	// Otherwise, check for ACK packets.
 	prefix := string(infoAndPayload[:min(50, len(infoAndPayload))])
 	if strings.Contains(prefix, "ACK:") {
 		fields := strings.Split(string(infoAndPayload), ":")
@@ -243,6 +258,7 @@ func parsePacket(packet []byte) *Packet {
 		}
 	}
 
+	// Otherwise, assume the packet is a data packet.
 	var infoField, payload []byte
 	if len(infoAndPayload) >= 27 && string(infoAndPayload[23:27]) == "0001" {
 		idx := bytes.IndexByte(infoAndPayload[27:], ':')

@@ -168,6 +168,30 @@ func (s *SerialKISSConnection) Close() error {
 	return s.ser.Close()
 }
 
+// New helper function: createRSPPacket builds the RSP packet with an AX.25 header.
+func createRSPPacket(destCallsign, srcCallsign, cmdID string, status int, msg string) []byte {
+	// Build the AX.25 header:
+	//  - Destination: original sender's callsign (no "last" flag).
+	//  - Source: our server's callsign (with "last" flag set).
+	destAddr := encodeAX25Address(destCallsign, false)
+	srcAddr := encodeAX25Address(srcCallsign, true)
+	// Append control (0x03) and PID (0xF0) bytes to complete the 16-byte header.
+	header := append(append(destAddr, srcAddr...), 0x03, 0xF0)
+
+	// Build the info field (64 bytes) with the RSP message.
+	responseText := fmt.Sprintf("RSP:%s %d %s", cmdID, status, msg)
+	if len(responseText) > 64 {
+		responseText = responseText[:64]
+	} else {
+		responseText = responseText + strings.Repeat(" ", 64-len(responseText))
+	}
+	infoField := []byte(responseText)
+
+	// Combine header and info field to form the full packet.
+	packet := append(header, infoField...)
+	return packet
+}
+
 // Helper: unescapeData reverses KISS escaping.
 func unescapeData(data []byte) []byte {
 	var out bytes.Buffer
@@ -219,9 +243,11 @@ func sendResponse(conn KISSConnection, responsePayload []byte) error {
 }
 
 // sendResponseWithDetails builds the response packet, logs the details, and sends it.
-func sendResponseWithDetails(conn KISSConnection, cmdID, command string, status int, msg string) error {
-	responsePayload := createResponsePacket(cmdID, status, msg)
-	escaped := escapeData(responsePayload)
+// Modified sendResponseWithDetails now accepts the sender's callsign.
+func sendResponseWithDetails(conn KISSConnection, sender, cmdID, command string, status int, msg string) error {
+	// Build the full RSP packet with an AX.25 header.
+	rspPacket := createRSPPacket(sender, serverCallsign, cmdID, status, msg)
+	escaped := escapeData(rspPacket)
 	frame := []byte{KISS_FLAG, KISS_CMD_DATA}
 	frame = append(frame, escaped...)
 	frame = append(frame, KISS_FLAG)
@@ -232,6 +258,10 @@ func sendResponseWithDetails(conn KISSConnection, cmdID, command string, status 
 	}
 	log.Printf("Sending RSP packet for command '%s' (ID: %s): %s - %s", command, cmdID, statusText, msg)
 	_, err := conn.Write(frame)
+
+	// Sleep for 3 seconds after sending the RSP packet.
+	time.Sleep(3 * time.Second)
+
 	return err
 }
 
@@ -734,7 +764,7 @@ func main() {
         log.Printf("Dropping GET command from sender %s: not allowed.", sender)
         
         // Send a response packet indicating the GET request is not allowed.
-        sendResponseWithDetails(conn, cmdID, command, 0, "CALLSIGN NOT ALLOWED")
+        sendResponseWithDetails(conn, sender, cmdID, command, 0, "CALLSIGN NOT ALLOWED")
         
         continue
     }
@@ -743,34 +773,34 @@ func main() {
     content, err := ioutil.ReadFile(fullPath)
     if err != nil {
         log.Printf("Requested file '%s' does not exist in directory %s", fileName, args.ServeDirectory)
-        sendResponseWithDetails(conn, cmdID, command, 0, "CANNOT FIND/READ FILE")
+        sendResponseWithDetails(conn, sender, cmdID, command, 0, "CANNOT FIND/READ FILE")
         continue
     }
     // Double-check file read.
     _, err = ioutil.ReadFile(fullPath)
     if err != nil {
         log.Printf("Error reading file '%s': %v", fullPath, err)
-        sendResponseWithDetails(conn, cmdID, command, 0, "GET FAILED")
+        sendResponseWithDetails(conn, sender, cmdID, command, 0, "GET FAILED")
         continue
     }
-    sendResponseWithDetails(conn, cmdID, command, 1, "GET OK")
+    sendResponseWithDetails(conn, sender, cmdID, command, 1, "GET OK")
     go invokeSenderBinary(args, sender, fileName, string(content), cmdID)
 } else if strings.HasPrefix(upperCmd, "LIST") {
 				listing, err := listFiles(args.ServeDirectory)
 				if err != nil {
 					log.Printf("Error listing files: %v", err)
-					sendResponseWithDetails(conn, cmdID, command, 0, "LIST CANNOT READ")
+					sendResponseWithDetails(conn, sender, cmdID, command, 0, "LIST CANNOT READ")
 					continue
 				}
 				// Send the RSP packet indicating LIST is OK.
-				sendResponseWithDetails(conn, cmdID, command, 1, "LIST OK")
+				sendResponseWithDetails(conn, sender, cmdID, command, 1, "LIST OK")
 				// Invoke the sender binary to send the listing as LIST.txt.
 				go invokeSenderBinary(args, sender, "LIST.txt", listing, cmdID)
 			} else if strings.HasPrefix(upperCmd, "PUT ") {
 				// Process PUT command for receiving files.
 				if !callsignAllowedForPut(sender) {
 					log.Printf("PUT command from sender %s not allowed.", sender)
-					sendResponseWithDetails(conn, cmdID, command, 0, "CALLSIGN NOT ALLOWED")
+					sendResponseWithDetails(conn, sender, cmdID, command, 0, "CALLSIGN NOT ALLOWED")
 					continue
 				}
 				fileName := strings.TrimSpace(command[4:])
@@ -778,13 +808,13 @@ func main() {
 				err := invokeReceiverBinary(args, sender, fileName, cmdID)
 				if err != nil {
 					log.Printf("Receiver binary error: %v", err)
-					sendResponseWithDetails(conn, cmdID, command, 0, "PUT FAILED: CANNOT START RECEIVER")
+					sendResponseWithDetails(conn, sender, cmdID, command, 0, "PUT FAILED: CANNOT START RECEIVER")
 				} else {
-					sendResponseWithDetails(conn, cmdID, command, 1, "PUT OK - WAITING FOR FILE")
+					sendResponseWithDetails(conn, sender, cmdID, command, 1, "PUT OK - WAITING FOR FILE")
 				}
 			} else {
 				log.Printf("Unrecognized command: %s", command)
-				sendResponseWithDetails(conn, cmdID, command, 0, "AVAILABLE: LIST, GET [FILE], PUT [FILE]")
+				sendResponseWithDetails(conn, sender, cmdID, command, 0, "AVAILABLE: LIST, GET [FILE], PUT [FILE]")
 			}
 		}
 	}
