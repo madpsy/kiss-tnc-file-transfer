@@ -426,35 +426,17 @@ func listFiles(dir string) (string, error) {
 		return strings.ToLower(files[i].Name()) < strings.ToLower(files[j].Name())
 	})
 
-	// Determine dynamic widths for the "File Name" and "Size" columns.
-	maxNameLen := len("File Name")
-	maxSizeWidth := len("Size")
-	for _, file := range files {
-		if len(file.Name()) > maxNameLen {
-			maxNameLen = len(file.Name())
-		}
-		sizeStr := fmt.Sprintf("%d", file.Size())
-		if len(sizeStr) > maxSizeWidth {
-			maxSizeWidth = len(sizeStr)
-		}
-	}
-
-	// "Modified Date" column remains fixed at 20 characters.
-	headerFormat := fmt.Sprintf("%%-%ds %%-%ds %%%ds\n", maxNameLen, 20, maxSizeWidth)
-	rowFormat := fmt.Sprintf("%%-%ds %%-%ds %%%dd\n", maxNameLen, 20, maxSizeWidth)
-
 	var output strings.Builder
-	output.WriteString(fmt.Sprintf(headerFormat, "File Name", "Modified Date", "Size"))
+	// Write CSV header.
+	output.WriteString("File Name,Modified Date,Size\n")
 
-	// Build and write a separator line.
-	separatorLen := maxNameLen + 1 + 20 + 1 + maxSizeWidth
-	output.WriteString(strings.Repeat("-", separatorLen) + "\n")
-
-	// Write file details.
+	// Write file details in CSV format.
 	for _, file := range files {
 		modTime := file.ModTime().Format("2006-01-02 15:04:05")
-		output.WriteString(fmt.Sprintf(rowFormat, file.Name(), modTime, file.Size()))
+		// Wrap values in quotes in case they contain commas.
+		output.WriteString(fmt.Sprintf("\"%s\",\"%s\",%d\n", file.Name(), modTime, file.Size()))
 	}
+
 	return output.String(), nil
 }
 

@@ -19,6 +19,7 @@ import (
 	"sync"
 	"time"
 	"sort"
+	"encoding/csv"
 )
 
 // Global constants for KISS framing.
@@ -41,6 +42,62 @@ var (
 	globalConn      KISSConnection // The current active connection.
 	broadcaster     *Broadcaster   // Global broadcaster for connection data.
 )
+
+
+// csvToPretty converts CSV text into a pretty-printed table.
+func csvToPretty(csvText string) (string, error) {
+	r := csv.NewReader(strings.NewReader(csvText))
+	records, err := r.ReadAll()
+	if err != nil {
+		return "", err
+	}
+	if len(records) == 0 {
+		return "", fmt.Errorf("no CSV data found")
+	}
+
+	// Determine the maximum width for each column.
+	numCols := len(records[0])
+	widths := make([]int, numCols)
+	for _, row := range records {
+		for i, cell := range row {
+			if len(cell) > widths[i] {
+				widths[i] = len(cell)
+			}
+		}
+	}
+
+	// Build the formatted table.
+	var sb strings.Builder
+	// Header row.
+	header := records[0]
+	format := ""
+	for _, w := range widths {
+		format += fmt.Sprintf("%%-%ds ", w)
+	}
+	format = strings.TrimSpace(format) + "\n"
+	sb.WriteString(fmt.Sprintf(format, toInterfaceSlice(header)...))
+
+	// Separator row.
+	for _, w := range widths {
+		sb.WriteString(strings.Repeat("-", w) + " ")
+	}
+	sb.WriteString("\n")
+
+	// Data rows.
+	for _, row := range records[1:] {
+		sb.WriteString(fmt.Sprintf(format, toInterfaceSlice(row)...))
+	}
+	return sb.String(), nil
+}
+
+// toInterfaceSlice converts a slice of strings into a slice of empty interfaces.
+func toInterfaceSlice(strs []string) []interface{} {
+	out := make([]interface{}, len(strs))
+	for i, s := range strs {
+		out[i] = s
+	}
+	return out
+}
 
 func listFormattedFiles(dir string) (string, error) {
     entries, err := os.ReadDir(dir)
@@ -922,8 +979,16 @@ func main() {
 			output, exitCode, procErr := spawnReceiverProcess(args, cmdID, expectedFile)
 			if exitCode == 0 {
 				if cmdType == "LIST" {
-					fmt.Println("LIST contents:\n")
-					fmt.Print(string(output))
+					// Convert the CSV listing to pretty text.
+					pretty, err := csvToPretty(string(output))
+					if err != nil {
+						log.Printf("Error converting CSV to table: %v", err)
+						fmt.Println("LIST contents:\n")
+						fmt.Print(string(output))
+					} else {
+						fmt.Println("LIST contents:\n")
+						fmt.Print(pretty)
+					}
 				} else if cmdType == "GET" {
 					// Determine a unique file path to avoid overwriting an existing file.
 					uniqueFilePath := getUniqueFilePath(args.SaveDirectory, expectedFile)
