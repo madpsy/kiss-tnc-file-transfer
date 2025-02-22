@@ -60,7 +60,8 @@ var asciiOutput bool
 var decodeFileTransfer bool
 var decodeAx25 bool
 
-// decodeFileTransferPacket attempts to decode a file-transfer packet based on the original protocol.
+// decodeFileTransferPacket attempts to decode a file-transfer packet,
+// and now also CMD/RSP packets.
 func decodeFileTransferPacket(packet []byte) string {
 	// First, remove the KISS command byte that follows unescaping.
 	if len(packet) < 1 {
@@ -75,6 +76,51 @@ func decodeFileTransferPacket(packet []byte) string {
 	}
 	totalPacketSize := len(packet)
 
+	// If the packet is at least 80 bytes (header+info field),
+	// check if it contains a CMD or RSP message.
+	if len(packet) >= 80 {
+		header := packet[0:16]
+		infoField := packet[16:80]
+		infoStr := strings.TrimSpace(string(infoField))
+		if strings.HasPrefix(infoStr, "CMD:") || strings.HasPrefix(infoStr, "RSP:") {
+			// Decode the AX.25 addresses.
+			dest := decodeAX25Address(header[0:7])
+			src := decodeAX25Address(header[7:14])
+			// Process CMD packets.
+			if strings.HasPrefix(infoStr, "CMD:") {
+				// Ensure there's at least a 2-character ID following "CMD:"
+				if len(infoStr) < 6 {
+					return ""
+				}
+				cmdID := infoStr[4:6]
+				command := strings.TrimSpace(infoStr[6:])
+				return fmt.Sprintf("CMD Packet:\n  Total Packet Size: %d bytes\n  Destination: %s\n  Source: %s\n  Command ID: %s\n  Command: %s",
+					totalPacketSize, dest, src, cmdID, command)
+			}
+			// Process RSP packets.
+			if strings.HasPrefix(infoStr, "RSP:") {
+				if len(infoStr) < 6 {
+					return ""
+				}
+				cmdID := infoStr[4:6]
+				// Split the info string to extract status and message.
+				fields := strings.Fields(infoStr)
+				if len(fields) < 3 {
+					return ""
+				}
+				// Convert status to a human-readable form.
+				statusWord := "failed"
+				if fields[1] == "1" {
+					statusWord = "success"
+				}
+				msg := strings.Join(fields[2:], " ")
+				return fmt.Sprintf("RSP Packet:\n  Total Packet Size: %d bytes\n  Destination: %s\n  Source: %s\n  Command ID: %s\n  Status: %s\n  Message: %s",
+					totalPacketSize, dest, src, cmdID, statusWord, msg)
+			}
+		}
+	}
+
+	// Otherwise, fall back to the existing file-transfer packet decoding.
 	// The info field and payload follow the 16-byte header.
 	infoAndPayload := packet[16:]
 
@@ -138,7 +184,7 @@ func decodeFileTransferPacket(packet []byte) string {
 			return ""
 		}
 		ackVal := strings.Trim(ackParts[1], ": ")
-		return fmt.Sprintf("File Transfer ACK Packet:\n  Total Packet Size: %d bytes\n  Sender: %s\n  Receiver: %s\n  FileID: %s\n  ACK Value: %s",
+		return fmt.Sprintf("ACK Packet:\n  Total Packet Size: %d bytes\n  Sender: %s\n  Receiver: %s\n  FileID: %s\n  ACK Value: %s",
 			totalPacketSize, sender, receiver, fileID, ackVal)
 	}
 
@@ -168,7 +214,7 @@ func decodeFileTransferPacket(packet []byte) string {
 		if len(headerFields) < 10 {
 			return ""
 		}
-		// Parse timeoutSeconds as integer
+		// Parse timeoutSeconds as integer.
 		timeoutSecondsStr := strings.TrimSpace(headerFields[0])
 		timeoutSeconds, err := strconv.Atoi(timeoutSecondsStr)
 		if err != nil {
@@ -190,7 +236,7 @@ func decodeFileTransferPacket(packet []byte) string {
 		if compressFlag == "1" {
 			compStr = "Yes"
 		}
-		return fmt.Sprintf("File Transfer HEADER Packet:\n  Total Packet Size: %d bytes\n  Sender: %s\n  Receiver: %s\n  FileID: %s\n  Sequence: 1\n  BurstTo: %d\n  Total Data Packets (excluding header): %d\n\n  Header Payload:\n    Timeout Seconds: %d\n    Timeout Retries: %s\n    File Name: %s\n    Original Size: %s bytes\n    Compressed Size: %s bytes\n    MD5 Hash: %s\n    Encoding: %s\n    Compression Enabled: %s\n    Total Packets (including header): %s",
+		return fmt.Sprintf("HEADER Packet:\n  Total Packet Size: %d bytes\n  Sender: %s\n  Receiver: %s\n  FileID: %s\n  Sequence: 1\n  BurstTo: %d\n  Total Data Packets (excluding header): %d\n\n  Header Payload:\n    Timeout Seconds: %d\n    Timeout Retries: %s\n    File Name: %s\n    Original Size: %s bytes\n    Compressed Size: %s bytes\n    MD5 Hash: %s\n    Encoding: %s\n    Compression Enabled: %s\n    Total Packets (including header): %s",
 			totalPacketSize, sender, receiver, fileID, burstDec, totalData,
 			timeoutSeconds, timeoutRetries, fileName, origSize, compSize, md5Hash, encStr, compStr, totalIncludingHeader)
 	}
@@ -209,7 +255,7 @@ func decodeFileTransferPacket(packet []byte) string {
 	if err != nil {
 		return ""
 	}
-	return fmt.Sprintf("File Transfer DATA Packet:\n  Total Packet Size: %d bytes\n  Sender: %s\n  Receiver: %s\n  FileID: %s\n  Sequence: %d\n  BurstTo: %d\n  Payload Length: %d bytes",
+	return fmt.Sprintf("DATA Packet:\n  Total Packet Size: %d bytes\n  Sender: %s\n  Receiver: %s\n  FileID: %s\n  Sequence: %d\n  BurstTo: %d\n  Payload Length: %d bytes",
 		totalPacketSize, sender, receiver, fileID, seqDec, burstDec, len(payload))
 }
 
