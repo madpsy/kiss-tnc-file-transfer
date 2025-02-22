@@ -29,6 +29,17 @@ const (
 // Global variable for server's callsign.
 var serverCallsign string
 
+var globalArgs *Arguments
+
+// Global variables for reconnection logic.
+var (
+	lastDataTime   time.Time
+	reconnectMutex sync.Mutex
+	reconnecting   bool
+	globalConn     KISSConnection // Your current connection.
+	broadcaster    *Broadcaster   // Already used for broadcasting.
+)
+
 // Command-line arguments structure.
 type Arguments struct {
 	MyCallsign     string // your own callsign
@@ -489,19 +500,79 @@ func (b *Broadcaster) Broadcast(data []byte) {
 
 // startKISSReader continuously reads from the underlying connection and broadcasts data.
 func startKISSReader(conn KISSConnection, b *Broadcaster) {
-	for {
-		data, err := conn.RecvData(100 * time.Millisecond)
-		if err != nil {
-			if err != io.EOF {
-				log.Printf("Underlying read error: %v", err)
-			}
-			break
-		}
-		if len(data) > 0 {
-			b.Broadcast(data)
-		}
-	}
+    for {
+        data, err := conn.RecvData(100 * time.Millisecond)
+        if err != nil {
+            if err != io.EOF {
+                log.Printf("Underlying read error: %v", err)
+                // On error, trigger a reconnect.
+                go doReconnect()
+            }
+            break
+        }
+        if len(data) > 0 {
+            lastDataTime = time.Now() // Update the inactivity timer.
+            b.Broadcast(data)
+        }
+    }
 }
+
+func monitorInactivity(timeout time.Duration) {
+    for {
+        time.Sleep(1 * time.Second)
+        if time.Since(lastDataTime) > timeout {
+            log.Println("No data received for the inactivity deadline; triggering reconnect")
+            go doReconnect()
+        }
+    }
+}
+
+func doReconnect() {
+    reconnectMutex.Lock()
+    if reconnecting {
+        reconnectMutex.Unlock()
+        return
+    }
+    reconnecting = true
+    reconnectMutex.Unlock()
+
+    log.Println("Triggering reconnect...")
+
+    // Close the current connection.
+    if globalConn != nil {
+        globalConn.Close()
+    }
+
+    // Loop until a new connection is established.
+    for {
+        log.Println("Attempting to reconnect in 5 seconds...")
+        time.Sleep(5 * time.Second)
+        var err error
+        // Use globalArgs instead of args.
+        if strings.ToLower(globalArgs.Connection) == "tcp" {
+            globalConn, err = newTCPKISSConnection(globalArgs.Host, globalArgs.Port)
+        } else {
+            globalConn, err = newSerialKISSConnection(globalArgs.SerialPort, globalArgs.Baud)
+        }
+        if err != nil {
+            log.Printf("Reconnect failed: %v", err)
+            continue
+        }
+        // Update the timestamp.
+        lastDataTime = time.Now()
+        log.Println("Reconnected successfully to the underlying device")
+        // Restart the reader so new data is broadcast.
+        go startKISSReader(globalConn, broadcaster)
+        // Optionally, restart the inactivity monitor if not already running.
+        go monitorInactivity(600 * time.Second)
+        break
+    }
+
+    reconnectMutex.Lock()
+    reconnecting = false
+    reconnectMutex.Unlock()
+}
+
 
 // --- Transparent Passthrough Handler ---
 // This function relays data in both directions between the connected client and the underlying KISS connection.
@@ -684,6 +755,7 @@ func invokeReceiverBinary(args *Arguments, senderCallsign, fileName, cmdID strin
 
 func main() {
 	args := parseArguments()
+	globalArgs = args
 	serverCallsign = strings.ToUpper(args.MyCallsign)
 	log.Printf("Serving files from directory: %s", args.ServeDirectory)
 	log.Printf("Sender binary set to: %s", args.SenderBinary)
@@ -729,13 +801,16 @@ func main() {
 			log.Fatalf("Serial connection error: %v", err)
 		}
 	}
+	globalConn = conn
 	defer conn.Close()
 
 	log.Printf("File Server started. My callsign: %s", serverCallsign)
 
 	// Create a broadcaster to distribute data read from the underlying connection.
 	broadcaster := NewBroadcaster()
-	go startKISSReader(conn, broadcaster)
+	lastDataTime = time.Now()
+	go startKISSReader(globalConn, broadcaster)
+	go monitorInactivity(600 * time.Second) 
 	// Start the transparent passthrough listener.
 	go startTransparentListener(args.SenderPort, broadcaster, conn)
 

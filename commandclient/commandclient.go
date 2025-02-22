@@ -32,6 +32,15 @@ var debugEnabled bool
 // Global command counter for generating 2-character command IDs.
 var cmdCounter int
 
+var (
+	lastDataTime    time.Time
+	reconnectMutex  sync.Mutex
+	reconnecting    bool
+	globalArgs      *Arguments     // Holds the parsed command-line arguments.
+	globalConn      KISSConnection // The current active connection.
+	broadcaster     *Broadcaster   // Global broadcaster for connection data.
+)
+
 func generateCmdID() string {
 	b := make([]byte, 1)
 	if _, err := rand.Read(b); err != nil {
@@ -356,21 +365,78 @@ func (b *Broadcaster) Broadcast(data []byte) {
 	}
 }
 
-// startUnderlyingReader continuously reads from the underlying connection and broadcasts new data.
+// monitorInactivity triggers a reconnect if no data is received within the specified timeout.
+func monitorInactivity(timeout time.Duration) {
+	for {
+		time.Sleep(1 * time.Second)
+		if time.Since(lastDataTime) > timeout {
+			log.Println("No data received for the inactivity deadline; triggering reconnect")
+			go doReconnect()
+		}
+	}
+}
+
+// doReconnect attempts to re-establish the underlying connection using the current configuration.
+func doReconnect() {
+	reconnectMutex.Lock()
+	if reconnecting {
+		reconnectMutex.Unlock()
+		return
+	}
+	reconnecting = true
+	reconnectMutex.Unlock()
+
+	log.Println("Triggering reconnect...")
+
+	// Close the current connection to force the reader to exit.
+	if globalConn != nil {
+		globalConn.Close()
+	}
+
+	// Loop until reconnection is successful.
+	for {
+		log.Println("Attempting to reconnect in 5 seconds...")
+		time.Sleep(5 * time.Second)
+		var err error
+		// Reconnect based on the connection type.
+		if strings.ToLower(globalArgs.Connection) == "tcp" {
+			globalConn, err = newTCPKISSConnection(globalArgs.Host, globalArgs.Port)
+		} else {
+			globalConn, err = newSerialKISSConnection(globalArgs.SerialPort, globalArgs.Baud)
+		}
+		if err != nil {
+			log.Printf("Reconnect failed: %v", err)
+			continue
+		}
+		// Reset the inactivity timer.
+		lastDataTime = time.Now()
+		log.Println("Reconnected successfully to the underlying device")
+		// Restart the underlying reader so that new data is broadcast.
+		go startUnderlyingReader(globalConn, broadcaster)
+		go monitorInactivity(600 * time.Second)
+		break
+	}
+
+	reconnectMutex.Lock()
+	reconnecting = false
+	reconnectMutex.Unlock()
+}
+
+// startUnderlyingReader continuously reads from the underlying connection,
+// updates the inactivity timer, and triggers a reconnect on error.
 func startUnderlyingReader(underlying io.Reader, b *Broadcaster) {
 	buf := make([]byte, 1024)
 	for {
 		n, err := underlying.Read(buf)
 		if err != nil {
 			if err != io.EOF {
-				if debugEnabled {
-					log.Printf("Underlying read error: %v", err)
-				}
+				log.Printf("Underlying read error: %v", err)
+				go doReconnect() // Trigger reconnect on read error.
 			}
 			break
 		}
 		if n > 0 {
-			// Copy the data since buf will be reused.
+			lastDataTime = time.Now() // Update the inactivity timer.
 			data := make([]byte, n)
 			copy(data, buf[:n])
 			b.Broadcast(data)
