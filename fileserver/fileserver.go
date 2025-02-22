@@ -271,7 +271,7 @@ func sendResponseWithDetails(conn KISSConnection, sender, cmdID, command string,
 	_, err := conn.Write(frame)
 
 	// Sleep for 3 seconds after sending the RSP packet.
-	time.Sleep(3 * time.Second)
+	//time.Sleep(3 * time.Second)
 
 	return err
 }

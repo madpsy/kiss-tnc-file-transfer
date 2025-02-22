@@ -18,6 +18,7 @@ import (
 	"strings"
 	"sync"
 	"time"
+	"sort"
 )
 
 // Global constants for KISS framing.
@@ -40,6 +41,58 @@ var (
 	globalConn      KISSConnection // The current active connection.
 	broadcaster     *Broadcaster   // Global broadcaster for connection data.
 )
+
+func listFormattedFiles(dir string) (string, error) {
+    entries, err := os.ReadDir(dir)
+    if err != nil {
+        return "", err
+    }
+    var files []os.DirEntry
+    for _, entry := range entries {
+        // Filter out directories and hidden files.
+        if !entry.IsDir() && !strings.HasPrefix(entry.Name(), ".") {
+            files = append(files, entry)
+        }
+    }
+    // Sort files alphabetically (case-insensitive).
+    sort.Slice(files, func(i, j int) bool {
+        return strings.ToLower(files[i].Name()) < strings.ToLower(files[j].Name())
+    })
+
+    // Determine dynamic column widths.
+    maxNameLen := len("File Name")
+    maxSizeWidth := len("Size")
+    var fileInfos []os.FileInfo
+    for _, f := range files {
+        info, err := f.Info()
+        if err != nil {
+            continue
+        }
+        fileInfos = append(fileInfos, info)
+        if len(info.Name()) > maxNameLen {
+            maxNameLen = len(info.Name())
+        }
+        sizeStr := fmt.Sprintf("%d", info.Size())
+        if len(sizeStr) > maxSizeWidth {
+            maxSizeWidth = len(sizeStr)
+        }
+    }
+
+    // Build header and separator.
+    headerFormat := fmt.Sprintf("%%-%ds %%-%ds %%%ds\n", maxNameLen, 20, maxSizeWidth)
+    rowFormat := fmt.Sprintf("%%-%ds %%-%ds %%%dd\n", maxNameLen, 20, maxSizeWidth)
+    var output strings.Builder
+    output.WriteString(fmt.Sprintf(headerFormat, "File Name", "Modified Date", "Size"))
+    separatorLen := maxNameLen + 1 + 20 + 1 + maxSizeWidth
+    output.WriteString(strings.Repeat("-", separatorLen) + "\n")
+
+    // Write each file's details.
+    for _, info := range fileInfos {
+        modTime := info.ModTime().Format("2006-01-02 15:04:05")
+        output.WriteString(fmt.Sprintf(rowFormat, info.Name(), modTime, info.Size()))
+    }
+    return output.String(), nil
+}
 
 func generateCmdID() string {
 	b := make([]byte, 1)
@@ -735,7 +788,7 @@ func main() {
 
 	log.Printf("Command Client started. My callsign: %s, File Server callsign: %s",
 		strings.ToUpper(args.MyCallsign), strings.ToUpper(args.FileServerCallsign))
-	log.Printf("Enter commands (e.g. LIST, GET filename, PUT filename, etc.):")
+	log.Printf("Enter commands (e.g. LS (list local files), LIST (list remote files), GET filename, PUT filename, etc.):")
 
 	scanner := bufio.NewScanner(os.Stdin)
 	for {
@@ -748,8 +801,24 @@ func main() {
 			continue
 		}
 
-		// If the command is a PUT, verify that the file is accessible before sending.
+		// Split the command into tokens.
 		tokens := strings.Fields(commandLine)
+		if len(tokens) == 0 {
+			continue
+		}
+
+		// Add local LS command (case-insensitive).
+		if strings.EqualFold(tokens[0], "LS") {
+		    listing, err := listFormattedFiles(args.ServeDirectory)
+		    if err != nil {
+		        log.Printf("Error listing files in serve directory: %v", err)
+		    } else {
+		        fmt.Println(listing)
+		    }
+		    continue
+		}
+
+		// If the command is a PUT, verify that the file is accessible before sending.
 		if len(tokens) > 0 && strings.ToUpper(tokens[0]) == "PUT" {
 			idx := strings.Index(commandLine, " ")
 			if idx == -1 {
