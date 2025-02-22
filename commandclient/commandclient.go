@@ -931,7 +931,7 @@ func main() {
 					if err != nil {
 						log.Printf("Error writing to file %s: %v", uniqueFilePath, err)
 					} else {
-						log.Printf("Saved output to %s", uniqueFilePath)
+						log.Printf("Saved file to %s", uniqueFilePath)
 					}
 				}
 			} else {
