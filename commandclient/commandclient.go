@@ -639,11 +639,13 @@ func spawnReceiverProcess(args *Arguments, fileid string, expectedFile string) (
 		scanner := bufio.NewScanner(stderrPipe)
 		for scanner.Scan() {
 			line := scanner.Text()
-			if debugEnabled {
+			if strings.Contains(line, "Overall:") {
+				fmt.Println(line)
+			} else if debugEnabled {
+				// Optionally print other lines when in debug mode.
 				fmt.Println(line)
 			}
 		}
-		// Optionally, check for scanner.Err() if needed.
 	}()
 
 	// Read stdout completely (for binary file content).
@@ -712,15 +714,17 @@ func spawnSenderProcess(args *Arguments, fileid string, filename string) (int, e
 	stdinPipe.Close()
 
 	// Process stderr: print all lines immediately.
-go func() {
-    scanner := bufio.NewScanner(stderrPipe)
-    for scanner.Scan() {
-        line := scanner.Text()
-        if debugEnabled {
-            fmt.Println(line) // Only print stderr if debug is enabled.
-        }
-    }
-}()
+	go func() {
+		scanner := bufio.NewScanner(stderrPipe)
+		for scanner.Scan() {
+			line := scanner.Text()
+			if strings.Contains(line, "Overall:") {
+				fmt.Println(line)
+			} else if debugEnabled {
+				fmt.Println(line)
+			}
+		}
+	}()
 
 	err = cmd.Wait()
 	exitCode := 0
