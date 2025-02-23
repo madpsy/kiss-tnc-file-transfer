@@ -10,6 +10,7 @@
     <script src="crypto-js.min.js"></script>
     <script src="pako.min.js"></script>
     <script src="bootstrap.bundle.min.js"></script>
+    <script src="fileserver.js"></script>
     <style>
         body { padding: 20px; }
         #status { margin-top: 1rem; font-weight: bold; }
@@ -945,7 +946,18 @@
     const header = ax25Frame.slice(0, 16); // Extract the first 16 bytes as the AX.25 header
     const infoField = ax25Frame.slice(16);
     let infoText = new TextDecoder().decode(infoField);
-    
+
+    // --- New: Process RSP packets (responses to CMD packets) ---
+    if (infoText.startsWith("RSP:")) {
+      const rsp = parseRspPacket(infoField);
+      if (rsp.ok && pendingCmdResponses[rsp.cmdID]) {
+        pendingCmdResponses[rsp.cmdID].resolve(rsp);
+        delete pendingCmdResponses[rsp.cmdID];
+      } else {
+        console.warn("Received RSP for unknown CMD ID or with error:", rsp.error);
+      }
+      return;
+    } 
     
     if (infoText.indexOf(":ACK:FIN-ACK") !== -1) {
       let parts = infoText.split(":"); // Expected format: fileId, "ACK", "FIN-ACK"
