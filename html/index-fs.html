@@ -65,8 +65,46 @@
       <label for="senderCallsign" class="form-label">Your Callsign</label> <input type="text" id="senderCallsign" class="form-control" placeholder="Enter your callsign">
     </div>
     <div class="mb-3">
-      <label for="receiverCallsign" class="form-label">Receiver Callsign (for sending)</label> <input type="text" id="receiverCallsign" class="form-control" placeholder="Enter receiver callsign">
+      <label for="receiverCallsign" class="form-label">Receiver Callsign (or File Server)</label> <input type="text" id="receiverCallsign" class="form-control" placeholder="Enter receiver callsign">
+      <input type="checkbox" class="form-check-input" id="fileServerCheckbox">
+    <label class="form-check-label" for="fileServerCheckbox">Receiver is File Server</label>
+      <div id="fileServerButtons" style="display: none; margin-top: 10px;">
+        <button id="listBtn" class="btn btn-info">List</button>
+      </div>
     </div>
+    <div class="modal fade" id="listModal" tabindex="-1" aria-labelledby="listModalLabel" aria-hidden="true">
+      <div class="modal-dialog modal-lg">
+        <div class="modal-content">
+          <div class="modal-header">
+  <h5 class="modal-title" id="listModalLabel">File List</h5>
+  <button id="refreshListBtn" type="button" class="btn btn-secondary btn-sm ms-3">Refresh</button>
+  <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
+</div>
+
+          <div class="modal-body" id="listModalBody">
+        <p id="listCmdDetails"></p>
+        <p id="listRspDetails"></p>
+          </div>
+        </div>
+      </div>
+    </div>
+
+<div class="modal fade" id="fileServerModal" tabindex="-1" aria-labelledby="fileServerModalLabel" aria-hidden="true">
+  <div class="modal-dialog">
+    <div class="modal-content">
+      <div class="modal-header">
+        <h5 class="modal-title" id="fileServerModalLabel">File Transfer Status</h5>
+        <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
+      </div>
+      <div class="modal-body">
+        <p id="cmdDetails"></p>
+        <p id="rspDetails"></p>
+        <p id="fileTransferStatus"></p>
+      </div>
+    </div>
+  </div>
+</div>
+
     <div class="mb-3">
       <label for="encodingMethod" class="form-label">Encoding Method</label> <select id="encodingMethod" class="form-select">
         <option value="binary" selected>
@@ -133,7 +171,10 @@
     let serialPort = null, serialWriter = null;
     let serialConnected = false;
     let kissBuffer = new Uint8Array(0);
-    
+    let listCmdID = null;
+    let putCmdID = null;
+    let latestFileList = null;
+
     // Sender globals
     let maxRetries = 3;
     let burstSize = 4; // if auto mode is off; if auto then burstSize === 0
@@ -188,7 +229,10 @@
     
     // Track highest packet sequence number sent so far
     let highestPacketSentSoFar = 0;  
-    
+
+    const listModalEl = document.getElementById('listModal');
+    const listModal = new bootstrap.Modal(listModalEl);
+
     /***********************
      * Persistence Functions
      ***********************/
@@ -677,8 +721,6 @@ function processAckFrame(infoText) {
   return { fileId: parts[1].trim(), ack: parts[3].trim() };
 }
 
-    
-
   function processAck(ackContent) {
   // Ensure the current ack is for the correct fileId
   if (waitingForFinAckMap[sentFileStats.fileId] && ackContent !== "0001" && waitingForFinAck) {
@@ -900,35 +942,105 @@ function scheduleNextFinAckAttempt(fileId) {
   }, finalAckTimeout);
 }
 
+function parseRspPacket(infoText) {
+  infoText = infoText.trim();
+
+  // Ensure the packet starts with 'RSP:'
+  if (!infoText.startsWith("RSP:")) return null;
+  
+  // Split the packet into parts (cmdID, status, and message)
+  const parts = infoText.split(/\s+/);
+  
+  if (parts.length < 3) return null;  // Ensure there's at least a status and a message
+
+  // Extract cmdID and ensure it's the correct format
+  const cmdID = parts[0].substring(4); // Extract cmdID after 'RSP:'
+  
+  // Debugging: log the cmdID to see what is extracted
+  console.log(`Extracted cmdID: ${cmdID}`);
+  
+  // Extract the status (success/failure)
+  const status = parseInt(parts[1], 10); // Status code (1 or 0)
+
+  // The rest is the message
+  const msg = parts.slice(2).join(" "); 
+
+  return { cmdID, status, msg };
+}
+
     
     /***********************
      * Process Raw Packet (Updated FIN-ACK handling)
      ***********************/
+
+
+
 function processRawPacket(packet) {
-  console.log("Processing raw packet:", packet);
-  let packetBytes;
-  if (typeof packet === 'string') {
-    packetBytes = new TextEncoder().encode(packet);
-  } else if (packet instanceof ArrayBuffer) {
-    packetBytes = new Uint8Array(packet);
-  } else if (packet instanceof Uint8Array) {
-    packetBytes = packet;
-  } else {
-    console.log("Unrecognized packet type; ignoring.");
+  // Ensure the packet is a Uint8Array.
+  if (!(packet instanceof Uint8Array)) {
+    packet = new Uint8Array(packet);
+  }
+
+  // Verify proper KISS framing: must start and end with 0xC0.
+  if (packet[0] !== 0xC0 || packet[packet.length - 1] !== 0xC0) {
+    console.error("Invalid KISS frame: missing flag bytes.");
     return;
   }
 
-  if (packetBytes[0] !== 0xC0 || packetBytes[packetBytes.length - 1] !== 0xC0) {
-    console.error("Invalid KISS frame: missing framing bytes.");
+  // Remove the starting and ending flag bytes.
+  let inner = packet.slice(1, packet.length - 1);
+
+  // The first byte of the inner frame is the KISS command (should be 0x00 for data).
+  if (inner.length === 0) {
+    console.error("Empty frame after removing flag bytes.");
+    return;
+  }
+  inner = inner.slice(1); // Skip KISS command byte (should be 0x00)
+
+  // Unescape the KISS data.
+  inner = unescapeKissData(inner);
+
+  // If the payload length is exactly 64 or 80, treat it as a CMD/RSP packet.
+  if (inner.length === 64 || inner.length === 80) {
+    let infoField;
+    if (inner.length === 80) {
+      infoField = inner.slice(16); // First 16 bytes are the AX.25 header
+    } else {
+      infoField = inner; // Older style packet: entire payload is the info field
+    }
+
+    const infoText = new TextDecoder().decode(infoField).trim();
+
+    // Process RSP packet if it begins with "RSP:"
+    if (infoText.startsWith("RSP:")) {
+      processRsp(infoText);  // Process the RSP packet
+      return; // Exit after processing RSP
+    }
+  }
+
+  // Otherwise, assume this is a file transfer packet.
+  // In file transfers, the first 16 bytes of the inner data are the AX.25 header.
+  let infoField = inner.length > 16 ? inner.slice(16) : inner;
+  const infoText = new TextDecoder().decode(infoField);
+
+  // Now follow your existing file transfer packet processing.
+  if (infoText.indexOf('>') < 0) {
+    console.log("Packet format invalid: missing '>'");
+    return;
+  }
+  if (infoText.charAt(19) !== ':') {
+    console.log("Packet format invalid: missing ':' at position 19");
     return;
   }
 
-  const ax25Frame = packetBytes.slice(2, packetBytes.length - 1);
-  if (ax25Frame.length < 16) {
+  let senderStr   = infoText.substring(0, 9).trim();
+  let receiverStr = infoText.substring(10, 19).trim();
+  let packetFileId = infoText.substring(20, 22).trim();
+
+  if (infoText.charAt(22) !== ':') {
+    console.log("Packet format invalid: missing colon after file ID.");
     return;
   }
-  const infoField = ax25Frame.slice(16);
-  let infoText = new TextDecoder().decode(infoField);
 
 if (infoText.indexOf(":ACK:FIN-ACK") !== -1) {
   let parts = infoText.split(":"); // Expected format: "SENDER>RECEIVER", fileId, "ACK", "FIN-ACK"
@@ -956,122 +1068,69 @@ if (infoText.indexOf(":ACK:FIN-ACK") !== -1) {
 }
 
 
-  // *** NEW: Check for ACK frames before processing as data/header packet ***
-if (infoText.indexOf(":ACK:") !== -1) {
-  let ackData = processAckFrame(infoText);
-  if (!ackData) return;
-  
-  // Check against active transfer state if available...
-  if (sentFileStats) {
-    if (ackData.fileId !== sentFileStats.fileId) {
-      console.log("Ignoring ACK for file", ackData.fileId, "while current file is", sentFileStats.fileId);
-      return;
-    }
-  } 
-  // If no active transfer, check finalFileId:
-  else if (finalFileId) {
-    if (ackData.fileId !== finalFileId) {
-      console.log("Ignoring ACK for file", ackData.fileId, "while final file is", finalFileId);
-      return;
-    }
-  } 
-  // If neither, ignore.
-  else {
-    console.log("No active transfer or final file; ignoring ACK.");
-    return;
-  }
-  
-  console.log("Sender received ACK:", ackData.ack, "for file", ackData.fileId);
-  processAck(ackData.ack);
-  if (ackTimer) { clearTimeout(ackTimer); ackTimer = null; }
-  burstInProgress = false;
-  return;
-}
 
-  // *** End of ACK check ***
-
-  // (Now process non-ACK frames as before.)
-  if (infoText.indexOf('>') < 0) {
-    console.log("Packet format invalid: missing '>'");
-    return;
-  }
-  if (infoText.charAt(19) !== ':') {
-    console.log("Packet format invalid: missing ':' at position 19");
-    return;
-  }
-  let senderStr   = infoText.substring(0, 9).trim();
-  let receiverStr = infoText.substring(10, 19).trim();
-  let packetFileId = infoText.substring(20, 22).trim();
-  if (infoText.charAt(22) !== ':') {
-    console.log("Packet format invalid: missing colon after file ID.");
-    return;
-  }
   let seq     = parseInt(infoText.substring(23, 27), 16);
   let burstTo = parseInt(infoText.substring(27, 31), 16);
 
-  // Ignore packets not addressed to me
+  // Ignore packets not addressed to me.
   if (receiverStr !== document.getElementById('senderCallsign').value.trim()) {
     console.log("Ignoring packet not intended for me (packet receiver:",
       receiverStr, ", local:", document.getElementById('senderCallsign').value.trim(), ")");
     return;
   }
 
-  // Calculate payload offset based on sequence number
+  // Determine payload offset based on sequence number.
   let offset = (seq === 1) ? 37 : 32;
   let payloadChunk = unescapeKissData(infoField.slice(offset));
 
   let transferKeyFinal = senderStr + "_" + packetFileId;
 
-  // --- Header Branch: When seq === 1, start a new transfer ---
- 
-// --- Header Branch: When seq === 1, start a new transfer ---
-if (seq === 1 && !activeTransfers[transferKeyFinal]) {
-  console.log("Starting new transfer from sender", senderStr, "with file ID", packetFileId);
-  // Decode the header payload to get the transfer parameters
-  let headerPayloadText = new TextDecoder().decode(payloadChunk);
-  let parts = headerPayloadText.split("|");
-  // Calculate header timeout based on the first part (timeoutSeconds)
-  const headerTimeout = (parseFloat(parts[0]) * 1000) + 1500;
-  
-  activeTransfers[transferKeyFinal] = {
-    totalChunks: parseInt(parts[9], 10),
-    received: {},
-    startTime: Date.now(),
-    duplicateCount: 0,
-    lastUpdate: Date.now(),
-    ackTimer: null,
-    lastPacketTime: Date.now(),
-    ackDelay: headerTimeout, // calculated from header data
-    currentBurstBoundary: 0,
-    burstStartTime: Date.now(),
-    maxAckRetries: parseInt(parts[1], 10) || 5,
-    ackRetryCount: 0,
-    ackRetryActive: true
-  };
+  // --- Header Branch: For seq === 1, start a new transfer ---
+  if (seq === 1 && !activeTransfers[transferKeyFinal]) {
+    console.log("Starting new transfer from sender", senderStr, "with file ID", packetFileId);
+    let headerPayloadText = new TextDecoder().decode(payloadChunk);
+    let parts = headerPayloadText.split("|");
+    const headerTimeout = (parseFloat(parts[0]) * 1000) + 1500;
 
-  activeTransfers[transferKeyFinal].received[1] = true;
+    activeTransfers[transferKeyFinal] = {
+      totalChunks: parseInt(parts[9], 10),
+      received: {},
+      startTime: Date.now(),
+      duplicateCount: 0,
+      lastUpdate: Date.now(),
+      ackTimer: null,
+      lastPacketTime: Date.now(),
+      ackDelay: headerTimeout,
+      currentBurstBoundary: 0,
+      burstStartTime: Date.now(),
+      maxAckRetries: parseInt(parts[1], 10) || 5,
+      ackRetryCount: 0,
+      ackRetryActive: true
+    };
 
-  activeTransfers[transferKeyFinal].header = {
-    fileName: parts[2],
-    originalSize: parseInt(parts[3], 10),
-    compressedSize: parseInt(parts[4], 10),
-    md5: parts[5],
-    fileId: packetFileId, // store the file ID from the packet
-    encodingMethod: parseInt(parts[7], 10),
-    compression: (parts[8] === "1"),
-    expectedTotal: parseInt(parts[9], 10)
-  };
+    activeTransfers[transferKeyFinal].received[1] = true;
 
-  console.log("Received header from sender", senderStr, "for file ID", packetFileId, activeTransfers[transferKeyFinal].header);
-  sendAckFromReceiver(senderStr, packetFileId, "0001");
-  return;
-}
+    activeTransfers[transferKeyFinal].header = {
+      fileName: parts[2],
+      originalSize: parseInt(parts[3], 10),
+      compressedSize: parseInt(parts[4], 10),
+      md5: parts[5],
+      fileId: packetFileId,
+      encodingMethod: parseInt(parts[7], 10),
+      compression: (parts[8] === "1"),
+      expectedTotal: parseInt(parts[9], 10)
+    };
 
+    console.log("Received header from sender", senderStr, "for file ID", packetFileId, activeTransfers[transferKeyFinal].header);
+    sendAckFromReceiver(senderStr, packetFileId, "0001");
+    return;
+  }
 
+  // --- File Transfer Processing ---
   let transfer = activeTransfers[transferKeyFinal];
   if (!transfer) {
-  console.log("No active transfer record for", transferKeyFinal, "- transfer already finalized.");
-  return;
+    console.log("No active transfer record for", transferKeyFinal, "- transfer already finalized.");
+    return;
   }
 
   if (!transfer.currentBurstTo || burstTo > transfer.currentBurstTo) {
@@ -1098,49 +1157,44 @@ if (seq === 1 && !activeTransfers[transferKeyFinal]) {
   while (transfer.received[contiguous]) contiguous++;
   transfer.lastAcked = contiguous - 1;
 
-  // --- ACK sending branch: Send ACK and start exponential retry ---
+  // --- ACK Sending Branch ---
   if (!isDuplicate && !transfer.completed) {
     transfer.lastPacketTime = Date.now();
     if (transfer.ackTimer) {
       clearTimeout(transfer.ackTimer);
       transfer.ackTimer = null;
     }
-    // Reset the ACK retry counter for this ACK cycle
     transfer.ackRetryCount = 0;
-    
+
     if ((contiguous - 1) >= burstTo) {
       console.log("Receiver: Reached highest burst seq (" + burstTo + "), ACKing immediately.");
       sendCumulativeAck(transfer, senderStr, transfer.header.fileId, true);
 
-  (function ackRetry() {
-  // Immediately exit if the final handshake is complete.
-  if (transfer.finalHandshakeReceived) {
-    console.log("Receiver: Final handshake done, stopping ACK retries.");
-    return;
-  }
-  if (transfer.ackRetryCount >= transfer.maxAckRetries) {
-    console.log("Receiver: ACK retry max reached (" + transfer.maxAckRetries + "). Aborting transfer.");
-    // Mark the transfer as aborted or remove it from activeTransfers.
-    delete activeTransfers[senderStr + "_" + transfer.header.fileId];
-    updateReceiverProgressUI();
-    updateStatus("Receiver: Transfer for file " + transfer.header.fileId + " aborted due to ACK timeout.");
-    transfer.ackTimer = null;
-    return;
-  }
-  transfer.ackRetryCount++;
-  let nextDelay = transfer.ackDelay * Math.pow(1.5, transfer.ackRetryCount);
-  transfer.ackTimer = setTimeout(() => {
-    if (transfer.finalHandshakeReceived) {
-      console.log("Receiver: Final handshake received; not resending cumulative ACK.");
-      return;
-    }
-    console.log("Receiver: ACK retry attempt #" + transfer.ackRetryCount + ", resending cumulative ACK.");
-    sendCumulativeAck(transfer, senderStr, transfer.header.fileId, true);
-    ackRetry();
-  }, nextDelay);
-  })();
-
-
+      (function ackRetry() {
+        if (transfer.finalHandshakeReceived) {
+          console.log("Receiver: Final handshake done, stopping ACK retries.");
+          return;
+        }
+        if (transfer.ackRetryCount >= transfer.maxAckRetries) {
+          console.log("Receiver: ACK retry max reached (" + transfer.maxAckRetries + "). Aborting transfer.");
+          delete activeTransfers[senderStr + "_" + transfer.header.fileId];
+          updateReceiverProgressUI();
+          updateStatus("Receiver: Transfer for file " + transfer.header.fileId + " aborted due to ACK timeout.");
+          transfer.ackTimer = null;
+          return;
+        }
+        transfer.ackRetryCount++;
+        let nextDelay = transfer.ackDelay * Math.pow(1.5, transfer.ackRetryCount);
+        transfer.ackTimer = setTimeout(() => {
+          if (transfer.finalHandshakeReceived) {
+            console.log("Receiver: Final handshake received; not resending cumulative ACK.");
+            return;
+          }
+          console.log("Receiver: ACK retry attempt #" + transfer.ackRetryCount + ", resending cumulative ACK.");
+          sendCumulativeAck(transfer, senderStr, transfer.header.fileId, true);
+          ackRetry();
+        }, nextDelay);
+      })();
     } else {
       transfer.ackTimer = setTimeout(() => {
         console.log("Receiver: Idle period reached, sending partial/cumulative ACK.");
@@ -1151,15 +1205,14 @@ if (seq === 1 && !activeTransfers[transferKeyFinal]) {
   }
 
   let allPacketsReceived = transfer.totalChunks && Object.keys(transfer.received).length === transfer.totalChunks;
+  if (!transfer.completed && allPacketsReceived) {
+    if (transfer.downloadTriggered) return;
+    transfer.downloadTriggered = true;
 
-if (!transfer.completed && allPacketsReceived) {
-  if (transfer.downloadTriggered) return;
-  transfer.downloadTriggered = true;
-
-  if (transfer.header && persistentReceivedFiles.some(f => f.fileId === transfer.header.fileId && f.sender === senderStr)) {
-    console.log("File already processed, skipping reassembly and download.");
-    return;
-  }
+    if (transfer.header && persistentReceivedFiles.some(f => f.fileId === transfer.header.fileId && f.sender === senderStr)) {
+      console.log("File already processed, skipping reassembly and download.");
+      return;
+    }
 
     console.log("All packets received for", transferKeyFinal, "- reassembling file...");
     if (!transfer.header) {
@@ -1236,6 +1289,16 @@ if (!transfer.completed && allPacketsReceived) {
     const reader = new FileReader();
     reader.onload = function(e) {
       fileObj.dataUrl = e.target.result;
+
+      // Check if the file is LIST.txt (ignoring case and whitespace)
+      if (fileObj.fileName.trim().toUpperCase() === "LIST.TXT") {
+        const fileContent = new TextDecoder().decode(decompressed);
+        latestFileList = fileContent;
+        // Show the list modal without adding to the Received Files list
+        showListModal(latestFileList);
+        return;
+      }
+
       let existingIndex = persistentReceivedFiles.findIndex(
         f => f.fileId === fileObj.fileId && f.sender === fileObj.sender
       );
@@ -1248,11 +1311,22 @@ if (!transfer.completed && allPacketsReceived) {
       saveReceivedFilesToLocalStorage(persistentReceivedFiles);
       updateReceivedFilesUI();
 
-      if (checksumMatch) {
-        downloadReceivedFile(existingIndex);
+      // Check if the received file is "LIST.txt" and the terminal modal is open
+      if (fileObj.fileName.trim().toUpperCase() === "LIST.TXT") {
+        const fileContent = new TextDecoder().decode(decompressed);
+        // Store the file list in our global variable:
+        latestFileList = fileContent;
+        // Now show the modal with the actual file list:
+        showListModal(latestFileList);
+        return;
       } else {
-        console.error("Checksum does not match; automatic download aborted.");
-        updateStatus("Received file failed checksum verification.");
+        // Otherwise, proceed with the automatic download
+        if (checksumMatch) {
+          downloadReceivedFile(existingIndex);
+        } else {
+          console.error("Checksum does not match; automatic download aborted.");
+          updateStatus("Received file failed checksum verification.");
+        }
       }
     };
     reader.onerror = function(e) {
@@ -1260,13 +1334,13 @@ if (!transfer.completed && allPacketsReceived) {
     };
     reader.readAsDataURL(blob);
     console.log("Receiver: Entire file complete.");
+    console.log("Receiver: Entire file complete. Sending final cumulative ACK and waiting for FIN-ACK.");
+    transfer.waitingForFinAck = true;
+    return;
+  }
+}
 
-console.log("Receiver: Entire file complete. Sending final cumulative ACK and waiting for FIN-ACK.");
-  transfer.waitingForFinAck = true;  // Mark that we are waiting for the sender's FIN-ACK. 
-  // Do not mark transfer.completed or remove it yet.
-  return;
-  }
-  }
+
 
     
     /***********************
@@ -1482,7 +1556,10 @@ console.log("Receiver: Entire file complete. Sending final cumulative ACK and wa
     }
     
     document.addEventListener("DOMContentLoaded", function() {
+      const fileServerCheckbox = document.getElementById('fileServerCheckbox');
+      const fsButtons = document.getElementById('fileServerButtons');
       const storedSenderCallsign = localStorage.getItem('senderCallsign');
+
       if (storedSenderCallsign) {
         document.getElementById('senderCallsign').value = storedSenderCallsign;
       }
@@ -1492,6 +1569,12 @@ console.log("Receiver: Entire file complete. Sending final cumulative ACK and wa
         document.getElementById('receiverCallsign').value = storedReceiverCallsign;
       }
     
+      fsButtons.style.display = fileServerCheckbox.checked ? 'block' : 'none';
+
+      fileServerCheckbox.addEventListener('change', function() {
+        fsButtons.style.display = this.checked ? 'block' : 'none';
+      });
+
       // 3) Set up event listeners to persist changes back to localStorage
       document.getElementById('senderCallsign').addEventListener('input', () => {
         localStorage.setItem('senderCallsign', document.getElementById('senderCallsign').value);
@@ -1507,7 +1590,67 @@ console.log("Receiver: Entire file complete. Sending final cumulative ACK and wa
       autoCheckbox.addEventListener('change', function() {
         burstSlider.disabled = this.checked;
       });
-    
+      // Show/hide file server buttons based on checkbox:
+      document.getElementById('fileServerCheckbox').addEventListener('change', function() {
+        const fsButtons = document.getElementById('fileServerButtons');
+        if (this.checked) {
+          fsButtons.style.display = 'block';
+        } else {
+          fsButtons.style.display = 'none';
+        }
+      });
+
+document.getElementById('refreshListBtn').addEventListener('click', function() {
+  latestFileList = null;
+  // Clear the modal body and show waiting message
+  document.getElementById('listModalBody').innerHTML = "<p>Waiting for file list...</p>";
+
+  // Build and send the LIST command
+  const senderCallsign = document.getElementById('senderCallsign').value.trim();
+  const receiverCallsign = document.getElementById('receiverCallsign').value.trim();
+  const { packet: listPacket, cmdID: listCmdIDGenerated } = buildCmdPacket(senderCallsign, receiverCallsign, "LIST");
+  listCmdID = listCmdIDGenerated;  // Save the cmd id for response processing
+
+  const kissFrame = buildKissFrame(listPacket);
+  if (document.getElementById('connectionType').value === 'websockets') {
+    if (socket) socket.emit('raw_kiss_frame', kissFrame);
+  } else if (document.getElementById('connectionType').value === 'serial' && serialWriter) {
+    serialWriter.write(kissFrame).catch(err => console.error("Error sending CMD:", err));
+  }
+  updateStatus("Sent LIST command (cmdID " + listCmdID + ").");
+});
+
+
+
+      // When "List" button is pressed:
+      document.getElementById('listBtn').addEventListener('click', function() {
+  // Immediately show the modal.
+  if (latestFileList) {
+    // If we already have a file list, show it:
+    showListModal(latestFileList);
+  } else {
+
+    showListModal("Waiting for file list...");
+
+    const { packet, cmdID } = buildCmdPacket(
+      document.getElementById('senderCallsign').value.trim(),
+      document.getElementById('receiverCallsign').value.trim(),
+      "LIST"
+    );
+    listCmdID = cmdID;  // save the cmd id so we know which response belongs here
+    const kissFrame = buildKissFrame(packet);
+    if (document.getElementById('connectionType').value === 'websockets') {
+      if (socket) socket.emit('raw_kiss_frame', kissFrame);
+    } else if (document.getElementById('connectionType').value === 'serial' && serialWriter) {
+      serialWriter.write(kissFrame).catch(err => console.error("Error sending CMD:", err));
+    }
+    updateStatus("Sent LIST command (cmdID " + cmdID + ").");
+  }
+});
+
+
+
+
       updateReceivedFilesUI();
       updateSentFilesUI();
       if (document.getElementById('connectionType').value === 'websockets') {
@@ -1573,112 +1716,202 @@ console.log("Receiver: Entire file complete. Sending final cumulative ACK and wa
           document.getElementById('serialDisconnectBtn').style.display = 'none';
         }
       });
-      document.getElementById('sendFileBtn').addEventListener('click', () => {
-        currentDynamicBurstIndex = 2;
-        currentBurstSizeDynamic = dynamicBurstSizes[currentDynamicBurstIndex];
-        consecutiveSuccessCount = 0;
+
+
+
+
+
+
+
+
+
+
+
+
+document.getElementById('sendFileBtn').addEventListener('click', () => {
+  // Reset dynamic burst settings for the next transfer
+  currentDynamicBurstIndex = 2;
+  currentBurstSizeDynamic = dynamicBurstSizes[currentDynamicBurstIndex];
+  consecutiveSuccessCount = 0;
+
+  // Check if file transfer is already in progress
+  if (fileTransferInProgress) {
+    alert("A file transfer is already in progress.");
+    return;
+  }
+  
+  // Disable the send file button while the transfer is in progress
+  document.getElementById('sendFileBtn').disabled = true;
+
+  // Get sender and receiver callsigns
+  sender = document.getElementById('senderCallsign').value.trim();
+  receiver = document.getElementById('receiverCallsign').value.trim();
+
+  // Get the file input element
+  const fileInput = document.getElementById('fileInput');
+  
+  // Validate user input before proceeding
+  if (!sender || !receiver || !fileInput.files.length) {
+    alert("Please enter your callsign, receiver callsign, and select a file.");
+    document.getElementById('sendFileBtn').disabled = false;
+    return;
+  }
+
+  // Check if compression is enabled
+  const compress = document.getElementById('compressCheckbox').checked;
+  // Get the selected encoding method
+  const encodingMethod = document.getElementById('encodingMethod').value;
+
+  // Set burst size based on the selected options
+  if (document.getElementById('autoBurstCheckbox').checked) {
+    burstSize = 0;
+    currentDynamicBurstIndex = 2;
+    currentBurstSizeDynamic = dynamicBurstSizes[currentDynamicBurstIndex];
+  } else {
+    let sliderIndex = parseInt(document.getElementById('burstSlider').value, 10);
+    burstSize = dynamicBurstSizes[sliderIndex];
+  }
+
+  // Get the selected file
+  const file = fileInput.files[0];
+  fileId = generateFileId();
+
+  // Check if the receiver is a file server
+  const fileServerChecked = document.getElementById('fileServerCheckbox').checked;
+  if (fileServerChecked) {
+    // If the receiver is a file server, send a PUT command first
+    const filename = fileInput.files[0].name;
+    const cmd = `PUT ${filename}`;
+    const { packet: putPacket, cmdID: putCmdIDGenerated } = buildCmdPacket(sender, receiver, cmd);
+    putCmdID = putCmdIDGenerated;
+
+    // Show the modal with CMD details
+    document.getElementById('cmdDetails').innerText = `CMD Sent: ${cmd} (CmdID: ${putCmdID})`;
+    console.log("Sending command with cmdID:", putCmdID);
+    document.getElementById('rspDetails').innerText = 'Waiting for response...';
+    document.getElementById('fileTransferStatus').innerText = '';
+
+    const kissFrame = buildKissFrame(putPacket);
     
-        if (fileTransferInProgress) {
-          alert("A file transfer is already in progress.");
-          return;
-        }
-        document.getElementById('sendFileBtn').disabled = true;
-        sender = document.getElementById('senderCallsign').value.trim();
-        receiver = document.getElementById('receiverCallsign').value.trim();
-        const fileInput = document.getElementById('fileInput');
-        if (!sender || !receiver || !fileInput.files.length) {
-          alert("Please enter your callsign, receiver callsign, and select a file.");
-          document.getElementById('sendFileBtn').disabled = false;
-          return;
-        }
-        const compress = document.getElementById('compressCheckbox').checked;
-        const encodingMethod = document.getElementById('encodingMethod').value;
+    // Send the PUT command
+    if (document.getElementById('connectionType').value === 'websockets') {
+      if (socket) socket.emit('raw_kiss_frame', kissFrame);
+    } else if (document.getElementById('connectionType').value === 'serial' && serialWriter) {
+      serialWriter.write(kissFrame).catch(err => console.error("Error sending CMD:", err));
+    }
+
+    // Wait for RSP response
+    cmdID = putCmdID; // Save the cmdID for response processing
+
+    // Show modal to the user
+    const fileServerModal = new bootstrap.Modal(document.getElementById('fileServerModal'));
+    fileServerModal.show();
     
-        if (document.getElementById('autoBurstCheckbox').checked) {
-          burstSize = 0;
-          currentDynamicBurstIndex = 2;
-          currentBurstSizeDynamic = dynamicBurstSizes[currentDynamicBurstIndex];
-        } else {
-          let sliderIndex = parseInt(document.getElementById('burstSlider').value, 10);
-          burstSize = dynamicBurstSizes[sliderIndex];
+    // Early exit to wait for response before starting the actual file transfer
+    return;
+  }
+
+  // Proceed with normal file transfer if the receiver is not a file server
+  const reader = new FileReader();
+  
+  reader.onload = function(e) {
+    const arrayBuffer = e.target.result;
+    const fileData = new Uint8Array(arrayBuffer);
+    let finalData;
+
+    // Handle compression if selected
+    try {
+      finalData = compress ? pako.deflate(fileData, { level: 9 }) : fileData;
+    } catch (err) {
+      updateStatus("Compression error: " + err);
+      document.getElementById('sendFileBtn').disabled = false;
+      return;
+    }
+
+    // Generate MD5 checksum and prepare for sending
+    const md5 = CryptoJS.MD5(CryptoJS.lib.WordArray.create(fileData)).toString();
+    const fileDataChunksCount = Math.ceil(finalData.length / CHUNK_SIZE);
+    const totalPacketsExpected = fileDataChunksCount;
+    const timeoutSeconds = parseFloat(document.getElementById('timeoutSeconds').value) || 5.0;
+    const timeoutRetries = parseInt(document.getElementById('timeoutRetries').value, 10) || 5;
+
+    // Build the header for the file transfer
+    const headerStr = timeoutSeconds + "|" + timeoutRetries + "|" + file.name + "|" + fileData.length + "|" + finalData.length + "|" + md5 + "|" + fileId + "|" + (encodingMethod === 'base64' ? "1" : "0") + "|" + (compress ? "1" : "0") + "|" + (totalPacketsExpected + 1);
+    const headerPayload = new TextEncoder().encode(headerStr);
+    
+    // Initialize the file data chunks
+    fileDataChunks = [];
+    fileDataChunks.push(headerPayload);
+    
+    for (let i = 0; i < fileDataChunksCount; i++) {
+      const start = i * CHUNK_SIZE;
+      const end = Math.min(start + CHUNK_SIZE, finalData.length);
+      let chunk = finalData.slice(start, end);
+      
+      // Base64 encoding if selected
+      if (encodingMethod === 'base64') {
+        let binaryString = "";
+        for (let j = 0; j < chunk.length; j++) {
+          binaryString += String.fromCharCode(chunk[j]);
         }
-        const file = fileInput.files[0];
-        fileId = generateFileId();
-        startTransfer(fileId);
-        const reader = new FileReader();
-        reader.onload = function(e) {
-          const arrayBuffer = e.target.result;
-          const fileData = new Uint8Array(arrayBuffer);
-          let finalData;
-          try {
-            finalData = compress ? pako.deflate(fileData, { level: 9 }) : fileData;
-          } catch (err) {
-            updateStatus("Compression error: " + err);
-            document.getElementById('sendFileBtn').disabled = false;
-            return;
-          }
-          const md5 = CryptoJS.MD5(CryptoJS.lib.WordArray.create(fileData)).toString();
-          const fileDataChunksCount = Math.ceil(finalData.length / CHUNK_SIZE);
-          const totalPacketsExpected = fileDataChunksCount;
-          const timeoutSeconds = parseFloat(document.getElementById('timeoutSeconds')?.value) || 5.0;
-          const timeoutRetries = parseInt(document.getElementById('timeoutRetries')?.value, 10) || 5;
-          const headerStr = timeoutSeconds + "|" + timeoutRetries + "|" + file.name + "|" + fileData.length + "|" + finalData.length + "|" + md5 + "|" + fileId + "|" + (encodingMethod === 'base64' ? "1" : "0") + "|" + (compress ? "1" : "0") + "|" + (totalPacketsExpected + 1);
-          const headerPayload = new TextEncoder().encode(headerStr);
-          fileDataChunks = [];
-          fileDataChunks.push(headerPayload);
-          for (let i = 0; i < fileDataChunksCount; i++) {
-            const start = i * CHUNK_SIZE;
-            const end = Math.min(start + CHUNK_SIZE, finalData.length);
-            let chunk = finalData.slice(start, end);
-            if (encodingMethod === 'base64') {
-              let binaryString = "";
-              for (let j = 0; j < chunk.length; j++) {
-                binaryString += String.fromCharCode(chunk[j]);
-              }
-              let base64Str = btoa(binaryString);
-              chunk = new TextEncoder().encode(base64Str);
-            }
-            fileDataChunks.push(chunk);
-          }
-          totalPackets = fileDataChunks.length;
-          currentPacketIndex = 0;
-          currentRetries = 0;
-          totalRetries = 0;
-          fileTransferInProgress = true;
-          headerAckReceived = false;
-          burstInProgress = false;
-          missingPackets = [];
-          highestPacketSentSoFar = 0;
-          
-          sentFileStats = {
-            fileName: file.name,
-            receiver: receiver,
-            originalSize: fileData.length,
-            compressedSize: finalData.length,
-            startTime: Date.now(),
-            totalRetries: 0,
-            bytesSent: 0,
-            totalPackets: totalPackets,
-            fileId: fileId
-          };
-          updateStatus(`File compressed from ${fileData.length} bytes to ${finalData.length} bytes.
-  File ID: ${fileId}`);
-          updateSenderProgressUI();
-          // NEW: Initialize header retry variables and send header packet (seq 1)
-          headerRetryCount = 0;
-          headerAckReceived = false;
-          headerSentTimestamp = Date.now();
-          defaultHeaderTimeout = defaultPerPacketTimeout + (timeoutSeconds * 1000);
-          console.log("Sending header packet (seq 1)");
-          sendPacket(1);
-          headerAckTimer = setTimeout(waitForHeaderAck, defaultHeaderTimeout);
-        };
-        reader.onerror = function(e) {
-          updateStatus("Error reading file: " + e);
-          document.getElementById('sendFileBtn').disabled = false;
-        };
-        reader.readAsArrayBuffer(file);
-      });
+        let base64Str = btoa(binaryString);
+        chunk = new TextEncoder().encode(base64Str);
+      }
+      fileDataChunks.push(chunk);
+    }
+    
+    totalPackets = fileDataChunks.length;
+    currentPacketIndex = 0;
+    currentRetries = 0;
+    totalRetries = 0;
+    fileTransferInProgress = true;
+    headerAckReceived = false;
+    burstInProgress = false;
+    missingPackets = [];
+    highestPacketSentSoFar = 0;
+
+    // Store transfer statistics
+    sentFileStats = {
+      fileName: file.name,
+      receiver: receiver,
+      originalSize: fileData.length,
+      compressedSize: finalData.length,
+      startTime: Date.now(),
+      totalRetries: 0,
+      bytesSent: 0,
+      totalPackets: totalPackets,
+      fileId: fileId
+    };
+
+    updateStatus(`File compressed from ${fileData.length} bytes to ${finalData.length} bytes. File ID: ${fileId}`);
+    updateSenderProgressUI();
+
+    // Initialize retry variables for the header
+    headerRetryCount = 0;
+    headerAckReceived = false;
+    headerSentTimestamp = Date.now();
+    defaultHeaderTimeout = defaultPerPacketTimeout + (timeoutSeconds * 1000);
+    console.log("Sending header packet (seq 1)");
+    
+    // Send the header packet (seq 1)
+    sendPacket(1);
+    headerAckTimer = setTimeout(waitForHeaderAck, defaultHeaderTimeout);
+  };
+
+  reader.onerror = function(e) {
+    updateStatus("Error reading file: " + e);
+    document.getElementById('sendFileBtn').disabled = false;
+  };
+
+  reader.readAsArrayBuffer(file);
+});
+
+
+
+
+
+
+
       document.getElementById('burstSlider').addEventListener('input', function() {
         let burstValue = dynamicBurstSizes[parseInt(this.value, 10)];
         document.getElementById('burstValue').textContent = burstValue;
@@ -1793,6 +2026,297 @@ console.log("Receiver: Entire file complete. Sending final cumulative ACK and wa
     }
   }
   }, 1000);
+// --- Helper to generate a two-character hexadecimal command ID ---
+function generateCmdID() {
+  // Use random byte (fallback to a counter if needed)
+  const byte = new Uint8Array(1);
+  window.crypto.getRandomValues(byte);
+  return byte[0].toString(16).padStart(2, '0').toUpperCase();
+}
+
+
+// --- Build a CMD packet ---
+// Format: [AX.25 header (16 bytes)] + info field (64 bytes: "CMD:" + cmdID + " " + command text, padded/truncated)
+    function buildCmdPacket(sender, receiver, commandText) {
+      const header = buildAX25Header(sender, receiver);
+      const cmdID = generateCmdID();
+      let infoStr = "CMD:" + cmdID + " " + commandText;
+      if (infoStr.length > 64) {
+        infoStr = infoStr.substring(0, 64);
+      } else {
+        infoStr = infoStr.padEnd(64, ' ');
+      }
+      const infoBytes = new TextEncoder().encode(infoStr);
+      const packet = new Uint8Array(header.length + infoBytes.length);
+      packet.set(header, 0);
+      packet.set(infoBytes, header.length);
+      return { packet, cmdID };
+    }
+
+
+// --- Send a CMD packet over the current connection ---
+function sendCmdPacket(commandText) {
+  const sender = document.getElementById('senderCallsign').value.trim();
+  const receiver = document.getElementById('receiverCallsign').value.trim();
+  if (!sender || !receiver) {
+    updateStatus("Please set both your callsign and the receiver callsign.");
+    return;
+  }
+  const { packet, cmdID } = buildCmdPacket(sender, receiver, commandText);
+  console.log("Sending LIST command with cmdID:", listCmdID);
+  const kissFrame = buildKissFrame(packet); // Use your existing buildKissFrame
+  // Send the frame over websockets or serial
+  if (document.getElementById('connectionType').value === 'websockets') {
+    if (socket) socket.emit('raw_kiss_frame', kissFrame);
+  } else if (document.getElementById('connectionType').value === 'serial' && serialWriter) {
+    serialWriter.write(kissFrame).catch(err => console.error("Error sending CMD:", err));
+  }
+}
+
+
+
+
+function showListModal(csvContent) {
+  // Initialize the HTML for the CMD and RSP details
+  let html = `
+    <div id="cmdRspContainer">
+      <p id="listCmdDetails">CMD Sent: Waiting for response...</p>
+      <p id="listRspDetails">RSP Received: Waiting for response...</p>
+    </div>
+  `;
+
+  // If no CSV content is received, just show a 'no files' message
+  if (!csvContent || csvContent.trim() === "") {
+    document.getElementById('listModalBody').innerHTML = html + "<p>No files found.</p>";
+    listModal.show();
+    return;
+  }
+
+  // Parse CSV (assumes comma-separated values and newline-separated rows)
+  const rows = csvContent.split(/\r?\n/).filter(r => r.trim() !== "");
+  html += `<table class="table table-bordered"><thead><tr>`;
+
+  // Assume the first row contains headers:
+  const headers = rows[0].split(",");
+  headers.forEach(header => {
+    html += `<th>${header.trim()}</th>`;
+  });
+  html += `<th>Action</th></tr></thead><tbody>`;
+
+  // Process the rest of the rows and create table rows for the files
+  for (let i = 1; i < rows.length; i++) {
+    const cols = rows[i].split(",");
+    html += `<tr>`;
+    cols.forEach(col => {
+      let cleanCol = col.trim().replace(/^"(.*)"$/, '$1').replace(/[\r\n]+/g, '');
+      html += `<td>${cleanCol}</td>`;
+    });
+    // Use the cleaned filename for the Get button
+    let filename = cols[0].trim().replace(/^"(.*)"$/, '$1').replace(/[\r\n]+/g, '');
+    html += `<td><button class="btn btn-sm btn-success" onclick="sendGetCommand('${encodeURIComponent(filename)}')">Get</button></td>`;
+    html += `</tr>`;
+  }
+
+  html += `</tbody></table>`;
+
+  // Now, append the file list below the CMD/RSP details
+  document.getElementById('listModalBody').innerHTML = html;
+
+  // Show the modal with the CMD and RSP info at the top, followed by the file list
+  listModal.show();
+}
+
+
+
+function sendGetCommand(encodedFilename) {
+  const filename = decodeURIComponent(encodedFilename);
+  sendCmdPacket("GET " + filename);
+  updateStatus("Sent GET command for file: " + filename);
+  // Close the modal (using the Bootstrap Modal instance)
+  listModal.hide();
+  // Scroll to the bottom of the main page smoothly
+  window.scrollTo({ top: document.body.scrollHeight, behavior: 'smooth' });
+}
+
+function handlePutRsp(responseText) {
+  const rsp = parseRspPacket(responseText);
+
+  if (rsp && rsp.cmdID === listCmdID) {
+    document.getElementById('rspDetails').innerText = `RSP Received: ${rsp.status === 1 ? 'Success' : 'Failed'} - ${rsp.msg}`;
+    
+    if (rsp.status === 1) {
+      document.getElementById('fileTransferStatus').innerText = 'Proceeding with file transfer...';
+      sendFile(); // Proceed to send the file after success
+    } else {
+      document.getElementById('fileTransferStatus').innerText = 'File transfer failed. Please try again.';
+    }
+  }
+}
+
+// Attach this function to the event where the response is processed
+// For example, process the response after receiving the RSP from the file server
+
+
+function processRsp(responseText) {
+  const rsp = parseRspPacket(responseText);
+  
+  if (rsp) {
+    // Log the received and expected cmdIDs for debugging
+    console.log("Received RSP cmdID:", rsp.cmdID);  // Log the cmdID from RSP
+
+    // Check if the cmdID matches the expected cmdID for the LIST command
+    if (rsp.cmdID === listCmdID) {
+      console.log("LIST command response received.");
+      console.log("Expected listCmdID:", listCmdID);  // Log the expected listCmdID
+      console.log("Received RSP:", rsp);
+      document.getElementById('listRspDetails').innerText = `RSP Received: ${rsp.status === 1 ? 'Success' : 'Failed'} - ${rsp.msg}`;
+
+    // Check if the cmdID matches the expected cmdID for the PUT command
+    } else if (rsp.cmdID === putCmdID) {
+      console.log("PUT command response received.");
+      console.log("Expected putCmdID:", putCmdID);    // Log the expected putCmdID
+      console.log("Received RSP:", rsp);
+      document.getElementById('rspDetails').innerText = `RSP Received: ${rsp.status === 1 ? 'Success' : 'Failed'} - ${rsp.msg}`;
+      
+      if (rsp.status === 1) {
+        document.getElementById('fileTransferStatus').innerText = 'Proceeding with file transfer...';
+
+        // Now we proceed with the file transfer as usual
+        // Use putCmdID as fileId
+        fileId = putCmdID;
+
+        // Get the file input element
+        const fileInput = document.getElementById('fileInput');
+        const file = fileInput.files[0];  // Ensure `file` is initialized here!
+
+        // Validate user input before proceeding
+        if (!sender || !receiver || !file) {
+          alert("Please enter your callsign, receiver callsign, and select a file.");
+          return;
+        }
+
+        // Handle compression if selected
+        const compress = document.getElementById('compressCheckbox').checked;
+        const encodingMethod = document.getElementById('encodingMethod').value;
+
+        // Set burst size based on the selected options
+        if (document.getElementById('autoBurstCheckbox').checked) {
+          burstSize = 0;
+          currentDynamicBurstIndex = 2;
+          currentBurstSizeDynamic = dynamicBurstSizes[currentDynamicBurstIndex];
+        } else {
+          let sliderIndex = parseInt(document.getElementById('burstSlider').value, 10);
+          burstSize = dynamicBurstSizes[sliderIndex];
+        }
+
+        // Prepare the file for sending
+        const reader = new FileReader();
+        reader.onload = function(e) {
+          const arrayBuffer = e.target.result;
+          const fileData = new Uint8Array(arrayBuffer);
+          let finalData;
+
+          // Handle compression if selected
+          try {
+            finalData = compress ? pako.deflate(fileData, { level: 9 }) : fileData;
+          } catch (err) {
+            updateStatus("Compression error: " + err);
+            return;
+          }
+
+          // Generate MD5 checksum and prepare for sending
+          const md5 = CryptoJS.MD5(CryptoJS.lib.WordArray.create(fileData)).toString();
+          const fileDataChunksCount = Math.ceil(finalData.length / CHUNK_SIZE);
+          const totalPacketsExpected = fileDataChunksCount;
+          const timeoutSeconds = parseFloat(document.getElementById('timeoutSeconds').value) || 5.0;
+          const timeoutRetries = parseInt(document.getElementById('timeoutRetries').value, 10) || 5;
+
+          // Build the header for the file transfer
+          const headerStr = timeoutSeconds + "|" + timeoutRetries + "|" + file.name + "|" + fileData.length + "|" + finalData.length + "|" + md5 + "|" + fileId + "|" + (encodingMethod === 'base64' ? "1" : "0") + "|" + (compress ? "1" : "0") + "|" + (totalPacketsExpected + 1);
+          const headerPayload = new TextEncoder().encode(headerStr);
+
+          // Initialize the file data chunks
+          fileDataChunks = [];
+          fileDataChunks.push(headerPayload);
+
+          for (let i = 0; i < fileDataChunksCount; i++) {
+            const start = i * CHUNK_SIZE;
+            const end = Math.min(start + CHUNK_SIZE, finalData.length);
+            let chunk = finalData.slice(start, end);
+
+            // Base64 encoding if selected
+            if (encodingMethod === 'base64') {
+              let binaryString = "";
+              for (let j = 0; j < chunk.length; j++) {
+                binaryString += String.fromCharCode(chunk[j]);
+              }
+              let base64Str = btoa(binaryString);
+              chunk = new TextEncoder().encode(base64Str);
+            }
+            fileDataChunks.push(chunk);
+          }
+
+          totalPackets = fileDataChunks.length;
+          currentPacketIndex = 0;
+          currentRetries = 0;
+          totalRetries = 0;
+          fileTransferInProgress = true;
+          headerAckReceived = false;
+          burstInProgress = false;
+          missingPackets = [];
+          highestPacketSentSoFar = 0;
+
+          // Store transfer statistics
+          sentFileStats = {
+            fileName: file.name,
+            receiver: receiver,
+            originalSize: fileData.length,
+            compressedSize: finalData.length,
+            startTime: Date.now(),
+            totalRetries: 0,
+            bytesSent: 0,
+            totalPackets: totalPackets,
+            fileId: fileId
+          };
+
+          updateStatus(`File compressed from ${fileData.length} bytes to ${finalData.length} bytes. File ID: ${fileId}`);
+          updateSenderProgressUI();
+
+          // Initialize retry variables for the header
+          headerRetryCount = 0;
+          headerAckReceived = false;
+          headerSentTimestamp = Date.now();
+          defaultHeaderTimeout = defaultPerPacketTimeout + (timeoutSeconds * 1000);
+          console.log("Sending header packet (seq 1)");
+
+          // Send the header packet (seq 1)
+          sendPacket(1);
+          headerAckTimer = setTimeout(waitForHeaderAck, defaultHeaderTimeout);
+        };
+
+        reader.onerror = function(e) {
+          updateStatus("Error reading file: " + e);
+        };
+
+        reader.readAsArrayBuffer(file);
+
+      } else {
+        // If the PUT command failed, show failure message
+        document.getElementById('fileTransferStatus').innerText = 'File transfer failed. Please try again.';
+      }
+    } else {
+      console.log("CmdID mismatch. Expected listCmdID or putCmdID but got:", rsp.cmdID);
+      document.getElementById('rspDetails').innerText = `CmdID mismatch. Expected ${listCmdID ? listCmdID : putCmdID} but got ${rsp.cmdID}`;
+    }
+  } else {
+    console.log("Failed to parse RSP packet:", responseText);
+  }
+}
+
+
+
+
+
   </script>
 </body>
 </html>
