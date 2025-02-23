@@ -222,6 +222,10 @@ func parsePacket(rawFrame []byte) *Packet {
 
 	// The first 16 bytes are the AX.25 header.
 	header := unesc[:16]
+	// Decode sender and receiver from the header.
+	receiver := decodeAX25Address(header[0:7])
+	sender := decodeAX25Address(header[7:14])
+
 	// The remainder is the info field (and payload).
 	infoAndPayload := unesc[16:]
 	if len(infoAndPayload) == 0 {
@@ -231,22 +235,12 @@ func parsePacket(rawFrame []byte) *Packet {
 	prefix := string(infoAndPayload[:min(50, len(infoAndPayload))])
 
 	// ----- ACK Packet Branch -----
+	// New ACK format: "fileID:ACK:ackValue:" (fields separated by colons)
 	if strings.Contains(prefix, "ACK:") {
 		fields := strings.Split(string(infoAndPayload), ":")
-		if len(fields) >= 4 {
-			srParts := strings.Split(fields[0], ">")
-			if len(srParts) != 2 {
-				return &Packet{
-					Type:     "ack",
-					Ack:      strings.TrimSpace(fields[len(fields)-1]),
-					RawInfo:  string(infoAndPayload),
-					RawFrame: rawFrame,
-				}
-			}
-			sender := strings.TrimSpace(srParts[0])
-			receiver := strings.TrimSpace(srParts[1])
-			fileID := strings.TrimSpace(fields[1])
-			ackVal := strings.TrimSpace(fields[3])
+		if len(fields) >= 3 {
+			fileID := strings.TrimSpace(fields[0])
+			ackVal := strings.TrimSpace(fields[2])
 			debugf("Parsed ACK: sender=%s, receiver=%s, fileID=%s, ack=%s", sender, receiver, fileID, ackVal)
 			return &Packet{
 				Type:     "ack",
@@ -258,6 +252,7 @@ func parsePacket(rawFrame []byte) *Packet {
 				RawFrame: rawFrame,
 			}
 		}
+		// Fallback in case of unexpected formatting.
 		ackVal := ""
 		parts := strings.Split(string(infoAndPayload), "ACK:")
 		if len(parts) >= 2 {
@@ -265,6 +260,8 @@ func parsePacket(rawFrame []byte) *Packet {
 		}
 		return &Packet{
 			Type:     "ack",
+			Sender:   sender,
+			Receiver: receiver,
 			Ack:      ackVal,
 			RawInfo:  string(infoAndPayload),
 			RawFrame: rawFrame,
@@ -273,11 +270,8 @@ func parsePacket(rawFrame []byte) *Packet {
 
 	// ----- CMD/RSP Packet Branch -----
 	if strings.HasPrefix(prefix, "CMD:") || strings.HasPrefix(prefix, "RSP:") {
-		// Instead of expecting callsign info in the info field, decode it from the AX.25 header.
-		// In the header, bytes 0-6 contain the destination address and bytes 7-13 contain the source address.
-		receiver := decodeAX25Address(header[0:7])
-		sender := decodeAX25Address(header[7:14])
-		infoStr := string(infoAndPayload) // Typically 64 bytes.
+		// Decode the addresses from the header.
+		infoStr := string(infoAndPayload)
 		return &Packet{
 			Type:     "cmdrsp",
 			Sender:   sender,
@@ -290,6 +284,8 @@ func parsePacket(rawFrame []byte) *Packet {
 
 	// ----- DATA Packet Branch -----
 	var infoField, payload []byte
+	// If the infoAndPayload has at least 27 bytes and bytes 23-27 equal "0001",
+	// treat it as a header packet.
 	if len(infoAndPayload) >= 27 && string(infoAndPayload[23:27]) == "0001" {
 		idx := bytes.IndexByte(infoAndPayload[27:], ':')
 		if idx == -1 {
@@ -311,23 +307,17 @@ func parsePacket(rawFrame []byte) *Packet {
 	var encodingMethod byte = 0
 	infoStr := string(infoField)
 	parts := strings.Split(infoStr, ":")
-	if len(parts) < 4 {
+	if len(parts) < 2 {
 		debugf("Insufficient parts in info field: %s", infoStr)
 		return nil
 	}
-	srParts := strings.Split(parts[0], ">")
-	if len(srParts) != 2 {
-		debugf("Invalid sender/receiver field: %s", parts[0])
-		return nil
-	}
-	sender := strings.TrimSpace(srParts[0])
-	receiver := strings.TrimSpace(srParts[1])
-	fileID := strings.TrimSpace(parts[1])
-	seqBurst := strings.TrimSpace(parts[2])
-	var seq int
-	var burstTo int
+	// In the new design, field 0 is the fileID.
+	fileID := strings.TrimSpace(parts[0])
+	seqBurst := strings.TrimSpace(parts[1])
+	var seq, burstTo int
 	if strings.Contains(seqBurst, "/") {
-		seq = 1 // header always seq 1
+		// Header packet: e.g. "0001XXXX/YYYY"
+		seq = 1
 		if len(seqBurst) >= 8 {
 			burstPart := seqBurst[4:8]
 			b, err := strconv.ParseInt(burstPart, 16, 32)
@@ -337,6 +327,7 @@ func parsePacket(rawFrame []byte) *Packet {
 			burstTo = int(b)
 		}
 	} else {
+		// Data packet: exactly 8 hex digits.
 		if len(seqBurst) != 8 {
 			return nil
 		}
@@ -378,37 +369,35 @@ func min(a, b int) int {
 func logHeaderDetails(payload []byte, fileID, sender, receiver string) {
 	headerStr := string(payload)
 	fields := strings.Split(headerStr, "|")
-	if len(fields) < 10 {
-		log.Printf("[Repeater] HEADER for fileID %s from %s->%s: insufficient header fields: %s", fileID, sender, receiver, headerStr)
+	if len(fields) != 7 {
+		log.Printf("[Repeater] HEADER for fileID %s from %s->%s: expected 7 header fields, got %d: %s", fileID, sender, receiver, len(fields), headerStr)
 		return
 	}
 	timeoutSec := fields[0]
 	timeoutRetries := fields[1]
 	filename := fields[2]
-	origSize := fields[3]
-	compSize := fields[4]
-	md5Hash := fields[5]
-	encodingMethod := fields[7]
-	compFlag := fields[8]
-	totalPackets := fields[9]
+	fileIDField := fields[3]
+	encodingMethod := fields[4]
+	compFlag := fields[5]
+	totalPackets := fields[6]
 
-	encodingStr := encodingMethod
-	if encodingMethod == "0" {
-		encodingStr = "binary"
-	} else if encodingMethod == "1" {
+	encodingStr := "binary"
+	if encodingMethod == "1" {
 		encodingStr = "base64"
+	}
+	compStr := "No"
+	if compFlag == "1" {
+		compStr = "Yes"
 	}
 
 	log.Printf("[Repeater] HEADER for fileID %s:", fileID)
 	log.Printf("           Filename       : %s", filename)
 	log.Printf("           Timeout Secs   : %s", timeoutSec)
 	log.Printf("           Timeout Retries: %s", timeoutRetries)
-	log.Printf("           Orig Size      : %s", origSize)
-	log.Printf("           Comp Size      : %s", compSize)
-	log.Printf("           MD5            : %s", md5Hash)
-	log.Printf("           Compression    : %s", compFlag)
-	log.Printf("           Total Packets  : %s", totalPackets)
+	log.Printf("           FileID         : %s", fileIDField)
 	log.Printf("           Encoding Method: %s", encodingStr)
+	log.Printf("           Compression    : %s", compStr)
+	log.Printf("           Total Packets  : %s", totalPackets)
 }
 
 //

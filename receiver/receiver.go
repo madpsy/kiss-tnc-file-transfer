@@ -17,11 +17,11 @@ import (
 	"net"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"sync"
 	"time"
-	"path/filepath"
 )
 
 // ---------------------
@@ -66,13 +66,13 @@ var allowedCallsigns []string
 // ---------------------
 
 func callsignAllowed(callsign string) bool {
-    cs := strings.ToUpper(strings.TrimSpace(callsign))
-    for _, pattern := range allowedCallsigns {
-        if match, err := filepath.Match(pattern, cs); err == nil && match {
-            return true
-        }
-    }
-    return false
+	cs := strings.ToUpper(strings.TrimSpace(callsign))
+	for _, pattern := range allowedCallsigns {
+		if match, err := filepath.Match(pattern, cs); err == nil && match {
+			return true
+		}
+	}
+	return false
 }
 
 // ---------------------
@@ -147,29 +147,56 @@ func extractKISSFrames(data []byte) ([][]byte, []byte) {
 	return frames, data
 }
 
-// padCallsign pads and uppercases a callsign to 9 characters.
-func padCallsign(cs string) string {
-	return fmt.Sprintf("%-9s", strings.ToUpper(cs))
-}
+// --- Updated Callsign Encoding/Decoding ---
 
 // encodeAX25Address encodes an AX.25 address field for the given callsign.
 func encodeAX25Address(callsign string, isLast bool) []byte {
-	parts := strings.Split(strings.ToUpper(callsign), "-")
-	call := parts[0]
+	// Split the callsign on "-" to separate the base and SSID.
+	parts := strings.Split(callsign, "-")
+	call := strings.ToUpper(parts[0])
 	if len(call) < 6 {
 		call = call + strings.Repeat(" ", 6-len(call))
 	} else if len(call) > 6 {
 		call = call[:6]
 	}
+	ssid := 0
+	if len(parts) > 1 {
+		var err error
+		ssid, err = strconv.Atoi(parts[1])
+		if err != nil {
+			ssid = 0
+		}
+	}
 	addr := make([]byte, 7)
 	for i := 0; i < 6; i++ {
 		addr[i] = call[i] << 1
 	}
-	addr[6] = 0x60
+	// The 7th byte: bits 1-4 store the SSID (shifted left by 1) and bits 5-7 are set (0x60).
+	addr[6] = byte(((ssid & 0x0F) << 1) | 0x60)
 	if isLast {
 		addr[6] |= 0x01
 	}
 	return addr
+}
+
+// decodeAX25Address decodes a 7‑byte AX.25 address into its full callsign,
+// including the SSID if non‑zero.
+func decodeAX25Address(addr []byte) string {
+	if len(addr) < 7 {
+		return ""
+	}
+	var call string
+	for i := 0; i < 6; i++ {
+		// Each character is stored shifted left by 1; shift right to decode.
+		call += string(addr[i] >> 1)
+	}
+	call = strings.TrimSpace(call)
+	// Decode SSID from bits 1-4 of the 7th byte.
+	ssid := (addr[6] >> 1) & 0x0F
+	if ssid != 0 {
+		call = fmt.Sprintf("%s-%d", call, ssid)
+	}
+	return call
 }
 
 // buildAX25Header builds an AX.25 header using the source and destination callsigns.
@@ -200,59 +227,76 @@ type Packet struct {
 	EncodingMethod byte   // 0 = binary, 1 = base64 (only set in header packet)
 }
 
+func min(a, b int) int {
+	if a < b {
+		return a
+	}
+	return b
+}
+
 // parsePacket parses an unescaped packet.
 func parsePacket(packet []byte) *Packet {
 	if len(packet) < 16 {
 		return nil
 	}
-	// Skip the first 16 bytes (AX.25 header)
+	// Extract receiver from the first 7 bytes and sender from the next 7 bytes.
+	receiver := decodeAX25Address(packet[0:7])
+	sender := decodeAX25Address(packet[7:14])
 	infoAndPayload := packet[16:]
-	// Try to detect an ACK packet
+
+	// FIRST: Check if this is an ACK packet (including FIN-ACK).
 	prefix := string(infoAndPayload[:min(50, len(infoAndPayload))])
 	if strings.Contains(prefix, "ACK:") {
 		fullInfo := string(infoAndPayload)
-		parts := strings.Split(fullInfo, "ACK:")
-		if len(parts) >= 2 {
-			ackVal := strings.Trim(strings.Trim(parts[1], ":"), " ")
+		partsAck := strings.Split(fullInfo, "ACK:")
+		if len(partsAck) >= 2 {
+			ackVal := strings.Trim(strings.Trim(partsAck[1], ":"), " ")
 			return &Packet{
-				Type:    "ack",
-				Ack:     ackVal,
-				RawInfo: fullInfo,
+				Type:     "ack",
+				Sender:   sender,
+				Receiver: receiver,
+				Ack:      ackVal,
+				RawInfo:  fullInfo,
 			}
 		}
 	}
+
+	// Otherwise, treat as a data packet.
+	// Use a simple heuristic: find the first two colons.
+	firstColon := bytes.IndexByte(infoAndPayload, ':')
+	if firstColon == -1 {
+		return nil
+	}
+	secondColon := bytes.IndexByte(infoAndPayload[firstColon+1:], ':')
+	if secondColon == -1 {
+		return nil
+	}
+	infoFieldEnd := firstColon + 1 + secondColon + 1
 	var infoField, payload []byte
-	// For header packets (seq==1), the info field ends with a colon after "0001"
-	if len(infoAndPayload) >= 27 && string(infoAndPayload[23:27]) == "0001" {
-		idx := bytes.IndexByte(infoAndPayload[27:], ':')
-		if idx == -1 {
-			return nil
-		}
-		endIdx := 27 + idx + 1
-		infoField = infoAndPayload[:endIdx]
-		// For header packets, the sender embeds the encoding method inside the header payload.
-		payload = infoAndPayload[endIdx:]
+	if infoFieldEnd < 32 {
+		// Header packet: variable-length info field.
+		infoField = infoAndPayload[:infoFieldEnd]
+		payload = infoAndPayload[infoFieldEnd:]
 	} else {
-		// For data packets: fixed info field length is exactly 32 bytes.
-		if len(infoAndPayload) < 32 {
-			return nil
-		}
+		// Data packet: fixed 32-byte info field.
 		infoField = infoAndPayload[:32]
 		payload = infoAndPayload[32:]
 	}
+
 	infoStr := string(infoField)
 	parts := strings.Split(infoStr, ":")
-	if len(parts) < 4 {
-		return nil
+	var fileID, seqBurst string
+	if len(parts) == 3 {
+		fileID = strings.TrimSpace(parts[0])
+		seqBurst = strings.TrimSpace(parts[1])
+	} else {
+		if len(parts) < 4 {
+			return nil
+		}
+		fileID = strings.TrimSpace(parts[1])
+		seqBurst = strings.TrimSpace(parts[2])
 	}
-	splitSR := strings.Split(parts[0], ">")
-	if len(splitSR) != 2 {
-		return nil
-	}
-	sender := strings.TrimSpace(splitSR[0])
-	receiver := strings.TrimSpace(splitSR[1])
-	fileID := strings.TrimSpace(parts[1])
-	seqBurst := strings.TrimSpace(parts[2])
+
 	var seq int
 	var burstTo int
 	total := 0
@@ -288,7 +332,7 @@ func parsePacket(packet []byte) *Packet {
 		seq = int(seqInt)
 		burstTo = int(burstInt)
 	}
-	// For header packets (seq==1), parse the header payload to extract the encoding method.
+
 	var encodingMethod byte = 0
 	if seq == 1 {
 		headerFields := strings.Split(string(payload), "|")
@@ -298,6 +342,7 @@ func parsePacket(packet []byte) *Packet {
 			}
 		}
 	}
+
 	return &Packet{
 		Type:           "data",
 		Sender:         sender,
@@ -310,13 +355,6 @@ func parsePacket(packet []byte) *Packet {
 		RawInfo:        infoStr,
 		EncodingMethod: encodingMethod,
 	}
-}
-
-func min(a, b int) int {
-	if a < b {
-		return a
-	}
-	return b
 }
 
 // ---------------------
@@ -473,17 +511,13 @@ func (fr *FrameReader) Run() {
 	for fr.running {
 		data, err := fr.conn.RecvData(100 * time.Millisecond)
 		if err != nil {
-			// Log the error and force an immediate reconnect by setting lastDataTime very old.
-			if err != nil {
-    // Suppress logging if the error is due to a closed connection.
-    if !(err == io.EOF || strings.Contains(err.Error(), "use of closed network connection")) {
-        log.Printf("Receive error: %v", err)
-    }
-    setLastDataTime(time.Unix(0, 0))
-    fr.running = false
-    break
-}
-
+			// Suppress logging if the error is due to a closed connection.
+			if !(err == io.EOF || strings.Contains(err.Error(), "use of closed network connection")) {
+				log.Printf("Receive error: %v", err)
+			}
+			setLastDataTime(time.Unix(0, 0))
+			fr.running = false
+			break
 		}
 		if len(data) > 0 {
 			// Update global lastDataTime when data is received.
@@ -569,8 +603,10 @@ func computeCumulativeAck(t *Transfer) string {
 
 // sendAck builds and sends an ACK packet.
 func sendAck(conn KISSConnection, myCallsign, remote, fileID, ackStr string) {
-	info := fmt.Sprintf("%s>%s:%s:ACK:%s", padCallsign(myCallsign), padCallsign(remote), fileID, ackStr)
-	ackPkt := append(buildAX25Header(myCallsign, remote), []byte(info)...)
+	// Directly use the AX.25 header for callsign formatting.
+	// Build the AX.25 header with the sender (myCallsign) and receiver (remote) callsigns.
+	ackPkt := append(buildAX25Header(myCallsign, remote), []byte(fmt.Sprintf("%s:ACK:%s", fileID, ackStr))...)
+	// Build the KISS frame and send it.
 	frame := buildKISSFrame(ackPkt)
 	conn.SendFrame(frame)
 	log.Printf("Sent ACK: %s for file %s", ackStr, fileID)
@@ -582,22 +618,22 @@ func sendAck(conn KISSConnection, myCallsign, remote, fileID, ackStr string) {
 
 // Arguments holds the command‑line arguments.
 type Arguments struct {
-	MyCallsign     string  // Your callsign (required)
-	Connection     string  // "tcp" or "serial"
-	Debug          bool    // Enable debug output
-	Host           string  // TCP host
-	Port           int     // TCP port
-	SerialPort     string  // Serial port (e.g. COM3 or /dev/ttyUSB0)
-	Baud           int     // Baud rate for serial
-	OneFile        bool    // Exit after successfully receiving one file
-	Execute        string  // If received file's name matches this, execute it with bash instead of saving.
-	Replace        bool    // Overwrite existing files if a new file is received with the same name.
-	OnlyFrom       string  // Only accept files from the specified callsign.
-	ExecuteTimeout float64 // Maximum seconds to allow executed file to run (0 means unlimited)
-	Stdout         bool    // Output received file to stdout instead of saving
-	TcpReadDeadline int    // tcp-read-deadline (in seconds) for TCP inactivity detection.
-        AllowedCallsigns string  // allowed sender callsigns
-	FileID          string  // Specify file ID
+	MyCallsign       string  // Your callsign (required)
+	Connection       string  // "tcp" or "serial"
+	Debug            bool    // Enable debug output
+	Host             string  // TCP host
+	Port             int     // TCP port
+	SerialPort       string  // Serial port (e.g. COM3 or /dev/ttyUSB0)
+	Baud             int     // Baud rate for serial
+	OneFile          bool    // Exit after successfully receiving one file
+	Execute          string  // If received file's name matches this, execute it with bash instead of saving.
+	Replace          bool    // Overwrite existing files if a new file is received with the same name.
+	OnlyFrom         string  // Only accept files from the specified callsign.
+	ExecuteTimeout   float64 // Maximum seconds to allow executed file to run (0 means unlimited)
+	Stdout           bool    // Output received file to stdout instead of saving
+	TcpReadDeadline  int     // tcp-read-deadline (in seconds) for TCP inactivity detection.
+	AllowedCallsigns string  // Comma delimited list of valid sender callsigns (optional; supports wildcards, e.g. MM5NDH-*,*-15)
+	FileID           string  // Specify file ID
 }
 
 func parseArguments() *Arguments {
@@ -615,8 +651,8 @@ func parseArguments() *Arguments {
 	flag.Float64Var(&args.ExecuteTimeout, "execute-timeout", 0, "Maximum seconds to allow executed file to run (0 means unlimited)")
 	flag.BoolVar(&args.Stdout, "stdout", false, "Output the received file to stdout instead of saving to disk")
 	flag.IntVar(&args.TcpReadDeadline, "tcp-read-deadline", 600, "Time (in seconds) without data before triggering reconnect (TCP only)")
-        flag.StringVar(&args.AllowedCallsigns, "callsigns", "", "Comma delimited list of valid sender callsigns (optional; supports wildcards, e.g. MM5NDH-*,*-15)")
-	flag.StringVar(&args.FileID, "fileid", "", "Specify file ID (2 alphanumeric characters). Only allowed with --one-file.")	
+	flag.StringVar(&args.AllowedCallsigns, "callsigns", "", "Comma delimited list of valid sender callsigns (optional; supports wildcards, e.g. MM5NDH-*,*-15)")
+	flag.StringVar(&args.FileID, "fileid", "", "Specify file ID (2 alphanumeric characters). Only allowed with --one-file.")
 	flag.Parse()
 
 	if args.MyCallsign == "" {
@@ -626,19 +662,19 @@ func parseArguments() *Arguments {
 		log.Fatalf("--serial-port is required for serial connection.")
 	}
 	if args.FileID != "" {
-	   if !args.OneFile {
-	     log.Fatalf("--fileid can only be used with --one-file.")
-       }
-       if len(args.FileID) != 2 {
-           log.Fatalf("--fileid must be exactly 2 characters long.")
-       }
-       // Check that each character is alphanumeric.
-       for _, ch := range args.FileID {
-           if !(('0' <= ch && ch <= '9') || ('A' <= ch && ch <= 'Z') || ('a' <= ch && ch <= 'z')) {
-               log.Fatalf("--fileid must contain only alphanumeric characters.")
-           }
-         }
-       }
+		if !args.OneFile {
+			log.Fatalf("--fileid can only be used with --one-file.")
+		}
+		if len(args.FileID) != 2 {
+			log.Fatalf("--fileid must be exactly 2 characters long.")
+		}
+		// Check that each character is alphanumeric.
+		for _, ch := range args.FileID {
+			if !(('0' <= ch && ch <= '9') || ('A' <= ch && ch <= 'Z') || ('a' <= ch && ch <= 'z')) {
+				log.Fatalf("--fileid must contain only alphanumeric characters.")
+			}
+		}
+	}
 	return args
 }
 
@@ -648,13 +684,13 @@ func parseArguments() *Arguments {
 
 func receiverMain(args *Arguments) {
 	if args.AllowedCallsigns != "" {
-	    for _, cs := range strings.Split(args.AllowedCallsigns, ",") {
-	        cs = strings.ToUpper(strings.TrimSpace(cs))
-	        if cs != "" {
-	            allowedCallsigns = append(allowedCallsigns, cs)
-	        }
-	    }
-	    log.Printf("Allowed callsign patterns: %v", allowedCallsigns)
+		for _, cs := range strings.Split(args.AllowedCallsigns, ",") {
+			cs = strings.ToUpper(strings.TrimSpace(cs))
+			if cs != "" {
+				allowedCallsigns = append(allowedCallsigns, cs)
+			}
+		}
+		log.Printf("Allowed callsign patterns: %v", allowedCallsigns)
 	}
 	var conn KISSConnection
 	var err error
@@ -732,8 +768,8 @@ func receiverMain(args *Arguments) {
 				continue
 			}
 			if args.FileID != "" && parsed.FileID != args.FileID {
-			   log.Printf("Ignoring packet: fileid mismatch (got %s, expected %s).", parsed.FileID, args.FileID)
-			   continue
+				log.Printf("Ignoring packet: fileid mismatch (got %s, expected %s).", parsed.FileID, args.FileID)
+				continue
 			}
 			seq := parsed.Seq
 			fileID := parsed.FileID
@@ -748,11 +784,11 @@ func receiverMain(args *Arguments) {
 
 			// If allowed callsigns are set, filter based on them.
 			if len(allowedCallsigns) > 0 {
-			    if !callsignAllowed(parsed.Sender) {
-			        log.Printf("Dropping packet for file %s from %s: sender callsign not allowed",
-			            parsed.FileID, parsed.Sender)
-			        continue
-    				}
+				if !callsignAllowed(parsed.Sender) {
+					log.Printf("Dropping packet for file %s from %s: sender callsign not allowed",
+						parsed.FileID, parsed.Sender)
+					continue
+				}
 			}
 
 			// If the transfer has not yet started, only accept header packets (seq == 1)
@@ -872,18 +908,17 @@ func receiverMain(args *Arguments) {
 						break
 					}
 					// Use the encoding method from the header.
-		if transfer.EncodingMethod == 1 {
-    decoded, err := base64.StdEncoding.DecodeString(string(part))
-    if err != nil {
-        log.Printf("Error decoding base64 for packet %d: %v", i, err)
-        complete = false
-        break
-    }
-    fileDataBuffer.Write(decoded)
-} else {
-    fileDataBuffer.Write(part)
-}
-
+					if transfer.EncodingMethod == 1 {
+						decoded, err := base64.StdEncoding.DecodeString(string(part))
+						if err != nil {
+							log.Printf("Error decoding base64 for packet %d: %v", i, err)
+							complete = false
+							break
+						}
+						fileDataBuffer.Write(decoded)
+					} else {
+						fileDataBuffer.Write(part)
+					}
 				}
 				if !complete {
 					continue

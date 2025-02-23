@@ -32,7 +32,7 @@ import (
 const (
 	KISS_FLAG     = 0xC0
 	KISS_CMD_DATA = 0x00
-	CHUNK_SIZE    = 205
+	CHUNK_SIZE    = 225
 )
 
 // ---------------------
@@ -176,15 +176,13 @@ func buildAX25Header(source, destination string) []byte {
 // For the header packet (seq==1), the info field contains total packet count etc.
 // For data packets (seq>=2), a different info field format is used.
 func buildPacket(sender, receiver string, seq, totalDataPackets int, payload []byte, fileID string, burstTo int, encodingMethod byte) []byte {
-	sStr := padCallsign(sender)
-	rStr := padCallsign(receiver)
 	var info string
 	if seq == 1 {
 		totalHex := fmt.Sprintf("%04X", totalDataPackets)
 		// The header info field includes the encodingMethod as a distinct field.
-		info = fmt.Sprintf("%s>%s:%s:0001%s/%s:", sStr, rStr, fileID, fmt.Sprintf("%04X", burstTo), totalHex)
+		info = fmt.Sprintf("%s:0001%s/%s:", fileID, fmt.Sprintf("%04X", burstTo), totalHex)
 	} else {
-		info = fmt.Sprintf("%s>%s:%s:%s%s:", sStr, rStr, fileID, fmt.Sprintf("%04X", seq), fmt.Sprintf("%04X", burstTo))
+		info = fmt.Sprintf("%s:%s%s:", fileID, fmt.Sprintf("%04X", seq), fmt.Sprintf("%04X", burstTo))
 	}
 	infoBytes := []byte(info)
 	ax25 := buildAX25Header(sender, receiver)
@@ -229,31 +227,30 @@ func parsePacket(packet []byte) *Packet {
 	}
 
 	// Extract sender from the AX.25 header (bytes 7-13 contain the source callsign)
-	senderCallsign := decodeAX25Address(packet[7:14])
+	sender := decodeAX25Address(packet[7:14])
+	receiver := decodeAX25Address(packet[0:7])
 
 	infoAndPayload := packet[16:]
 	// Look for ACK indication.
 	prefix := string(infoAndPayload[:min(50, len(infoAndPayload))])
-	if strings.Contains(prefix, "ACK:") {
-		fullInfo := string(infoAndPayload)
-		parts := strings.Split(fullInfo, "ACK:")
-		if len(parts) >= 2 {
-			ackVal := strings.Trim(strings.Trim(parts[1], ":"), " ")
-			// Attempt to extract fileID from the info field.
-			infoParts := strings.Split(fullInfo, ":")
-			fileID := ""
-			if len(infoParts) > 1 {
-				fileID = strings.TrimSpace(infoParts[1])
-			}
-			return &Packet{
-				Type:    "ack",
-				Sender:  senderCallsign,
-				FileID:  fileID,
-				Ack:     ackVal,
-				RawInfo: fullInfo,
-			}
-		}
-	}
+if strings.Contains(prefix, "ACK:") {
+    fullInfo := string(infoAndPayload)
+    // Split the info field by colon.
+    infoParts := strings.Split(fullInfo, ":")
+    if len(infoParts) >= 3 && strings.ToUpper(strings.TrimSpace(infoParts[1])) == "ACK" {
+        fileID := strings.TrimSpace(infoParts[0])
+        ackVal := strings.TrimSpace(infoParts[2])
+        return &Packet{
+            Type:     "ack",
+            Sender:   sender,   // from the AX.25 header
+            Receiver: receiver, // from the AX.25 header
+            FileID:   fileID,
+            Ack:      ackVal,
+            RawInfo:  fullInfo,
+        }
+    }
+}
+
 	// Otherwise assume data packet.
 	if len(infoAndPayload) < 32 {
 		return nil
@@ -276,12 +273,7 @@ func parsePacket(packet []byte) *Packet {
 	if len(parts) < 4 {
 		return nil
 	}
-	splitSR := strings.Split(parts[0], ">")
-	if len(splitSR) != 2 {
-		return nil
-	}
-	sender := strings.TrimSpace(splitSR[0])
-	receiver := strings.TrimSpace(splitSR[1])
+
 	fileID := strings.TrimSpace(parts[1])
 	seqBurst := strings.TrimSpace(parts[2])
 	var seq int
@@ -321,7 +313,7 @@ func parsePacket(packet []byte) *Packet {
 	}
 	return &Packet{
 		Type:           "data",
-		Sender:         sender, // or senderCallsign (both should be equivalent)
+		Sender:         sender, 
 		Receiver:       receiver,
 		FileID:         fileID,
 		Seq:            seq,
@@ -942,7 +934,7 @@ func sendFile(args *Arguments) error {
 	log.Printf("Total bytes sent: %d bytes in %.2fs (%.2f bytes/s).", totalBytesSent, overallElapsed, overallRate)
 	log.Printf("Total retries: %d.", totalRetries)
 	log.Printf("=====================")
-	finalConfirmationInfo := fmt.Sprintf("%s>%s:%s:ACK:FIN-ACK", padCallsign(args.MyCallsign), padCallsign(args.ReceiverCallsign), fileID)
+	finalConfirmationInfo := fmt.Sprintf("%s:ACK:FIN-ACK", fileID)
 	finalConfirmationPkt := append(buildAX25Header(args.MyCallsign, args.ReceiverCallsign), []byte(finalConfirmationInfo)...)
 	finalFrame := buildKISSFrame(finalConfirmationPkt)
 	conn.SendFrame(finalFrame)
@@ -1303,7 +1295,7 @@ func sendStdin(args *Arguments) error {
 	log.Printf("Total bytes sent: %d bytes in %.2fs (%.2f bytes/s).", totalBytesSent, overallElapsed, overallRate)
 	log.Printf("Total retries: %d.", totalRetries)
 	log.Printf("=====================")
-finalConfirmationInfo := fmt.Sprintf("%s>%s:%s:ACK:FIN-ACK", padCallsign(args.MyCallsign), padCallsign(args.ReceiverCallsign), fileID)
+finalConfirmationInfo := fmt.Sprintf("%s:ACK:FIN-ACK", fileID)
 finalConfirmationPkt := append(buildAX25Header(args.MyCallsign, args.ReceiverCallsign), []byte(finalConfirmationInfo)...)
 finalFrame := buildKISSFrame(finalConfirmationPkt)
 conn.SendFrame(finalFrame)

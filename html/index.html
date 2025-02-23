@@ -487,29 +487,27 @@ function finalizeTransfer() {
     /***********************
      * Receiver ACK Function
      ***********************/
-    function sendAckFromReceiver(sender, fileId, ackStr) {
-      let localCallsign = document.getElementById('senderCallsign').value.trim();
-      const header = padCallsign(localCallsign) + '>' + padCallsign(sender) + ':' + fileId + ':' + "ACK:" + ackStr;
-      const encoder = new TextEncoder();
-      const infoBytes = encoder.encode(header);
-      const ax25Header = buildAX25Header(localCallsign, sender);
-      const ackPacket = new Uint8Array(ax25Header.length + infoBytes.length);
-      ackPacket.set(ax25Header, 0);
-      ackPacket.set(infoBytes, ax25Header.length);
-      const ackKissFrame = buildKissFrame(ackPacket);
-      console.log("Receiver sending ACK:", ackStr);
-      
-      let transferKey = sender + "_" + fileId;
-      if (activeTransfers[transferKey]) {
-        activeTransfers[transferKey].lastAckTime = Date.now();
-      }
-      
-      if (document.getElementById('connectionType').value === 'websockets') {
-        if (socket) socket.emit('raw_kiss_frame', ackKissFrame);
-      } else if (document.getElementById('connectionType').value === 'serial' && serialWriter) {
-        serialWriter.write(ackKissFrame).catch(err => console.error("Error writing ACK:", err));
-      }
-    }
+function sendAckFromReceiver(sender, fileId, ackStr) {
+  let localCallsign = document.getElementById('senderCallsign').value.trim();
+  // Build info field using only fileId, "ACK", and ackStr.
+  const info = fileId + ':' + "ACK" + ':' + ackStr;
+  const encoder = new TextEncoder();
+  const infoBytes = encoder.encode(info);
+  const ax25Header = buildAX25Header(localCallsign, sender);
+  const ackPacket = new Uint8Array(ax25Header.length + infoBytes.length);
+  ackPacket.set(ax25Header, 0);
+  ackPacket.set(infoBytes, ax25Header.length);
+  const ackKissFrame = buildKissFrame(ackPacket);
+  console.log("Receiver sending ACK:", ackStr);
+  
+  // Update transfer record if needed, then send via the appropriate connection.
+  if (document.getElementById('connectionType').value === 'websockets') {
+    if (socket) socket.emit('raw_kiss_frame', ackKissFrame);
+  } else if (document.getElementById('connectionType').value === 'serial' && serialWriter) {
+    serialWriter.write(ackKissFrame).catch(err => console.error("Error writing ACK:", err));
+  }
+}
+
     
     /***********************
      * Helper Functions: Range Compression/Expansion
@@ -600,6 +598,21 @@ function finalizeTransfer() {
       return addr;
     }
     
+function decodeAX25Address(addr) {
+  // Expects a Uint8Array of length 7.
+  let cs = "";
+  for (let i = 0; i < 6; i++) {
+    cs += String.fromCharCode(addr[i] >> 1);
+  }
+  cs = cs.trim();
+  let ssid = (addr[6] >> 1) & 0x0F;
+  if (ssid > 0) {
+    cs += "-" + ssid;
+  }
+  return cs;
+}
+
+
     function buildAX25Header(source, destination) {
       const destAddr = encodeAX25Address(destination, false);
       const srcAddr = encodeAX25Address(source, true);
@@ -616,29 +629,29 @@ function finalizeTransfer() {
     /***********************
      * Packet Building Functions
      ***********************/
-    function buildPacket(sender, receiver, seq, totalPackets, payloadChunk, fileId, burstTo) {
-      let seqStr = seq.toString(16).padStart(4, '0');
-      let burstToStr = burstTo.toString(16).padStart(4, '0');
-      let infoStr = "";
-      if (seq === 1) {
-        let totalStr = (totalPackets - 1).toString(16).padStart(4, '0');
-        infoStr = padCallsign(sender) + '>' + padCallsign(receiver) + ':' +
-                  fileId + ':' + "0001" + burstToStr + '/' + totalStr + ':';
-      } else {
-        infoStr = padCallsign(sender) + '>' + padCallsign(receiver) + ':' +
-                  fileId + ':' + seqStr + burstToStr + ':';
-      }
-      const encoder = new TextEncoder();
-      const infoBytes = encoder.encode(infoStr);
-      const innerPayload = new Uint8Array(infoBytes.length + payloadChunk.length);
-      innerPayload.set(infoBytes, 0);
-      innerPayload.set(payloadChunk, infoBytes.length);
-      const ax25Header = buildAX25Header(sender, receiver);
-      const packetBytes = new Uint8Array(ax25Header.length + innerPayload.length);
-      packetBytes.set(ax25Header, 0);
-      packetBytes.set(innerPayload, ax25Header.length);
-      return packetBytes;
-    }
+function buildPacket(sender, receiver, seq, totalPackets, payloadChunk, fileId, burstTo) {
+  let seqStr = seq.toString(16).padStart(4, '0');
+  let burstToStr = burstTo.toString(16).padStart(4, '0');
+  let infoStr = "";
+  if (seq === 1) {
+    let totalStr = (totalPackets - 1).toString(16).padStart(4, '0');
+    // Header packets now include only the fileId and sequence fields.
+    infoStr = fileId + ':' + "0001" + burstToStr + '/' + totalStr + ':';
+  } else {
+    infoStr = fileId + ':' + seqStr + burstToStr + ':';
+  }
+  const encoder = new TextEncoder();
+  const infoBytes = encoder.encode(infoStr);
+  const innerPayload = new Uint8Array(infoBytes.length + payloadChunk.length);
+  innerPayload.set(infoBytes, 0);
+  innerPayload.set(payloadChunk, infoBytes.length);
+  const ax25Header = buildAX25Header(sender, receiver);
+  const packetBytes = new Uint8Array(ax25Header.length + innerPayload.length);
+  packetBytes.set(ax25Header, 0);
+  packetBytes.set(innerPayload, ax25Header.length);
+  return packetBytes;
+}
+
     
     /***********************
      * Receiver ACK Functions
@@ -673,9 +686,11 @@ function sendCumulativeAck(transfer, sender, forceSend = false) {
 function processAckFrame(infoText) {
   if (infoText.indexOf(":ACK:") === -1) return null;
   let parts = infoText.split(":");
-  if (parts.length < 4) return null;
-  return { fileId: parts[1].trim(), ack: parts[3].trim() };
+  // Expect at least three fields: [fileId, "ACK", ackValue, ...]
+  if (parts.length < 3) return null;
+  return { fileId: parts[0].trim(), ack: parts[2].trim() };
 }
+
 
     
 
@@ -923,19 +938,21 @@ function processRawPacket(packet) {
     return;
   }
 
-  const ax25Frame = packetBytes.slice(2, packetBytes.length - 1);
-  if (ax25Frame.length < 16) {
-    return;
-  }
-  const infoField = ax25Frame.slice(16);
-  let infoText = new TextDecoder().decode(infoField);
+const ax25Frame = packetBytes.slice(2, packetBytes.length - 1);
+if (ax25Frame.length < 16) {
+  return;
+}
+const header = ax25Frame.slice(0, 16); // Extract the first 16 bytes as the AX.25 header
+const infoField = ax25Frame.slice(16);
+let infoText = new TextDecoder().decode(infoField);
+
 
 if (infoText.indexOf(":ACK:FIN-ACK") !== -1) {
-  let parts = infoText.split(":"); // Expected format: "SENDER>RECEIVER", fileId, "ACK", "FIN-ACK"
-  if (parts.length < 4) return;
-  let fileIdFromAck = parts[1].trim();
+  let parts = infoText.split(":"); // Expected format: fileId, "ACK", "FIN-ACK"
+  if (parts.length < 3) return;
+  let fileIdFromAck = parts[0].trim();
   let localCallsign = document.getElementById('senderCallsign').value.trim();
-  // Look up the transfer record by fileId.
+  // Now look up the active transfer using fileIdFromAck
   for (let key in activeTransfers) {
     let transfer = activeTransfers[key];
     if (transfer.header && transfer.header.fileId === fileIdFromAck) {
@@ -945,7 +962,6 @@ if (infoText.indexOf(":ACK:FIN-ACK") !== -1) {
       }
       console.log("Receiver: FIN-ACK received for file", fileIdFromAck, "for transfer", key);
       transfer.finalHandshakeReceived = true;
-      // Now finalize the receiver's side (e.g. update UI, remove the transfer record, etc.)
       delete activeTransfers[key];
       updateReceiverProgressUI();
       return;
@@ -954,6 +970,7 @@ if (infoText.indexOf(":ACK:FIN-ACK") !== -1) {
   console.log("Receiver: FIN-ACK received, but no active transfer matches fileId", fileIdFromAck);
   return;
 }
+
 
 
   // *** NEW: Check for ACK frames before processing as data/header packet ***
@@ -990,24 +1007,43 @@ if (infoText.indexOf(":ACK:") !== -1) {
 
   // *** End of ACK check ***
 
-  // (Now process non-ACK frames as before.)
-  if (infoText.indexOf('>') < 0) {
-    console.log("Packet format invalid: missing '>'");
+
+// Now decode sender/receiver from the header:
+const senderStr = decodeAX25Address(header.slice(7, 14));
+const receiverStr = decodeAX25Address(header.slice(0, 7));
+
+// Then parse the info field which now has the new format:
+// Expected formats:
+//   - ACK packets: fileId + ':' + "ACK" + ':' + ackValue + ':'
+//   - Data packets (header, seq==1): fileId + ':' + "0001XXXX/YYYY" + ':'
+//   - Data packets (seq > 1): fileId + ':' + seq(4 hex digits) + burstTo(4 hex digits) + ':'
+let parts = infoText.split(":");
+if (parts.length < 2) {
+  console.log("Packet format invalid: not enough fields");
+  return;
+}
+let packetFileId = parts[0].trim();
+let seqBurst = parts[1].trim();
+
+let seq, burstTo;
+if (seqBurst.indexOf("/") !== -1) {
+  // Header packet (seq==1); expect format like "0001XXXX/YYYY"
+  seq = 1;
+  if (seqBurst.length < 8) {
+    console.log("Header packet format invalid: insufficient length");
     return;
   }
-  if (infoText.charAt(19) !== ':') {
-    console.log("Packet format invalid: missing ':' at position 19");
+  burstTo = parseInt(seqBurst.substring(4, 8), 16);
+} else {
+  // Data packet; expect exactly 8 hex digits
+  if (seqBurst.length !== 8) {
+    console.log("Data packet format invalid: sequence field length is not 8");
     return;
   }
-  let senderStr   = infoText.substring(0, 9).trim();
-  let receiverStr = infoText.substring(10, 19).trim();
-  let packetFileId = infoText.substring(20, 22).trim();
-  if (infoText.charAt(22) !== ':') {
-    console.log("Packet format invalid: missing colon after file ID.");
-    return;
-  }
-  let seq     = parseInt(infoText.substring(23, 27), 16);
-  let burstTo = parseInt(infoText.substring(27, 31), 16);
+  seq = parseInt(seqBurst.substring(0, 4), 16);
+  burstTo = parseInt(seqBurst.substring(4, 8), 16);
+}
+
 
   // Ignore packets not addressed to me
   if (receiverStr !== document.getElementById('senderCallsign').value.trim()) {
@@ -1017,7 +1053,7 @@ if (infoText.indexOf(":ACK:") !== -1) {
   }
 
   // Calculate payload offset based on sequence number
-  let offset = (seq === 1) ? 37 : 32;
+  let offset = (seq === 1) ? 17 : 12;
   let payloadChunk = unescapeKissData(infoField.slice(offset));
 
   let transferKeyFinal = senderStr + "_" + packetFileId;
