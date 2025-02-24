@@ -1760,7 +1760,7 @@ document.getElementById('receiverCallsign').addEventListener('input', updateList
     
         
         // Send the PUT command and wait for a response.
-        sendCmd("PUT " + file.name)
+        sendCmdWithRetry("PUT " + file.name)
           .then(rsp => {
             document.getElementById('rspResponseCmdRsp').innerText =
               "RSP: " + (rsp.status === 1 ? "Success" : "Failure") + " - " + rsp.message;
@@ -2017,12 +2017,36 @@ document.getElementById('receiverCallsign').addEventListener('input', updateList
         setTimeout(() => {
           if (pendingCmdResponses[cmdID]) {
             delete pendingCmdResponses[cmdID];
-            reject("Timeout waiting for response for CMD ID " + cmdID);
+            reject("Timeout for CMD ID " + cmdID);
           }
         }, timeoutMS);
       });
     }
-    
+
+function sendCmdWithRetry(commandText, maxRetries = 3) {
+  return new Promise((resolve, reject) => {
+    let attempts = 0;
+
+    const attemptSend = () => {
+      attempts++;
+      console.log(`Sending CMD attempt ${attempts}: ${commandText}`);
+      sendCmd(commandText)
+        .then(resolve)
+        .catch((err) => {
+          if (attempts < maxRetries) {
+            console.log(`No RSP within 5 seconds. Retrying CMD "${commandText}" (attempt ${attempts + 1}/${maxRetries})`);
+            attemptSend();
+          } else {
+            reject(`No RSP after ${attempts} attempts: ${err}`);
+          }
+        });
+    };
+
+    attemptSend();
+  });
+}
+
+
     function openListFilesModal() {
       // Clear previous command, response text, and CSV table.
       document.getElementById('cmdSentList').innerText = "";
@@ -2077,40 +2101,98 @@ document.getElementById('receiverCallsign').addEventListener('input', updateList
     
     
     
-    
-    function processListFile(csvText) {
-      // Cache the CSV text so that we can reuse it on subsequent modal openings.
-      cachedListCSV = csvText;
-    
-      // Split into lines and filter out empty ones.
-      const lines = csvText.split('\n').filter(line => line.trim() !== '');
-      if (lines.length === 0) return;
-      
-      let html = '<div class="table-responsive"><table class="table table-striped table-hover table-bordered"><thead><tr>';
-      // Assume the first line is the header.
-      const headers = lines[0].split(',');
-      headers.forEach(header => {
-        html += '<th>' + header.replace(/"/g, '') + '</th>';
-      });
-      html += '<th>Action</th></tr></thead><tbody>';
-      
-      // Process each subsequent row.
-      for (let i = 1; i < lines.length; i++) {
-        const cols = lines[i].split(',');
-        if (cols.length < 3) continue;
-        html += '<tr>';
-        cols.forEach(col => {
-          html += '<td>' + col.replace(/"/g, '') + '</td>';
-        });
-        // Use the file name from the first column (without quotes)
-        const fileName = cols[0].replace(/"/g, '');
-        html += '<td><button class="btn btn-primary btn-sm" onclick="getFile(\'' + fileName + '\')">Get</button></td>';
-        html += '</tr>';
-      }
-      html += '</tbody></table></div>';
-      document.getElementById('listTable').innerHTML = html;
+function processListFile(csvText) {
+  // Cache the CSV text so that we can reuse it on subsequent modal openings.
+  cachedListCSV = csvText;
+
+  // Split into lines and filter out empty ones.
+  const lines = csvText.split('\n').filter(line => line.trim() !== '');
+  if (lines.length === 0) return;
+
+  // Build a search input box.
+  let searchBoxHtml = `<input type="text" id="listSearchBox" class="form-control mb-3" placeholder="Search files...">`;
+
+  // Build the table HTML.
+  let tableHtml = '<div class="table-responsive"><table id="listFilesTable" class="table table-striped table-hover table-bordered"><thead><tr>';
+  // Assume the first line is the header.
+  const headers = lines[0].split(',');
+  headers.forEach(header => {
+    tableHtml += '<th>' + header.replace(/"/g, '') + '</th>';
+  });
+  tableHtml += '<th>Action</th></tr></thead><tbody>';
+
+  // Process each subsequent row.
+  for (let i = 1; i < lines.length; i++) {
+    const cols = lines[i].split(',');
+    if (cols.length < 3) continue;
+    tableHtml += '<tr>';
+    cols.forEach(col => {
+      tableHtml += '<td>' + col.replace(/"/g, '') + '</td>';
+    });
+    // Use the file name from the first column (without quotes).
+    const fileName = cols[0].replace(/"/g, '');
+    tableHtml += '<td><button class="btn btn-primary btn-sm" onclick="getFile(\'' + fileName + '\')">Get</button></td>';
+    tableHtml += '</tr>';
+  }
+  tableHtml += '</tbody></table></div>';
+
+  // Combine search box and table in the modal's listTable container.
+  document.getElementById('listTable').innerHTML = searchBoxHtml + tableHtml;
+
+  // Add search functionality.
+  document.getElementById('listSearchBox').addEventListener('keyup', function () {
+    const filter = this.value.toUpperCase();
+    const table = document.getElementById('listFilesTable');
+    const tr = table.getElementsByTagName('tr');
+    // Skip the header row (assumed to be the first row).
+    for (let i = 1; i < tr.length; i++) {
+      let rowText = tr[i].textContent || tr[i].innerText;
+      tr[i].style.display = rowText.toUpperCase().indexOf(filter) > -1 ? "" : "none";
     }
-    
+  });
+
+  // Main table-sorting function that uses localeCompare for all columns.
+  function sortTableByColumn(table, columnIndex, asc = true) {
+    const tbody = table.tBodies[0];
+    const rows = Array.from(tbody.querySelectorAll("tr"));
+    rows.sort((a, b) => {
+      const aText = a.children[columnIndex].textContent.trim();
+      const bText = b.children[columnIndex].textContent.trim();
+      return asc
+        ? aText.localeCompare(
+            bText,
+            navigator.languages[0] || navigator.language,
+            { numeric: true, ignorePunctuation: true }
+          )
+        : bText.localeCompare(
+            aText,
+            navigator.languages[0] || navigator.language,
+            { numeric: true, ignorePunctuation: true }
+          );
+    });
+    // Append the sorted rows back into the tbody.
+    rows.forEach(row => tbody.appendChild(row));
+  }
+
+  // Attach click listeners to header cells (except the last "Action" column).
+  const table = document.getElementById("listFilesTable");
+  const headerCells = table.querySelectorAll("thead th");
+  headerCells.forEach((th, index) => {
+    // Skip the "Action" column (assumed to be the last header cell).
+    if (index === headerCells.length - 1) return;
+    th.style.cursor = 'pointer';
+    // Use a data attribute to track the current sort order.
+    th.setAttribute("data-sort-asc", "true");
+    th.addEventListener("click", function() {
+      let currentAsc = th.getAttribute("data-sort-asc") === "true";
+      sortTableByColumn(table, index, currentAsc);
+      // Toggle sort order for next click.
+      th.setAttribute("data-sort-asc", (!currentAsc).toString());
+    });
+  });
+}
+
+
     
     
     // New function: when a Get button is clicked.
@@ -2152,7 +2234,7 @@ document.getElementById('receiverCallsign').addEventListener('input', updateList
     
     
     function fetchListFiles() {
-      sendCmd("LIST")
+      sendCmdWithRetry("LIST")
         .then(rsp => {
           const statusText = (rsp.status === 1) ? "Success" : (rsp.status === 0 ? "Failed" : "Unknown");
           document.getElementById('rspResponseList').innerText = "RSP: " + statusText + " - " + rsp.message;
