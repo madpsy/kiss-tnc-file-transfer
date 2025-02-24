@@ -133,6 +133,13 @@ go build -o fileserverclient fileserverclient.go
       <td>Directory from which files are sent for the <code>PUT</code> command and listed with the local <code>LS</code> command.</td>
       <td><code>.</code></td>
     </tr>
+    <tr>
+      <td><code>--run-command</code></td>
+      <td>
+        Optional. Runs a single command non-interactively (e.g. <code>"PUT my-file.txt"</code>) and then exits.
+      </td>
+      <td><em>empty</em></td>
+    </tr>
   </table>
 
   <h2 id="usage">Usage &amp; Examples</h2>
@@ -155,7 +162,7 @@ go build -o fileserverclient fileserverclient.go
 ./fileserverclient --my-callsign=YOURCALL --file-server-callsign=SERVER1 --connection=serial --serial-port=/dev/ttyUSB0 --baud=115200
   </pre>
 
-  <h3>Example 3: File Listing &amp; Transfer Commands</h3>
+  <h3>Example 3: File Listing &amp; Transfer Commands (Interactive Mode)</h3>
   <p>
     Once the client is running, you can enter commands at the prompt. For example:
   </p>
@@ -164,27 +171,32 @@ go build -o fileserverclient fileserverclient.go
       <strong>LS</strong>: Lists files in the local <code>serve-directory</code>.
     </li>
     <li>
-      <strong>LIST</strong>: Requests a remote file listing from the file server. The received CSV output is converted to a formatted table.
+      <strong>LIST</strong>: Requests a remote file listing from the file server.
     </li>
     <li>
-      <strong>GET filename</strong>: Retrieves the specified file from the file server. The file is saved locally (a unique filename is chosen if needed).
+      <strong>GET filename</strong>: Retrieves the specified file from the file server.
     </li>
     <li>
       <strong>PUT filename</strong>: Uploads a file from the <code>serve-directory</code> to the file server.
     </li>
   </ul>
   <p>
-    Example command at the prompt:
+    At the prompt, you might see:
   </p>
   <pre>
 > LS
   </pre>
+
+  <h3>Example 4: Non‑Interactive Command Execution</h3>
   <p>
-    or, to request a remote listing:
+    To run a single command and exit immediately (for example, to upload a file), use the <code>--run-command</code> flag:
   </p>
   <pre>
-> LIST
+./fileserverclient --my-callsign=YOURCALL --file-server-callsign=SERVER1 --run-command="PUT my-file.txt"
   </pre>
+  <p>
+    This command will execute <code>PUT my-file.txt</code> as if entered interactively, then exit once completed.
+  </p>
 
   <h2 id="notes">Additional Notes</h2>
   <ul>

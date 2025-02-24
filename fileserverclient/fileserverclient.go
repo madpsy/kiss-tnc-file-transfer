@@ -43,7 +43,6 @@ var (
 	broadcaster     *Broadcaster   // Global broadcaster for connection data.
 )
 
-
 // csvToPretty converts CSV text into a pretty-printed table.
 func csvToPretty(csvText string) (string, error) {
 	r := csv.NewReader(strings.NewReader(csvText))
@@ -100,55 +99,55 @@ func toInterfaceSlice(strs []string) []interface{} {
 }
 
 func listFormattedFiles(dir string) (string, error) {
-    entries, err := os.ReadDir(dir)
-    if err != nil {
-        return "", err
-    }
-    var files []os.DirEntry
-    for _, entry := range entries {
-        // Filter out directories and hidden files.
-        if !entry.IsDir() && !strings.HasPrefix(entry.Name(), ".") {
-            files = append(files, entry)
-        }
-    }
-    // Sort files alphabetically (case-insensitive).
-    sort.Slice(files, func(i, j int) bool {
-        return strings.ToLower(files[i].Name()) < strings.ToLower(files[j].Name())
-    })
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		return "", err
+	}
+	var files []os.DirEntry
+	for _, entry := range entries {
+		// Filter out directories and hidden files.
+		if !entry.IsDir() && !strings.HasPrefix(entry.Name(), ".") {
+			files = append(files, entry)
+		}
+	}
+	// Sort files alphabetically (case-insensitive).
+	sort.Slice(files, func(i, j int) bool {
+		return strings.ToLower(files[i].Name()) < strings.ToLower(files[j].Name())
+	})
 
-    // Determine dynamic column widths.
-    maxNameLen := len("File Name")
-    maxSizeWidth := len("Size")
-    var fileInfos []os.FileInfo
-    for _, f := range files {
-        info, err := f.Info()
-        if err != nil {
-            continue
-        }
-        fileInfos = append(fileInfos, info)
-        if len(info.Name()) > maxNameLen {
-            maxNameLen = len(info.Name())
-        }
-        sizeStr := fmt.Sprintf("%d", info.Size())
-        if len(sizeStr) > maxSizeWidth {
-            maxSizeWidth = len(sizeStr)
-        }
-    }
+	// Determine dynamic column widths.
+	maxNameLen := len("File Name")
+	maxSizeWidth := len("Size")
+	var fileInfos []os.FileInfo
+	for _, f := range files {
+		info, err := f.Info()
+		if err != nil {
+			continue
+		}
+		fileInfos = append(fileInfos, info)
+		if len(info.Name()) > maxNameLen {
+			maxNameLen = len(info.Name())
+		}
+		sizeStr := fmt.Sprintf("%d", info.Size())
+		if len(sizeStr) > maxSizeWidth {
+			maxSizeWidth = len(sizeStr)
+		}
+	}
 
-    // Build header and separator.
-    headerFormat := fmt.Sprintf("%%-%ds %%-%ds %%%ds\n", maxNameLen, 20, maxSizeWidth)
-    rowFormat := fmt.Sprintf("%%-%ds %%-%ds %%%dd\n", maxNameLen, 20, maxSizeWidth)
-    var output strings.Builder
-    output.WriteString(fmt.Sprintf(headerFormat, "File Name", "Modified Date", "Size"))
-    separatorLen := maxNameLen + 1 + 20 + 1 + maxSizeWidth
-    output.WriteString(strings.Repeat("-", separatorLen) + "\n")
+	// Build header and separator.
+	headerFormat := fmt.Sprintf("%%-%ds %%-%ds %%%ds\n", maxNameLen, 20, maxSizeWidth)
+	rowFormat := fmt.Sprintf("%%-%ds %%-%ds %%%dd\n", maxNameLen, 20, maxSizeWidth)
+	var output strings.Builder
+	output.WriteString(fmt.Sprintf(headerFormat, "File Name", "Modified Date", "Size"))
+	separatorLen := maxNameLen + 1 + 20 + 1 + maxSizeWidth
+	output.WriteString(strings.Repeat("-", separatorLen) + "\n")
 
-    // Write each file's details.
-    for _, info := range fileInfos {
-        modTime := info.ModTime().Format("2006-01-02 15:04:05")
-        output.WriteString(fmt.Sprintf(rowFormat, info.Name(), modTime, info.Size()))
-    }
-    return output.String(), nil
+	// Write each file's details.
+	for _, info := range fileInfos {
+		modTime := info.ModTime().Format("2006-01-02 15:04:05")
+		output.WriteString(fmt.Sprintf(rowFormat, info.Name(), modTime, info.Size()))
+	}
+	return output.String(), nil
 }
 
 func generateCmdID() string {
@@ -176,6 +175,7 @@ type Arguments struct {
 	Debug              bool   // enable debug logging
 	SaveDirectory      string // directory to save files (formerly -directory)
 	ServeDirectory     string // directory to send files from for sender logic
+	RunCommand         string // Optional: run a single command non-interactively and exit.
 }
 
 func parseArguments() *Arguments {
@@ -193,6 +193,8 @@ func parseArguments() *Arguments {
 	flag.BoolVar(&args.Debug, "debug", false, "Enable debug logging")
 	flag.StringVar(&args.SaveDirectory, "save-directory", ".", "Directory to save files (optional, default current directory)")
 	flag.StringVar(&args.ServeDirectory, "serve-directory", ".", "Directory to send files from for sender logic")
+	// New optional flag to run a single command and exit.
+	flag.StringVar(&args.RunCommand, "run-command", "", "Run a single command non-interactively (e.g., \"PUT my-file.txt\") and exit")
 	flag.Parse()
 
 	if args.MyCallsign == "" {
@@ -291,8 +293,8 @@ func (s *SerialKISSConnection) Close() error {
 }
 
 func getUniqueFilePath(dir, filename string) string {
-	ext := filepath.Ext(filename)                      // e.g., ".txt"
-	baseName := strings.TrimSuffix(filename, ext)      // e.g., "file"
+	ext := filepath.Ext(filename)                 // e.g., ".txt"
+	baseName := strings.TrimSuffix(filename, ext) // e.g., "file"
 	candidate := filepath.Join(dir, filename)
 	if _, err := os.Stat(candidate); os.IsNotExist(err) {
 		return candidate // File doesn't exist; use the original name.
@@ -726,7 +728,6 @@ func spawnReceiverProcess(args *Arguments, fileid string, expectedFile string) (
 	return output, exitCode, nil
 }
 
-
 // spawnSenderProcess spawns the sender process for a PUT command.
 // It uses the same options as the receiver process except using -stdin instead of -stdout,
 // and adds -receiver-callsign with the file server's callsign.
@@ -796,11 +797,156 @@ func spawnSenderProcess(args *Arguments, fileid string, filename string) (int, e
 	return exitCode, nil
 }
 
+// handleCommand processes a single command line as if it were entered manually.
+// This function is used both by the interactive loop and when -run-command is provided.
+func handleCommand(commandLine string, args *Arguments, conn KISSConnection, b *Broadcaster) {
+	if strings.TrimSpace(commandLine) == "" {
+		return
+	}
+	tokens := strings.Fields(commandLine)
+	if len(tokens) == 0 {
+		return
+	}
+
+	// Local LS command.
+	if strings.EqualFold(tokens[0], "LS") {
+		listing, err := listFormattedFiles(args.ServeDirectory)
+		if err != nil {
+			log.Printf("Error listing files in serve directory: %v", err)
+		} else {
+			fmt.Println(listing)
+		}
+		return
+	}
+
+	// For PUT command, check file accessibility.
+	if strings.ToUpper(tokens[0]) == "PUT" {
+		idx := strings.Index(commandLine, " ")
+		if idx == -1 {
+			log.Printf("PUT command requires a filename")
+			return
+		}
+		filename := strings.TrimSpace(commandLine[idx:])
+		if filename == "" {
+			log.Printf("PUT command requires a filename")
+			return
+		}
+		filePath := filepath.Join(args.ServeDirectory, filename)
+		if _, err := os.Stat(filePath); err != nil {
+			log.Printf("Cannot read file %s: %v", filePath, err)
+			return
+		}
+	}
+
+	// Build and send the command.
+	packet, cmdID := buildCommandPacket(args.MyCallsign, args.FileServerCallsign, commandLine)
+	frame := buildKISSFrame(packet)
+	err := conn.SendFrame(frame)
+	if err != nil {
+		log.Printf("Error sending command: %v", err)
+		return
+	}
+	log.Printf("Sent command: %s [%s]", commandLine, cmdID)
+
+	// Wait for the direct response.
+	respPayload, err := waitForResponse(b, 10*time.Second, cmdID)
+	if err != nil {
+		log.Printf("Error waiting for response: %v", err)
+		return
+	}
+	_, status, msg, ok := parseResponsePacket(respPayload)
+	if !ok {
+		log.Printf("Received malformed response")
+		return
+	}
+	if status == 1 {
+		fmt.Println("##########")
+		fmt.Println("Success:", msg)
+		fmt.Println("##########")
+	} else {
+		fmt.Println("##########")
+		fmt.Println("Failed:", msg)
+		fmt.Println("##########")
+	}
+
+	// For commands that require file transfers: LIST, GET, or PUT.
+	tokens = strings.Fields(commandLine)
+	if len(tokens) == 0 {
+		return
+	}
+	cmdType := strings.ToUpper(tokens[0])
+	if cmdType != "LIST" && cmdType != "GET" && cmdType != "PUT" {
+		return
+	}
+
+	// Proceed with file transfer only on success.
+	if status != 1 {
+		return
+	}
+
+	var expectedFile string
+	if cmdType == "LIST" {
+		expectedFile = "LIST.txt"
+	} else if cmdType == "GET" {
+		if len(tokens) < 2 {
+			log.Printf("GET command requires a filename")
+			return
+		}
+		expectedFile = strings.Join(tokens[1:], " ")
+	} else if cmdType == "PUT" {
+		idx := strings.Index(commandLine, " ")
+		if idx == -1 {
+			log.Printf("PUT command requires a filename")
+			return
+		}
+		expectedFile = strings.TrimSpace(commandLine[idx:])
+		if expectedFile == "" {
+			log.Printf("PUT command requires a filename")
+			return
+		}
+	}
+
+	if cmdType == "PUT" {
+		exitCode, procErr := spawnSenderProcess(args, cmdID, expectedFile)
+		if exitCode == 0 {
+			log.Printf("PUT command successful: sent %s", expectedFile)
+		} else {
+			log.Printf("Sender process error: %v", procErr)
+		}
+	} else { // LIST or GET
+		output, exitCode, procErr := spawnReceiverProcess(args, cmdID, expectedFile)
+		if exitCode == 0 {
+			if cmdType == "LIST" {
+				pretty, err := csvToPretty(string(output))
+				if err != nil {
+					log.Printf("Error converting CSV to table: %v", err)
+					fmt.Println("LIST contents:\n")
+					fmt.Print(string(output))
+				} else {
+					fmt.Println("LIST contents:\n")
+					fmt.Print(pretty)
+				}
+			} else if cmdType == "GET" {
+				uniqueFilePath := getUniqueFilePath(args.SaveDirectory, expectedFile)
+				err = os.WriteFile(uniqueFilePath, output, 0644)
+				if err != nil {
+					log.Printf("Error writing to file %s: %v", uniqueFilePath, err)
+				} else {
+					log.Printf("Saved file to %s", uniqueFilePath)
+				}
+			}
+		} else {
+			log.Printf("Receiver process error: %v", procErr)
+		}
+	}
+}
+
 // ------------------ Main ------------------
 
 func main() {
 	args := parseArguments()
 	debugEnabled = args.Debug
+	globalArgs = args
 
 	// Establish the underlying connection.
 	var conn KISSConnection
@@ -817,9 +963,10 @@ func main() {
 		}
 	}
 	defer conn.Close()
+	globalConn = conn
 
 	// Create a broadcaster to distribute new data from the underlying connection.
-	broadcaster := NewBroadcaster()
+	broadcaster = NewBroadcaster()
 	go startUnderlyingReader(conn, broadcaster)
 
 	// Start the receiver TCP listener for transparent passthrough.
@@ -849,8 +996,17 @@ func main() {
 
 	log.Printf("Command Client started. My callsign: %s, File Server callsign: %s",
 		strings.ToUpper(args.MyCallsign), strings.ToUpper(args.FileServerCallsign))
-	log.Printf("Enter commands (e.g. LS (list local files), LIST (list remote files), GET filename, PUT filename, etc.):")
+	log.Printf("Enter commands (e.g. LS, LIST, GET filename, PUT filename, etc.):")
 
+	// If -run-command was provided, execute it and exit.
+	if args.RunCommand != "" {
+		// Echo the command so the user sees it.
+		fmt.Printf("> %s\n", args.RunCommand)
+		handleCommand(args.RunCommand, args, conn, broadcaster)
+		os.Exit(0)
+	}
+
+	// Otherwise, enter the interactive command loop.
 	scanner := bufio.NewScanner(os.Stdin)
 	for {
 		fmt.Print("> ")
@@ -858,151 +1014,7 @@ func main() {
 			break
 		}
 		commandLine := scanner.Text()
-		if strings.TrimSpace(commandLine) == "" {
-			continue
-		}
-
-		// Split the command into tokens.
-		tokens := strings.Fields(commandLine)
-		if len(tokens) == 0 {
-			continue
-		}
-
-		// Add local LS command (case-insensitive).
-		if strings.EqualFold(tokens[0], "LS") {
-		    listing, err := listFormattedFiles(args.ServeDirectory)
-		    if err != nil {
-		        log.Printf("Error listing files in serve directory: %v", err)
-		    } else {
-		        fmt.Println(listing)
-		    }
-		    continue
-		}
-
-		// If the command is a PUT, verify that the file is accessible before sending.
-		if len(tokens) > 0 && strings.ToUpper(tokens[0]) == "PUT" {
-			idx := strings.Index(commandLine, " ")
-			if idx == -1 {
-				log.Printf("PUT command requires a filename")
-				continue
-			}
-			filename := strings.TrimSpace(commandLine[idx:])
-			if filename == "" {
-				log.Printf("PUT command requires a filename")
-				continue
-			}
-			filePath := filepath.Join(args.ServeDirectory, filename)
-			if _, err := os.Stat(filePath); err != nil {
-				log.Printf("Cannot read file %s: %v", filePath, err)
-				continue
-			}
-		}
-
-		// Build and send the command (which now includes a 2-char ID).
-		packet, cmdID := buildCommandPacket(args.MyCallsign, args.FileServerCallsign, commandLine)
-		frame := buildKISSFrame(packet)
-		err := conn.SendFrame(frame)
-		if err != nil {
-			log.Printf("Error sending command: %v", err)
-			continue
-		}
-		log.Printf("Sent command: %s [%s]", commandLine, cmdID)
-
-		// Wait for the direct response from the server.
-		respPayload, err := waitForResponse(broadcaster, 10*time.Second, cmdID)
-		if err != nil {
-			log.Printf("Error waiting for response: %v", err)
-			continue
-		}
-		_, status, msg, ok := parseResponsePacket(respPayload)
-		if !ok {
-			log.Printf("Received malformed response")
-			continue
-		}
-		if status == 1 {
-			fmt.Println("##########")
-			fmt.Println("Success:", msg)
-			fmt.Println("##########")
-		} else {
-			fmt.Println("##########")
-			fmt.Println("Failed:", msg)
-			fmt.Println("##########")
-		}
-
-		// For LIST, GET, or PUT commands, spawn the appropriate process.
-		// (Note: The file existence check for PUT has already been performed.)
-		tokens = strings.Fields(commandLine)
-		if len(tokens) == 0 {
-			continue
-		}
-		cmdType := strings.ToUpper(tokens[0])
-		if cmdType != "LIST" && cmdType != "GET" && cmdType != "PUT" {
-			continue
-		}
-
-		// Only proceed with file transfer if the response was a success.
-		if status != 1 {
-			continue
-		}
-
-		var expectedFile string
-		if cmdType == "LIST" {
-			expectedFile = "LIST.txt"
-		} else if cmdType == "GET" {
-			if len(tokens) < 2 {
-				log.Printf("GET command requires a filename")
-				continue
-			}
-			expectedFile = strings.Join(tokens[1:], " ")
-		} else if cmdType == "PUT" {
-			// Use the entire remainder of the command line as the filename.
-			idx := strings.Index(commandLine, " ")
-			if idx == -1 {
-				log.Printf("PUT command requires a filename")
-				continue
-			}
-			expectedFile = strings.TrimSpace(commandLine[idx:])
-			if expectedFile == "" {
-				log.Printf("PUT command requires a filename")
-				continue
-			}
-		}
-
-		if cmdType == "PUT" {
-			exitCode, procErr := spawnSenderProcess(args, cmdID, expectedFile)
-			if exitCode == 0 {
-				log.Printf("PUT command successful: sent %s", expectedFile)
-			} else {
-				log.Printf("Sender process error: %v", procErr)
-			}
-		} else { // LIST or GET
-			output, exitCode, procErr := spawnReceiverProcess(args, cmdID, expectedFile)
-			if exitCode == 0 {
-				if cmdType == "LIST" {
-					// Convert the CSV listing to pretty text.
-					pretty, err := csvToPretty(string(output))
-					if err != nil {
-						log.Printf("Error converting CSV to table: %v", err)
-						fmt.Println("LIST contents:\n")
-						fmt.Print(string(output))
-					} else {
-						fmt.Println("LIST contents:\n")
-						fmt.Print(pretty)
-					}
-				} else if cmdType == "GET" {
-					// Determine a unique file path to avoid overwriting an existing file.
-					uniqueFilePath := getUniqueFilePath(args.SaveDirectory, expectedFile)
-					err = os.WriteFile(uniqueFilePath, output, 0644)
-					if err != nil {
-						log.Printf("Error writing to file %s: %v", uniqueFilePath, err)
-					} else {
-						log.Printf("Saved file to %s", uniqueFilePath)
-					}
-				}
-			} else {
-				log.Printf("Receiver process error: %v", procErr)
-			}
-		}
+		handleCommand(commandLine, args, conn, broadcaster)
 	}
 	if err := scanner.Err(); err != nil {
 		log.Printf("Input error: %v", err)
