@@ -798,14 +798,14 @@ func spawnSenderProcess(args *Arguments, fileid string, filename string) (int, e
 }
 
 // handleCommand processes a single command line as if it were entered manually.
-// This function is used both by the interactive loop and when -run-command is provided.
-func handleCommand(commandLine string, args *Arguments, conn KISSConnection, b *Broadcaster) {
+// It returns an exit code: 0 on success, non-zero if the command (or any file transfer) failed.
+func handleCommand(commandLine string, args *Arguments, conn KISSConnection, b *Broadcaster) int {
 	if strings.TrimSpace(commandLine) == "" {
-		return
+		return 0
 	}
 	tokens := strings.Fields(commandLine)
 	if len(tokens) == 0 {
-		return
+		return 0
 	}
 
 	// Local LS command.
@@ -813,10 +813,11 @@ func handleCommand(commandLine string, args *Arguments, conn KISSConnection, b *
 		listing, err := listFormattedFiles(args.ServeDirectory)
 		if err != nil {
 			log.Printf("Error listing files in serve directory: %v", err)
+			return 1
 		} else {
 			fmt.Println(listing)
 		}
-		return
+		return 0
 	}
 
 	// For PUT command, check file accessibility.
@@ -824,17 +825,17 @@ func handleCommand(commandLine string, args *Arguments, conn KISSConnection, b *
 		idx := strings.Index(commandLine, " ")
 		if idx == -1 {
 			log.Printf("PUT command requires a filename")
-			return
+			return 1
 		}
 		filename := strings.TrimSpace(commandLine[idx:])
 		if filename == "" {
 			log.Printf("PUT command requires a filename")
-			return
+			return 1
 		}
 		filePath := filepath.Join(args.ServeDirectory, filename)
 		if _, err := os.Stat(filePath); err != nil {
 			log.Printf("Cannot read file %s: %v", filePath, err)
-			return
+			return 1
 		}
 	}
 
@@ -844,7 +845,7 @@ func handleCommand(commandLine string, args *Arguments, conn KISSConnection, b *
 	err := conn.SendFrame(frame)
 	if err != nil {
 		log.Printf("Error sending command: %v", err)
-		return
+		return 1
 	}
 	log.Printf("Sent command: %s [%s]", commandLine, cmdID)
 
@@ -852,12 +853,12 @@ func handleCommand(commandLine string, args *Arguments, conn KISSConnection, b *
 	respPayload, err := waitForResponse(b, 10*time.Second, cmdID)
 	if err != nil {
 		log.Printf("Error waiting for response: %v", err)
-		return
+		return 1
 	}
 	_, status, msg, ok := parseResponsePacket(respPayload)
 	if !ok {
 		log.Printf("Received malformed response")
-		return
+		return 1
 	}
 	if status == 1 {
 		fmt.Println("##########")
@@ -867,42 +868,39 @@ func handleCommand(commandLine string, args *Arguments, conn KISSConnection, b *
 		fmt.Println("##########")
 		fmt.Println("Failed:", msg)
 		fmt.Println("##########")
+		return 1
 	}
 
 	// For commands that require file transfers: LIST, GET, or PUT.
 	tokens = strings.Fields(commandLine)
 	if len(tokens) == 0 {
-		return
+		return 0
 	}
 	cmdType := strings.ToUpper(tokens[0])
 	if cmdType != "LIST" && cmdType != "GET" && cmdType != "PUT" {
-		return
+		return 0
 	}
 
-	// Proceed with file transfer only on success.
-	if status != 1 {
-		return
-	}
-
+	// Determine expected file name.
 	var expectedFile string
 	if cmdType == "LIST" {
 		expectedFile = "LIST.txt"
 	} else if cmdType == "GET" {
 		if len(tokens) < 2 {
 			log.Printf("GET command requires a filename")
-			return
+			return 1
 		}
 		expectedFile = strings.Join(tokens[1:], " ")
 	} else if cmdType == "PUT" {
 		idx := strings.Index(commandLine, " ")
 		if idx == -1 {
 			log.Printf("PUT command requires a filename")
-			return
+			return 1
 		}
 		expectedFile = strings.TrimSpace(commandLine[idx:])
 		if expectedFile == "" {
 			log.Printf("PUT command requires a filename")
-			return
+			return 1
 		}
 	}
 
@@ -910,8 +908,10 @@ func handleCommand(commandLine string, args *Arguments, conn KISSConnection, b *
 		exitCode, procErr := spawnSenderProcess(args, cmdID, expectedFile)
 		if exitCode == 0 {
 			log.Printf("PUT command successful: sent %s", expectedFile)
+			return 0
 		} else {
 			log.Printf("Sender process error: %v", procErr)
+			return exitCode
 		}
 	} else { // LIST or GET
 		output, exitCode, procErr := spawnReceiverProcess(args, cmdID, expectedFile)
@@ -931,12 +931,15 @@ func handleCommand(commandLine string, args *Arguments, conn KISSConnection, b *
 				err = os.WriteFile(uniqueFilePath, output, 0644)
 				if err != nil {
 					log.Printf("Error writing to file %s: %v", uniqueFilePath, err)
+					return 1
 				} else {
 					log.Printf("Saved file to %s", uniqueFilePath)
 				}
 			}
+			return 0
 		} else {
 			log.Printf("Receiver process error: %v", procErr)
+			return exitCode
 		}
 	}
 }
@@ -998,12 +1001,11 @@ func main() {
 		strings.ToUpper(args.MyCallsign), strings.ToUpper(args.FileServerCallsign))
 	log.Printf("Enter commands (e.g. LS, LIST, GET filename, PUT filename, etc.):")
 
-	// If -run-command was provided, execute it and exit.
+	// If -run-command was provided, execute it and exit with the proper exit code.
 	if args.RunCommand != "" {
-		// Echo the command so the user sees it.
 		fmt.Printf("> %s\n", args.RunCommand)
-		handleCommand(args.RunCommand, args, conn, broadcaster)
-		os.Exit(0)
+		exitCode := handleCommand(args.RunCommand, args, conn, broadcaster)
+		os.Exit(exitCode)
 	}
 
 	// Otherwise, enter the interactive command loop.
