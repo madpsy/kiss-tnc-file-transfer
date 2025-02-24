@@ -21,18 +21,19 @@
     while data sent by clients is forwarded to the TNC.
   </p>
   <p>
-    An optional <code>--send-delay</code> flag introduces a turnaround delay before client‑data is forwarded to the TNC after a received frame.
+    An optional <code>--send-delay</code> flag introduces a turnaround delay before client data is forwarded to the TNC after a received frame.
     This feature is especially useful for preventing data collisions in environments where precise timing is critical.
   </p>
   <p>
     In addition, the <code>--tcp-broadcast-port</code> flag allows you to open a dedicated one‑way broadcast port.
-    When set, all frames to and from the TNC and TCP clients are also sent out via this port.
-    Note that clients connecting to the broadcast port will only receive data and any data sent to this port is ignored.
+    When set, all frames passing through the bridge are also sent out via this port.
+    Note that clients connecting to the broadcast port will only receive data – any data sent to this port is ignored.
   </p>
 
   <h2>Table of Contents</h2>
   <ul>
     <li><a href="#overview">Overview</a></li>
+    <li><a href="#kiss-framing">KISS Framing</a></li>
     <li><a href="#installation">Installation &amp; Build</a></li>
     <li><a href="#options">Command‑Line Options</a></li>
     <li><a href="#examples">Examples</a></li>
@@ -57,11 +58,17 @@
     Data received from the TNC is forwarded to all connected TCP clients.
     Similarly, any data received from a client is sent to the TNC.
     If a frame is just received from the TNC, a configurable turnaround delay (using <code>--send-delay</code>)
-    can be applied before sending new frames from a client to the TNC.
+    is applied before sending new frames from a client to the TNC.
   </p>
   <p>
     Additionally, using the <code>--tcp-broadcast-port</code> option, you can enable a dedicated one‑way broadcast channel.
     All frames passing through the bridge are also sent out on the specified broadcast port.
+  </p>
+
+  <h2 id="kiss-framing">KISS Framing</h2>
+  <p>
+    Passthrough uses the KISS (Keep It Simple, Stupid) protocol for framing data. Each frame is delimited by a special flag byte (<code>0xC0</code>).
+    The application extracts complete frames – those that start and end with the flag – and buffers incomplete data until the frame is complete.
   </p>
 
   <h2 id="installation">Installation &amp; Build</h2>
@@ -131,7 +138,7 @@ go build -o passthrough passthrough.go
       <td><code>--tcp-broadcast-port</code></td>
       <td>
         TCP port to broadcast all frames in a one‑way fashion.
-        If set (non‑zero), all frames to/from the TNC and TCP clients are additionally sent out this port.
+        If set (non‑zero), all frames passing through the bridge are additionally sent out on this port.
         Clients connecting to this port will only receive data.
       </td>
       <td><em>none (disabled)</em></td>
@@ -183,22 +190,24 @@ go run passthrough.go --tcp-broadcast-port=7000
   <h2 id="notes">Additional Notes</h2>
   <ul>
     <li>
-      When using serial connections, make sure you have the proper permissions to access the serial device.
+      When using serial connections, ensure you have the proper permissions to access the serial device.
     </li>
     <li>
-      The <code>--send-delay</code> flag is useful for preventing collisions on the TNC interface.
-      However, setting a high delay value may introduce unwanted latency.
+      The <code>--send-delay</code> flag helps prevent collisions on the TNC interface; however, a high delay value may introduce unwanted latency.
     </li>
     <li>
-      Passthrough will continuously attempt to reconnect to the TNC if the connection is lost.
-      Meanwhile, connected TCP clients will continue to receive any available TNC data.
+      Passthrough will continuously attempt to reconnect to the TNC if the connection is lost. Meanwhile, connected TCP clients will continue to receive any available TNC data.
     </li>
     <li>
-      The <code>--tcp-read-deadline</code> flag applies only to TCP-based TNC connections. It ensures that if no complete frame is received within the specified time, the connection is considered stalled and a reconnect is triggered.
+      The <code>--tcp-read-deadline</code> flag applies only to TCP-based TNC connections.
+      If no complete frame is received within the specified time, the connection is considered stalled and a reconnect is triggered.
     </li>
     <li>
       The <code>--tcp-broadcast-port</code> option creates a dedicated one‑way broadcast channel.
       Data sent to this port is not processed; it is strictly for broadcasting frames.
+    </li>
+    <li>
+      All data is framed using the KISS protocol. Only complete frames (those starting and ending with the flag <code>0xC0</code>) are processed; any incomplete frames are buffered until complete.
     </li>
   </ul>
 

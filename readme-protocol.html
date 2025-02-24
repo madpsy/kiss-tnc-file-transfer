@@ -1,0 +1,393 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <title>KISS File Transfer Protocol: Detailed Documentation (Updated)</title>
+  <style>
+    body {
+      font-family: Arial, sans-serif;
+      line-height: 1.6;
+      margin: 20px;
+      background-color: #fafafa;
+      color: #333;
+    }
+    h1, h2, h3, h4 {
+      color: #003366;
+    }
+    pre {
+      background: #f4f4f4;
+      padding: 10px;
+      border: 1px solid #ccc;
+      overflow-x: auto;
+    }
+    code {
+      background: #e8e8e8;
+      padding: 2px 4px;
+      border-radius: 3px;
+    }
+    .section {
+      margin-bottom: 40px;
+    }
+    .example {
+      background-color: #eef;
+      padding: 10px;
+      border-left: 3px solid #66a;
+      margin-bottom: 20px;
+    }
+  </style>
+</head>
+<body>
+  <h1>KISS File Transfer Protocol: Detailed Documentation (Updated)</h1>
+
+  <div class="section">
+    <h2>Introduction</h2>
+    <p>
+      The <strong>KISS File Transfer Protocol</strong> is a robust suite of Go applications designed for reliable file transfer over TCP or serial links—even when the data is transmitted via RF using TNCs. The system consists of dedicated sender, receiver, and fileserver applications (which handle CMD and RSP packets) as well as combined and proxy apps. The protocol divides a file into a header packet containing metadata and multiple data packets carrying file chunks. It also supports control packets including ACKs (acknowledgments) and command (CMD) and response (RSP) messages.
+    </p>
+    <p>
+      The protocol supports both raw binary and Base64-encoded payloads, optional zlib compression, and a dynamic sliding window with adaptive timeouts and retransmissions.
+    </p>
+  </div>
+
+  <div class="section">
+    <h2>Core Protocol Components</h2>
+    <p>
+      The protocol defines several key packet types:
+      <ul>
+        <li><strong>DATA Packets:</strong> Transmit file data (including a header packet for metadata).</li>
+        <li><strong>ACK Packets:</strong> Provide cumulative acknowledgments to manage retransmissions and window advancement.</li>
+        <li><strong>CMD Packets:</strong> Sent by remote clients to request operations such as GET, LIST, and PUT.</li>
+        <li><strong>RSP Packets:</strong> Server responses to CMD packets, indicating success or failure.</li>
+      </ul>
+    </p>
+    <p>
+      Additionally, each packet carries explicit fields including a two-character <code>FILEID</code>, encoding method (0 = binary, 1 = Base64), and a compression flag.
+    </p>
+  </div>
+
+  <div class="section">
+    <h2>KISS Framing and AX.25 Header</h2>
+
+    <h3>KISS Framing</h3>
+    <p>
+      All packets are encapsulated in a KISS frame to preserve data boundaries. The process is as follows:
+    </p>
+    <ul>
+      <li><strong>Starting Flag:</strong> A byte <code>0xC0</code> marks the beginning of a frame.</li>
+      <li><strong>Command Byte:</strong> Typically <code>0x00</code> for data packets.</li>
+      <li><strong>Escaping:</strong> Special bytes (<code>0xC0</code> and <code>0xDB</code>) within the payload are replaced with escape sequences to avoid framing conflicts.</li>
+      <li><strong>Ending Flag:</strong> A closing <code>0xC0</code> byte signals the end of the frame.</li>
+    </ul>
+    <pre>
+function buildKISSFrame(packet):
+    FLAG = 0xC0
+    CMD  = 0x00
+    escaped_packet = escapeSpecialBytes(packet)
+    return FLAG + CMD + escaped_packet + FLAG
+    </pre>
+
+    <h3>AX.25 Header</h3>
+    <p>
+      Each packet begins with a fixed 16-byte header modeled after AX.25 addressing. This header contains:
+    </p>
+    <ul>
+      <li><strong>Destination Callsign (7 bytes):</strong> Uppercase, padded/truncated to 6 characters, with a 7th byte encoding the SSID and “last address” flag.</li>
+      <li><strong>Source Callsign (7 bytes):</strong> Formatted similarly, with the “last” flag set.</li>
+      <li><strong>Control &amp; PID (2 bytes):</strong> Usually <code>0x03</code> and <code>0xF0</code>.</li>
+    </ul>
+    <pre>
+function buildAX25Header(source, destination):
+    dest = encodeAddress(destination, is_last = False)
+    src  = encodeAddress(source, is_last = True)
+    CONTROL = 0x03
+    PID     = 0xF0
+    return dest + src + CONTROL + PID
+    </pre>
+  </div>
+
+  <div class="section">
+    <h2>Packet Formats and Fields</h2>
+
+    <h3>Common Structure</h3>
+    <p>
+      Every packet consists of:
+      <ul>
+        <li>The KISS frame wrapping the packet.</li>
+        <li>An AX.25 header for addressing.</li>
+        <li>An <strong>info field</strong> whose content depends on the packet type.</li>
+        <li>A <strong>payload</strong> (which might be file data, metadata, or command text).</li>
+        <li>Explicit protocol fields such as <code>FILEID</code>, <code>encodingMethod</code>, and <code>compress_flag</code>.</li>
+      </ul>
+    </p>
+
+    <h3>DATA Packets</h3>
+    <p>
+      DATA packets are used to transmit file data. They come in two types:
+    </p>
+
+    <h4>Header Packet (Sequence 1)</h4>
+    <p>
+      The header packet initializes the transfer and includes vital metadata. Its info field is formatted as:
+    </p>
+    <pre>
+"FILEID:0001{burst_to_hex}/{total_hex}:"
+    </pre>
+    <p>
+      Where:
+      <ul>
+        <li><code>FILEID</code> is the unique two-character file identifier.</li>
+        <li><code>0001</code> indicates the header packet.</li>
+        <li><code>{burst_to_hex}</code> is the burst boundary (often minimal for the header).</li>
+        <li><code>{total_hex}</code> is the total count of data packets (in 4-digit hexadecimal).</li>
+      </ul>
+    </p>
+    <p>
+      Following this, the header payload is a pipe‑delimited string (UTF‑8 encoded) containing:
+      <ul>
+        <li>Timeout seconds and retry count</li>
+        <li>Filename</li>
+        <li>Original file size and compressed file size</li>
+        <li>MD5 checksum</li>
+        <li>Repeated file ID</li>
+        <li>Encoding method (0 for binary, 1 for Base64)</li>
+        <li>Compression flag (1 if compressed, 0 otherwise)</li>
+        <li>Total packet count (header + data packets)</li>
+      </ul>
+    </p>
+
+    <h4>Data Packets (Sequence ≥ 2)</h4>
+    <p>
+      Data packets carry sequential chunks of file data. Their fixed 32‑byte info field is formatted as:
+    </p>
+    <pre>
+"FILEID:{seq_hex}{burst_to_hex}:"
+    </pre>
+    <p>
+      Where:
+      <ul>
+        <li><code>{seq_hex}</code> is the 4-digit hexadecimal sequence number (starting from 0002).</li>
+        <li><code>{burst_to_hex}</code> indicates the burst boundary for the current window.</li>
+      </ul>
+      <br>
+      The payload following this info field is a chunk of file data (up to <code>CHUNK_SIZE</code> bytes). If Base64 encoding is enabled, each chunk is encoded individually.
+    </p>
+
+    <h3>ACK Packets</h3>
+    <p>
+      ACK packets use an info field containing <code>"ACK:"</code> to acknowledge received data. The cumulative ACK (e.g. <code>"0001-XXXX"</code>) indicates the highest contiguous packet received.
+    </p>
+
+    <h3>CMD and RSP Packets</h3>
+    <p>
+      <strong>CMD Packets:</strong> Issued by remote clients, the 64-byte info field begins with <code>"CMD:"</code> followed by a 2‑character command ID and the command text (such as "GET myfile.txt", "LIST", or "PUT myfile.txt").<br>
+      <strong>RSP Packets:</strong> Sent in response, the info field is formatted as:
+    </p>
+    <pre>
+"RSP:{cmdID} {status} {message}"
+    </pre>
+    <p>
+      where <code>{status}</code> is <code>1</code> for success or <code>0</code> for failure.
+    </p>
+  </div>
+
+  <div class="section">
+    <h2>Receiver Operation and File Reassembly</h2>
+    <p>
+      The receiver processes incoming KISS frames via a <code>FrameReader</code>, parses packets, and reassembles file transfers. Key steps include:
+    </p>
+    <ul>
+      <li><strong>Frame Reading and Packet Extraction:</strong> Data is read from the connection, unescaped, and divided into complete KISS frames.</li>
+      <li><strong>Packet Parsing:</strong> The receiver distinguishes between ACK packets (which are ignored on the receiver side) and data packets. Header packets (sequence 1) initialize a new transfer while subsequent packets (seq ≥ 2) are stored in a map keyed by sequence number.</li>
+      <li><strong>File Reassembly:</strong> Once all expected packets are received, the receiver:
+        <ul>
+          <li>Iterates over the stored packets in sequence order.</li>
+          <li>Decodes Base64 payloads if the header indicated encoding method 1.</li>
+          <li>Concatenates the chunks, decompresses the data if needed, and verifies file integrity using the MD5 checksum.</li>
+          <li>Finally, it either saves the file, outputs to stdout, or executes it if configured.</li>
+        </ul>
+      </li>
+      <li><strong>ACK and Retry:</strong> The receiver periodically sends cumulative ACKs (based on the highest contiguous sequence received) and will re-send ACKs on inactivity until the sender’s final confirmation (FIN‑ACK) is received.
+      </li>
+    </ul>
+
+    <h3>Pseudocode: Receiver Main Loop</h3>
+    <pre>
+// Initialize connection and frame reader
+conn = openConnection()         // TCP or serial based on configuration
+frameChan = newChannel()
+reader = new FrameReader(conn, frameChan)
+start(reader.Run())
+
+transfers = {}   // Map FILEID -> Transfer state
+
+// Main loop for processing incoming frames
+while true:
+    if frame received from frameChan:
+        packet = parsePacket(frame)
+        if packet is ACK:
+            // ACK packets are ignored by the receiver
+            continue
+        if transfer for packet.FILEID does not exist:
+            if packet.seq != 1:
+                // Ignore non-header packets for unknown transfers
+                continue
+            // Process header packet: extract metadata and create new Transfer
+            metadata = split(packet.payload, "|")
+            transfers[packet.FILEID] = new Transfer(
+                filename = metadata[2],
+                origSize = metadata[3],
+                compSize = metadata[4],
+                md5 = metadata[5],
+                encodingMethod = metadata[7],
+                compress = (metadata[8] == "1"),
+                totalPackets = metadata[9]
+            )
+            sendAck(conn, localCallsign, packet.sender, packet.FILEID, "0001")
+        else:
+            transfer = transfers[packet.FILEID]
+            // Ignore duplicate header packets
+            if packet.seq == 1:
+                continue
+            // Store packet data if not already received
+            if transfer.Packets[packet.seq] exists:
+                continue  // Duplicate packet; may log duplicate count
+            transfer.Packets[packet.seq] = packet.payload
+            update transfer statistics...
+            // If burst boundary reached, send cumulative ACK
+            if packet.seq equals transfer.BurstTo:
+                ackValue = computeCumulativeAck(transfer)
+                sendAck(conn, localCallsign, packet.sender, packet.FILEID, ackValue)
+    else if timeout:
+        // Periodically check transfers and resend ACKs if necessary
+        for each transfer in transfers:
+            if inactivity exceeds retry interval:
+                if retries not exceeded:
+                    resend cumulative ACK for transfer
+                else:
+                    drop transfer
+    // Check if a transfer is complete and reassemble file
+    for each transfer in transfers:
+        if all expected packets received:
+            fileData = concatenate packets in order
+            if transfer.encodingMethod == 1:
+                fileData = base64Decode(fileData)
+            if transfer.compress:
+                fileData = decompress(fileData)
+            if md5(fileData) matches transfer.md5:
+                // Save, output, or execute file based on configuration
+                processFile(fileData, transfer.filename)
+            send final ACK (FIN-ACK)
+            remove transfer from transfers
+    </pre>
+  </div>
+
+  <div class="section">
+    <h2>TCP Inactivity and Reconnection (Receiver)</h2>
+    <p>
+      To ensure robustness on TCP connections, the receiver monitors inactivity. If no data is received for a specified deadline, it triggers a reconnect.
+    </p>
+    <h3>Pseudocode: TCP Inactivity Monitor</h3>
+    <pre>
+tcp_timeout = configured deadline (e.g., 600 seconds)
+while true:
+    sleep(1 second)
+    if currentTime - lastDataTime > tcp_timeout:
+        log "Inactivity detected, reconnecting..."
+        reader.Stop()
+        conn.Close()
+        loop until new connection is established:
+            wait 5 seconds
+            attempt new connection
+        update lastDataTime
+        restart FrameReader with new connection
+    </pre>
+  </div>
+
+  <div class="section">
+    <h2>Dynamic Sliding Window and ACK Retransmission</h2>
+    <p>
+      Although the sliding window and ACK management is primarily implemented in the sender, the receiver’s role is to compute a cumulative ACK based on contiguous packets and to re-send ACKs on inactivity.
+    </p>
+    <pre>
+function computeCumulativeAck(transfer):
+    max_seq = 1
+    for seq = 2 to transfer.totalPackets:
+        if transfer.Packets contains seq:
+            max_seq = seq
+        else:
+            break
+    if max_seq == 1:
+        return "0001"
+    else:
+        return "0001-" + toHex(max_seq, 4)
+    </pre>
+    <p>
+      The receiver then sends the ACK using the standard KISS frame encapsulation.
+    </p>
+  </div>
+
+  <div class="section">
+    <h2>Example Command Line Usage</h2>
+    <p>
+      The receiver application can be run with various options. For example:
+    </p>
+    <div class="example">
+      <h4>Receiver Example</h4>
+      <pre>
+# Receiver that saves files to disk
+./receiver --my-callsign MM3NDH-11 --host 0.0.0.0 --port 9001 --one-file --callsigns "MM5NDH-*,*-15"
+
+# Receiver that outputs the received file to stdout (useful for piping)
+./receiver --my-callsign MM3NDH-11 --host 0.0.0.0 --port 9001 --one-file --stdout
+
+# Receiver that executes a file if its name matches the --execute parameter
+./receiver --my-callsign MM3NDH-11 --host 0.0.0.0 --port 9001 --one-file --execute "update.sh"
+      </pre>
+    </div>
+  </div>
+
+  <div class="section">
+    <h2>Network Diagram</h2>
+    <p>
+      The diagram below shows a typical deployment scenario:
+    </p>
+    <pre>
+           +------------------------------------------+
+           |                Sender                    |
+           | (Serial TNC on 144 MHz radio, e.g. COM3) |
+           +----------------------+-------------------+
+                                  | RF Link (144 MHz)
+                                  |
+                                  v
+                      +------------------------------+
+                      |   Proxy / Fileserver (CMD/RSP)|
+                      | - Processes CMD packets      |
+                      | - Forwards DATA and ACK      |
+                      | - Monitors TCP activity      |
+                      +--------------+---------------+
+                                     | RF Link (433 MHz)
+                                     |
+                                     v
+           +------------------------------------------+
+           |               Receiver                   |
+           | (TCP/Serial TNC on 433 MHz radio)        |
+           | - Reassembles file from DATA packets     |
+           | - Sends cumulative ACKs & FIN-ACK         |
+           +------------------------------------------+
+    </pre>
+  </div>
+
+  <div class="section">
+    <h2>Summary and Final Remarks</h2>
+    <p>
+      The updated KISS File Transfer Protocol combines reliable framing (via KISS and AX.25), explicit metadata, and dynamic control mechanisms to enable robust file transfers even in challenging RF environments.
+    </p>
+    <p>
+      With detailed support for data, ACK, CMD, and RSP packets, optional zlib compression, and Base64 encoding on a per-chunk basis, both sender and receiver work together using dynamic sliding windows, adaptive timeouts, and reconnection logic to maximize throughput while ensuring data integrity.
+    </p>
+    <p>
+      The receiver reassembles file transfers by ordering incoming data packets, performing necessary decoding and decompression, verifying file integrity with MD5, and then either saving, outputting, or executing the file based on configuration.
+    </p>
+  </div>
+</body>
+</html>

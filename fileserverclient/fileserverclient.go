@@ -1,4 +1,4 @@
-// commandclient.go
+// fileserverclient.go
 package main
 
 import (

@@ -35,22 +35,28 @@
   </p>
   <ul>
     <li>
-      <strong>File Transfer Assembly:</strong> A header packet (with sequence number 1) initiates a transfer by providing metadata (such as filename, sizes, checksum, encoding, and compression flags). Subsequent packets carry file data.
+      <strong>File Transfer Assembly:</strong> A header packet (with sequence number 1) initiates a transfer by providing metadata (such as filename, sizes, checksum, encoding method, and compression flags). Subsequent packets carry file data.
     </li>
     <li>
-      <strong>Integrity Check:</strong> Once all data packets have been received, the program reassembles the file, decompresses and/or Base64‑decodes if needed, and verifies the file using an MD5 checksum.
+      <strong>Integrity Check:</strong> Once all data packets have been received, the program reassembles the file, decompresses and/or Base64‑decodes the payload as needed, and verifies the file using an MD5 checksum.
     </li>
     <li>
       <strong>Execution Option:</strong> If specified via command‑line, the Receiver can execute the received file using <code>bash</code> instead of saving it.
     </li>
     <li>
-      <strong>Output to STDOUT:</strong> With the <code>--stdout</code> option, the file contents are sent directly to standard output instead of being saved to disk (the filename is only used in log messages). It may be desirable to also specify the <code>--one-file</code> option when using this feature.
+      <strong>Output to STDOUT:</strong> With the <code>--stdout</code> option, the file contents are sent directly to standard output rather than being saved to disk (the filename is only used in log messages). It is recommended to use the <code>--one-file</code> option in this mode.
     </li>
     <li>
       <strong>Auto‑ACK Mechanism:</strong> The Receiver sends cumulative ACK packets back to the sender to confirm receipt of packets and manage retries.
     </li>
     <li>
-      <strong>Sender Callsign Filtering:</strong> With the <code>--callsigns</code> option, the Receiver will only process packets if the sender’s callsign matches one of the allowed patterns. Wildcards are supported (for example, <code>MM5NDH-*</code> or <code>*-15</code>). Note that only the sender’s callsign is checked in this receiver‑only application.
+      <strong>TCP Inactivity Monitoring:</strong> When using a TCP connection, the program monitors for inactivity (using the <code>--tcp-read-deadline</code> option). If no data is received within the specified time, it will attempt to reconnect automatically.
+    </li>
+    <li>
+      <strong>Sender Callsign Filtering:</strong> With the <code>--callsigns</code> option, the Receiver processes only packets from allowed sender callsigns. Wildcards are supported (for example, <code>MM5NDH-*</code> or <code>*-15</code>).
+    </li>
+    <li>
+      <strong>File ID Restriction:</strong> The <code>--fileid</code> option lets you restrict the transfer to a specific file ID (exactly 2 alphanumeric characters). This option is only allowed in conjunction with the <code>--one-file</code> flag.
     </li>
   </ul>
 
@@ -108,7 +114,7 @@ go build -o ax25receiver receiver.go
     <tr>
       <td><code>--serial-port</code></td>
       <td>
-        Serial port device (e.g., <code>/dev/ttyUSB0</code> or <code>COM3</code>). Required if using serial connection.
+        Serial port device (e.g., <code>/dev/ttyUSB0</code> or <code>COM3</code>). Required if using a serial connection.
       </td>
       <td><em>empty</em></td>
     </tr>
@@ -161,6 +167,20 @@ go build -o ax25receiver receiver.go
       </td>
       <td><em>empty</em></td>
     </tr>
+    <tr>
+      <td><code>--tcp-read-deadline</code></td>
+      <td>
+        Time (in seconds) without data before triggering a reconnect (TCP only).
+      </td>
+      <td><code>600</code></td>
+    </tr>
+    <tr>
+      <td><code>--fileid</code></td>
+      <td>
+        Specify a file ID (exactly 2 alphanumeric characters). Only allowed with <code>--one-file</code>.
+      </td>
+      <td><em>empty</em></td>
+    </tr>
   </table>
 
   <h2 id="examples">Examples</h2>
@@ -191,7 +211,7 @@ go run receiver.go --my-callsign=N0CALL --connection=tcp --host=127.0.0.1 --port
 
   <h3>Example 4: Output File to STDOUT</h3>
   <p>
-    With the <code>--stdout</code> option, the received file will be output directly to standard output rather than being saved.
+    With the <code>--stdout</code> option, the received file will be output directly to standard output rather than being saved. The <code>--one-file</code> option is recommended.
   </p>
   <pre>
 go run receiver.go --my-callsign=N0CALL --connection=tcp --host=127.0.0.1 --port=9001 --stdout --one-file
@@ -213,6 +233,14 @@ go run receiver.go --my-callsign=N0CALL --connection=tcp --host=127.0.0.1 --port
 go run receiver.go --my-callsign=N0CALL --connection=tcp --host=127.0.0.1 --port=9001 --callsigns=MM5NDH-*,*-15
   </pre>
 
+  <h3>Example 7: Use File ID Restriction</h3>
+  <p>
+    This example restricts the transfer to a specific file ID (e.g. <code>AB</code>). Note that <code>--fileid</code> can only be used with <code>--one-file</code>.
+  </p>
+  <pre>
+go run receiver.go --my-callsign=N0CALL --connection=tcp --host=127.0.0.1 --port=9001 --fileid=AB --one-file
+  </pre>
+
   <h2 id="notes">Additional Notes</h2>
   <ul>
     <li>
@@ -225,13 +253,19 @@ go run receiver.go --my-callsign=N0CALL --connection=tcp --host=127.0.0.1 --port
       The Receiver sends cumulative ACK packets back to the sender. If the final confirmation (FIN-ACK) is not received after the specified retries, the transfer will be abandoned.
     </li>
     <li>
-      If the <code>--execute</code> flag is used, the received file will be temporarily saved, executed with <code>bash</code> (with an optional timeout), and then removed.
+      When the <code>--execute</code> flag is used, the received file will be temporarily saved, executed with <code>bash</code> (subject to the optional timeout), and then removed.
     </li>
     <li>
-      When the <code>--stdout</code> flag is used, the file content is written to standard output. This option is useful for piping the output to another program or command.
+      If the <code>--stdout</code> flag is used, the file content is written to standard output. This option is useful for piping the output to another program or command.
+    </li>
+    <li>
+      <strong>TCP Reconnect:</strong> When using TCP, if no data is received for the period specified by <code>--tcp-read-deadline</code> (default 600 seconds), the Receiver will automatically close the connection and attempt to reconnect.
     </li>
     <li>
       <strong>Sender Filtering:</strong> With the <code>--callsigns</code> option, only the sender’s callsign is checked against the allowed patterns. This ensures that the Receiver processes only packets from approved senders.
+    </li>
+    <li>
+      <strong>File ID Restriction:</strong> The <code>--fileid</code> option restricts file transfers to a specific file ID. It must consist of exactly 2 alphanumeric characters and can only be used when <code>--one-file</code> is enabled.
     </li>
   </ul>
 

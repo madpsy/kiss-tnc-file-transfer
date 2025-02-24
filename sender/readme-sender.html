@@ -35,17 +35,18 @@
   <h2 id="overview">Overview</h2>
   <p>
     The Sender reads file data, optionally compresses it (compression is enabled by default), and – if requested – encodes the payload in Base64.
-    It then splits the file data into chunks and constructs an initial header packet (with metadata such as the filename, sizes, MD5 checksum, file ID, encoding method, and compression flag) followed by a series of data packets.
+    It then splits the file data into chunks and constructs an initial header packet (which includes metadata such as the filename, original and compressed sizes, MD5 checksum, file ID, encoding method, and compression flag)
+    followed by a series of data packets.
   </p>
   <p>
-    A sliding‐window (burst) protocol is implemented to allow multiple packets to be sent before waiting for cumulative ACKs. The window size can be set manually or allowed to adjust automatically.
+    A sliding‐window (burst) protocol is implemented to allow multiple packets to be sent before waiting for cumulative ACKs. The window size can be set manually (choosing from 1, 2, 4, 6, 8, or 10) or allowed to adjust automatically by specifying "auto".
     In addition, the program can monitor a directory for new files (using <code>fsnotify</code>) instead of sending a fixed list of files.
-    The Sender also supports reading data from standard input. When using standard input, a filename must be provided to populate the header metadata.
+    The Sender also supports reading data from standard input; when using standard input, a filename must be provided to populate the header metadata.
   </p>
 
   <h2 id="installation">Installation &amp; Build</h2>
   <p>
-    To build the Sender, make sure you have <a href="https://golang.org/">Go</a> installed along with the required packages (<code>fsnotify</code> and <code>go.bug.st/serial</code>).
+    To build the Sender, ensure you have <a href="https://golang.org/">Go</a> installed along with the required packages (<code>fsnotify</code> and <code>go.bug.st/serial</code>).
     Then compile the program:
   </p>
   <pre>
@@ -74,7 +75,7 @@ go build -o ax25sender sender.go
       <td><code>--window-size</code></td>
       <td>
         Window (burst) size as an integer or the string "auto". Allowed values are 1, 2, 4, 6, 8, 10.
-        When set to "auto" the sender adjusts the window dynamically. 
+        When set to "auto" the sender adjusts the window dynamically.
       </td>
       <td><code>auto</code></td>
     </tr>
@@ -167,7 +168,7 @@ go build -o ax25sender sender.go
     <tr>
       <td><code>--stdin</code></td>
       <td>
-        Read file data from standard input instead of reading from a file or directory. (Mutually exclusive with <code>--file</code> and <code>--file-directory</code>.)
+        Read file data from standard input instead of from a file or directory. (Mutually exclusive with <code>--file</code> and <code>--file-directory</code>.)
       </td>
       <td><code>false</code></td>
     </tr>
@@ -176,6 +177,14 @@ go build -o ax25sender sender.go
       <td>
         Specifies the filename to be used in the header when reading data from standard input.
         This option is required when <code>--stdin</code> is set.
+      </td>
+      <td><em>none</em></td>
+    </tr>
+    <tr>
+      <td><code>--fileid</code></td>
+      <td>
+        Optional 2‑character alphanumeric file ID to identify the transfer.
+        Only valid with <code>--file</code> or <code>--stdin</code>. If not provided, a random ID is generated.
       </td>
       <td><em>none</em></td>
     </tr>
@@ -242,7 +251,7 @@ cat mydata.bin | go run sender.go --my-callsign=N0CALL --receiver-callsign=W1AW 
       The window size may be set to "auto" (the default) for dynamic adjustment based on ACK feedback, or a fixed value may be chosen from 1, 2, 4, 6, 8, or 10.
     </li>
     <li>
-      When in file‑directory mode, a filesystem watcher (<code>fsnotify</code>) monitors the directory for new or modified files.
+      In file‑directory mode, a filesystem watcher (<code>fsnotify</code>) monitors the directory for new or modified files.
       Existing files can be queued by specifying <code>--file-directory-existing</code>.
     </li>
     <li>

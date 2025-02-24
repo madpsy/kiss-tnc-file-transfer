@@ -16,11 +16,24 @@
 <body>
   <h1>KISS File Transfer WebSockets Gateway Documentation</h1>
   <p>
-    This program serves as a WebSockets and raw TCP gateway for KISS data.
-    It establishes a connection to an underlying device (using either a serial port or a TCP connection)
-    and then forwards complete KISS frames to connected clients via Socket.IO as well as raw TCP connections.
-    Additionally, events from an active Socket.IO client are relayed back to the device.
+    This program serves as a WebSockets and raw TCP gateway for KISS data. It establishes a connection
+    to an underlying device—using either a serial port or a TCP connection—reads KISS-framed data,
+    and then:
   </p>
+  <ul>
+    <li>
+      Broadcasts complete KISS frames to all connected Socket.IO clients via the <code>raw_kiss_frame</code> event.
+    </li>
+    <li>
+      Forwards the frames to raw TCP clients that connect on a port one higher than the HTTP server port.
+    </li>
+    <li>
+      Relays events from the most recently connected (active) Socket.IO client back to the device.
+    </li>
+    <li>
+      Monitors device activity (for TCP-based connections) using a read deadline—if no data is received within the specified period, it automatically triggers a reconnect.
+    </li>
+  </ul>
 
   <h2>Table of Contents</h2>
   <ul>
@@ -33,27 +46,27 @@
 
   <h2 id="overview">Overview</h2>
   <p>
-    The WebSockets Gateway is designed to integrate with a KISS TNC device. It opens a connection to the device using either a serial port or a TCP connection, reads KISS-framed data, and:
+    The WebSockets Gateway is designed to integrate with a KISS TNC device. It opens a connection to the device using either a serial port or a TCP connection, reads data framed using the KISS protocol, and:
   </p>
   <ul>
     <li>
-      Broadcasts complete KISS frames to all connected Socket.IO clients via the <code>raw_kiss_frame</code> event.
+      Broadcasts complete KISS frames to connected Socket.IO clients using the <code>raw_kiss_frame</code> event.
     </li>
     <li>
-      Forwards the frames to raw TCP clients that connect on a port one higher than the HTTP server port.
+      Forwards the same frames to raw TCP clients that connect on a port equal to <code>-listen-port + 1</code>.
     </li>
     <li>
       Forwards events from the active Socket.IO client back to the device.
     </li>
     <li>
-      For TCP-based TNC connections, it monitors activity using a read deadline. If no data is received for the specified number of seconds, it triggers a reconnect.
+      Automatically attempts to reconnect to the device if the connection is lost or if no data is received within a specified timeout.
     </li>
   </ul>
 
   <h2 id="installation">Installation &amp; Build</h2>
   <p>
     To build the WebSockets Gateway, ensure you have <a href="https://golang.org/">Go</a> installed.
-    Then compile the program:
+    Then compile the program using:
   </p>
   <pre>
 go build -o ax25ws websockets.go
@@ -77,7 +90,7 @@ go build -o ax25ws websockets.go
     <tr>
       <td><code>-serial-port</code></td>
       <td>
-        Device file for the serial connection (e.g. <code>/dev/ttyUSB0</code> or <code>COM3</code>). Required when using serial.
+        Device file for the serial connection (e.g. <code>/dev/ttyUSB0</code> or <code>COM3</code>). Required when using a serial connection.
       </td>
       <td><em>empty</em></td>
     </tr>
@@ -105,7 +118,7 @@ go build -o ax25ws websockets.go
     <tr>
       <td><code>-listen-ip</code></td>
       <td>
-        IP address on which to bind the HTTP server (which serves the Socket.IO endpoint and static files).
+        IP address on which to bind the HTTP server (serving both the Socket.IO endpoint and static files).
       </td>
       <td><code>0.0.0.0</code></td>
     </tr>
@@ -126,7 +139,7 @@ go build -o ax25ws websockets.go
     <tr>
       <td><code>-tcp-read-deadline</code></td>
       <td>
-        For TCP-based TNC connections, specifies the read deadline in seconds. If no data is received within this period, the connection is considered stalled and a reconnect is triggered.
+        For TCP-based TNC connections, specifies the read deadline in seconds. If no data is received within this period (default is 600 seconds), the connection is considered stalled and a reconnect is triggered.
       </td>
       <td><code>600</code></td>
     </tr>
@@ -153,7 +166,7 @@ go run websockets.go -connection=tcp -host=192.168.1.50 -port=8000
 
   <h3>Example 3: Using a TCP Connection with a Custom Read Deadline</h3>
   <p>
-    The following command connects to the device over TCP at <code>192.168.1.50:8000</code> but sets the read deadline to 300 seconds.
+    This command connects to the device over TCP at <code>192.168.1.50:8000</code> but sets the read deadline to 300 seconds.
   </p>
   <pre>
 go run websockets.go -connection=tcp -host=192.168.1.50 -port=8000 -tcp-read-deadline=300
@@ -161,8 +174,8 @@ go run websockets.go -connection=tcp -host=192.168.1.50 -port=8000 -tcp-read-dea
 
   <h3>Example 4: Custom HTTP Server Binding</h3>
   <p>
-    The following command runs the gateway with a TCP connection to the device, but binds the HTTP server to IP <code>127.0.0.1</code>
-    on port <code>8080</code> (raw TCP will then listen on port <code>8081</code>):
+    This command runs the gateway with a TCP connection to the device, but binds the HTTP server to IP <code>127.0.0.1</code>
+    on port <code>8080</code> (with raw TCP listening on port <code>8081</code>):
   </p>
   <pre>
 go run websockets.go -connection=tcp -host=192.168.1.50 -port=8000 -listen-ip=127.0.0.1 -listen-port=8080
@@ -179,19 +192,22 @@ go run websockets.go -connection=serial -serial-port=COM3 -baud=115200 -debug
   <h2 id="notes">Additional Notes</h2>
   <ul>
     <li>
-      When using a serial connection, ensure that you have permission to access the device file (e.g. add your user to the appropriate group on Unix systems).
+      When using a serial connection, ensure that you have permission to access the device file (for example, by adding your user to the appropriate group on Unix systems).
     </li>
     <li>
-      The HTTP server not only serves the Socket.IO endpoint at <code>/socket.io/</code> but also serves static files (an <code>index.html</code> file is expected in the working directory).
+      The HTTP server serves both the Socket.IO endpoint at <code>/socket.io/</code> and static files (an <code>index.html</code> file should be present in the working directory).
     </li>
     <li>
-      Raw TCP connections are accepted on the port equal to <code>-listen-port + 1</code>. These clients will receive complete KISS frames directly.
+      Raw TCP connections are accepted on the port equal to <code>-listen-port + 1</code>; these clients receive complete KISS frames directly.
     </li>
     <li>
       Only events from the most recently connected (active) Socket.IO client are forwarded to the device.
     </li>
     <li>
-      The <code>-tcp-read-deadline</code> flag applies only to TCP-based connections. It ensures that if no data is received from the remote TNC within the specified time (default 600 seconds), the connection will be closed and a reconnection attempt will be made.
+      The <code>-tcp-read-deadline</code> flag applies to TCP-based connections. If no data is received within the specified number of seconds, the connection is considered stalled, and the gateway will close the connection and attempt to reconnect every 5 seconds.
+    </li>
+    <li>
+      The gateway handles graceful shutdown on receiving termination signals (e.g., SIGINT, SIGTERM), ensuring that the HTTP server and open connections are closed properly.
     </li>
   </ul>
 

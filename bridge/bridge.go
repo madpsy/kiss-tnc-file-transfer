@@ -1,4 +1,4 @@
-// proxy.go
+// bridge.go
 package main
 
 import (

@@ -1,0 +1,214 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <title>File Server Client Documentation</title>
+  <style>
+    body { font-family: Arial, sans-serif; margin: 2em; line-height: 1.6; }
+    h1, h2, h3 { color: #333; }
+    code { background-color: #f4f4f4; padding: 2px 4px; border-radius: 4px; }
+    pre { background-color: #f4f4f4; padding: 1em; overflow-x: auto; }
+    table { border-collapse: collapse; margin-bottom: 1em; }
+    th, td { border: 1px solid #ddd; padding: 8px; }
+    th { background-color: #eee; }
+  </style>
+</head>
+<body>
+  <h1>File Server Client Documentation</h1>
+  <p>
+    The File Server Client is a command‑line tool designed for interacting with a remote file server via the KISS protocol.
+    It establishes a connection (over TCP or serial) with the file server, sends commands (such as <code>LIST</code>, <code>GET</code>, <code>PUT</code>, and local <code>LS</code>),
+    and then processes responses. File transfers are performed by spawning external receiver and sender processes.
+  </p>
+
+  <h2>Table of Contents</h2>
+  <ul>
+    <li><a href="#overview">Overview</a></li>
+    <li><a href="#installation">Installation &amp; Build</a></li>
+    <li><a href="#options">Command‑Line Options</a></li>
+    <li><a href="#usage">Usage &amp; Examples</a></li>
+    <li><a href="#notes">Additional Notes</a></li>
+  </ul>
+
+  <h2 id="overview">Overview</h2>
+  <p>
+    The File Server Client communicates with a remote file server using the KISS protocol. It supports two main modes of operation:
+  </p>
+  <ul>
+    <li>
+      <strong>Command Processing:</strong> User commands are read from standard input. Commands (e.g., <code>LIST</code>, <code>GET filename</code>, <code>PUT filename</code>)
+      are packed into an AX.25‑formatted command packet, framed with KISS, and sent to the server.
+    </li>
+    <li>
+      <strong>File Transfers:</strong> For file‑related commands (<code>LIST</code>, <code>GET</code>, <code>PUT</code>), the client spawns external processes:
+      <em>receiver</em> for downloading files or file listings, and <em>sender</em> for uploading files.
+    </li>
+  </ul>
+  <p>
+    Additionally, a transparent TCP listener is started for passthrough data. A <em>Broadcaster</em> disseminates incoming KISS frames from the underlying connection
+    (which may be over TCP or serial) to all active subscribers. The client also monitors connection activity and automatically attempts to reconnect if the link is lost.
+  </p>
+
+  <h2 id="installation">Installation &amp; Build</h2>
+  <p>
+    To build the File Server Client, ensure you have <a href="https://golang.org/">Go</a> installed. Then compile the program with:
+  </p>
+  <pre>
+go build -o fileserverclient fileserverclient.go
+  </pre>
+  <p>
+    Make sure that any external binaries (the <code>receiver</code> and <code>sender</code> executables) are available in your system’s PATH or specify their paths via command‑line options.
+  </p>
+
+  <h2 id="options">Command‑Line Options</h2>
+  <p>The table below lists all available command‑line options along with their descriptions and default values:</p>
+  <table>
+    <tr>
+      <th>Flag</th>
+      <th>Description</th>
+      <th>Default Value</th>
+    </tr>
+    <tr>
+      <td><code>--my-callsign</code></td>
+      <td>Your own callsign. This value is required.</td>
+      <td><em>none</em></td>
+    </tr>
+    <tr>
+      <td><code>--file-server-callsign</code></td>
+      <td>Target file server's callsign. This value is required.</td>
+      <td><em>none</em></td>
+    </tr>
+    <tr>
+      <td><code>--connection</code></td>
+      <td>Type of connection to use: <code>tcp</code> or <code>serial</code>.</td>
+      <td><code>tcp</code></td>
+    </tr>
+    <tr>
+      <td><code>--host</code></td>
+      <td>TCP host to connect to (if using TCP connection).</td>
+      <td><code>127.0.0.1</code></td>
+    </tr>
+    <tr>
+      <td><code>--port</code></td>
+      <td>TCP port to connect to (if using TCP connection).</td>
+      <td><code>9001</code></td>
+    </tr>
+    <tr>
+      <td><code>--serial-port</code></td>
+      <td>Serial port device (e.g. <code>COM3</code> or <code>/dev/ttyUSB0</code>). Required for serial connections.</td>
+      <td><em>empty</em></td>
+    </tr>
+    <tr>
+      <td><code>--baud</code></td>
+      <td>Baud rate for the serial connection.</td>
+      <td><code>115200</code></td>
+    </tr>
+    <tr>
+      <td><code>--receiver-port</code></td>
+      <td>TCP port for the transparent passthrough (for file transfers and external processes).</td>
+      <td><code>5012</code></td>
+    </tr>
+    <tr>
+      <td><code>--receiver-binary</code></td>
+      <td>Path to the receiver binary used for file downloads or listing.</td>
+      <td><code>receiver</code></td>
+    </tr>
+    <tr>
+      <td><code>--sender-binary</code></td>
+      <td>Path to the sender binary used for file uploads.</td>
+      <td><code>sender</code></td>
+    </tr>
+    <tr>
+      <td><code>--debug</code></td>
+      <td>Enable verbose debug logging.</td>
+      <td><code>false</code></td>
+    </tr>
+    <tr>
+      <td><code>--save-directory</code></td>
+      <td>Directory to save files retrieved via the <code>GET</code> command.</td>
+      <td><code>.</code></td>
+    </tr>
+    <tr>
+      <td><code>--serve-directory</code></td>
+      <td>Directory from which files are sent for the <code>PUT</code> command and listed with the local <code>LS</code> command.</td>
+      <td><code>.</code></td>
+    </tr>
+  </table>
+
+  <h2 id="usage">Usage &amp; Examples</h2>
+  <p>
+    After building the client, run it from the command line by providing the required options. The client will prompt for commands.
+  </p>
+  <h3>Example 1: Basic TCP Connection</h3>
+  <p>
+    This example starts the client using a TCP connection to a file server at <code>127.0.0.1:9001</code> and specifies your callsign along with the file server’s callsign.
+  </p>
+  <pre>
+./fileserverclient --my-callsign=YOURCALL --file-server-callsign=SERVER1
+  </pre>
+
+  <h3>Example 2: Using a Serial Connection</h3>
+  <p>
+    This command uses a serial connection (for example on <code>/dev/ttyUSB0</code>) at 115200 baud.
+  </p>
+  <pre>
+./fileserverclient --my-callsign=YOURCALL --file-server-callsign=SERVER1 --connection=serial --serial-port=/dev/ttyUSB0 --baud=115200
+  </pre>
+
+  <h3>Example 3: File Listing &amp; Transfer Commands</h3>
+  <p>
+    Once the client is running, you can enter commands at the prompt. For example:
+  </p>
+  <ul>
+    <li>
+      <strong>LS</strong>: Lists files in the local <code>serve-directory</code>.
+    </li>
+    <li>
+      <strong>LIST</strong>: Requests a remote file listing from the file server. The received CSV output is converted to a formatted table.
+    </li>
+    <li>
+      <strong>GET filename</strong>: Retrieves the specified file from the file server. The file is saved locally (a unique filename is chosen if needed).
+    </li>
+    <li>
+      <strong>PUT filename</strong>: Uploads a file from the <code>serve-directory</code> to the file server.
+    </li>
+  </ul>
+  <p>
+    Example command at the prompt:
+  </p>
+  <pre>
+> LS
+  </pre>
+  <p>
+    or, to request a remote listing:
+  </p>
+  <pre>
+> LIST
+  </pre>
+
+  <h2 id="notes">Additional Notes</h2>
+  <ul>
+    <li>
+      The client uses KISS framing (with AX.25 headers) for all command packets. Commands are automatically tagged with a unique 2‑character ID to match responses.
+    </li>
+    <li>
+      For file transfers, the client spawns external receiver and sender processes. Ensure that the binaries specified via <code>--receiver-binary</code> and <code>--sender-binary</code>
+      are accessible.
+    </li>
+    <li>
+      A separate TCP listener (on the port specified by <code>--receiver-port</code>) is used to relay data transparently between the file server and the external processes.
+    </li>
+    <li>
+      The client monitors connection activity and will attempt to reconnect automatically if no data is received within a defined period.
+    </li>
+    <li>
+      Use the <code>--debug</code> flag to enable verbose logging for troubleshooting.
+    </li>
+  </ul>
+
+  <h2>Contact &amp; Support</h2>
+  <p>
+    For further questions, suggestions, or to report issues, please contact the project maintainer or visit the project’s repository.
+  </p>
+</body>
+</html>

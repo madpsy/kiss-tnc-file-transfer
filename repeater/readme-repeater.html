@@ -18,8 +18,8 @@
   <p>
     The KISS File Transfer Repeater is a specialized application designed for environments where a single TNC must be shared between a file‐transfer sender and receiver.
     The repeater buffers and forwards complete bursts of KISS‑framed data between the sender and receiver while simultaneously offering two‑way pass‑through connectivity.
-    This two‑way pass‑through feature means that not only are all outgoing frames (sent to the TNC) broadcast to pass‑through clients, but any data received on the pass‑through port is also forwarded to the TNC.
-    Additionally, the application enforces allowed callsigns if desired.
+    In addition to file transfers, the application also immediately forwards CMD/RSP (command/response) packets.
+    Furthermore, the repeater enforces allowed callsigns if desired.
   </p>
 
   <h2>Table of Contents</h2>
@@ -33,19 +33,20 @@
 
   <h2 id="overview">Overview</h2>
   <p>
-    The repeater operates with a single TNC connection (via TCP or serial) and uses a state machine to buffer and forward data packets between a sender and receiver.
-    When a header packet is received (with detailed header fields such as filename, timeout, original/compressed size, MD5 hash, total packets, etc.),
-    its details are logged – with the encoding method translated (0 = binary, 1 = base64).
-    Once the sender’s burst of data packets is complete, the entire burst is immediately forwarded to the receiver.
+    The repeater operates with a single TNC connection (via TCP or serial) and employs a state machine to distinguish and manage different packet types:
+    <strong>Header</strong>, <strong>data</strong>, <strong>ACK</strong>, and <strong>CMD/RSP</strong> packets.
+    When a header packet is received, its payload—containing metadata such as timeout settings, filename, fileID, encoding method (0 = binary, 1 = base64), compression flag, and total packet count—is logged.
+    Once the sender’s burst of data packets is complete, the state machine forwards the entire burst to the receiver.
   </p>
   <p>
     In addition, the repeater supports two‑way pass‑through connections:
-    <strong>Outgoing</strong>: Every KISS frame sent to the TNC is also broadcast to all connected pass‑through clients.
-    <strong>Incoming</strong>: Any data received on the pass‑through port from a client is forwarded to the TNC.
+    <strong>Outgoing</strong>: Every KISS frame sent to the TNC is immediately broadcast to all connected pass‑through clients.
+    <strong>Incoming</strong>: Any data received on the pass‑through port is forwarded to the TNC.
   </p>
   <p>
-    An optional <code>--callsigns</code> filter allows you to restrict transfers to specific sender and receiver callsigns. Supports wildcards and a comma-delimited list. Example: "MM3NDH-14,MM5NDH-*,*-15"
-    Additionally, when the <code>--save-files</code> option is enabled, the repeater will reassemble received file transfers (decoding and decompressing the data as needed) and save them locally.
+    A comma‑delimited <code>--callsigns</code> filter allows you to restrict transfers to specific sender and receiver callsigns (wildcards are supported). 
+    When the <code>--save-files</code> option is enabled, the repeater will reassemble received file transfers—decoding (if base64‑encoded) and decompressing (if compressed) as needed—and save the file locally.
+    The application also automatically attempts to reconnect to the TNC if the connection is lost or if no data is received for a specified period.
   </p>
 
   <h2 id="installation">Installation &amp; Build</h2>
@@ -116,8 +117,8 @@ go build -o ax25repeater repeater.go
       <td><code>--callsigns</code></td>
       <td>
         Optional comma‑delimited list of valid sender/receiver callsigns with support for wildcards.
-        When set, only packets whose both sender and receiver callsigns appear in this list are processed.
-        Otherwise, all callsigns are allowed.
+        When set, only packets whose both sender and receiver match one of the allowed callsigns are processed.
+        Otherwise, all callsigns are accepted.
       </td>
       <td><em>empty</em></td>
     </tr>
@@ -131,24 +132,24 @@ go build -o ax25repeater repeater.go
     <tr>
       <td><code>--save-files</code></td>
       <td>
-        When enabled, the repeater will reassemble received file transfers from their data packets.
-        The application decodes (if base64‑encoded) and decompresses (if compressed) the file data, then saves the resulting file locally using a unique filename.
+        When enabled, the repeater reassembles received file transfers from their data packets.
+        The application decodes (if base64‑encoded) and decompresses (if compressed) the file data,
+        then saves the resulting file locally using a unique filename based on the sender, receiver, and file ID.
       </td>
       <td><code>false</code></td>
     </tr>
     <tr>
       <td><code>--send-delay</code></td>
       <td>
-        Delay in milliseconds before sending frames to the TNC if we have just received a frame from it (a.k.a. turnaround). It specifies
-        the minimum time which must have passed before we start sending frames.
-        This option should not normally be needed unless there are timing issues with the TNC.
+        Delay in milliseconds before sending frames to the TNC if a recent frame was received.
+        This minimum turnaround delay can help address timing issues with certain TNCs.
       </td>
       <td><code>0</code></td>
     </tr>
     <tr>
       <td><code>--tcp-read-deadline</code></td>
       <td>
-        TCP read deadline in seconds for TNC connections (application‑level timeout). If no complete KISS frame is received within this period,
+        TCP read deadline (in seconds) for TNC connections. If no complete KISS frame is received within this period,
         the connection is closed and a reconnect is triggered.
       </td>
       <td><code>600</code></td>
@@ -176,8 +177,8 @@ go run ax25repeater.go --tnc-connection-type=serial --tnc-serial-port=/dev/ttyUS
 
   <h3>Example 3: Restricting Transfers to Specific Callsigns</h3>
   <p>
-    The following command restricts transfers to the callsigns <code>N0CALL</code> and any SSID matching <code>*-R</code>
-    and enables debug logging.
+    The following command restricts transfers to the callsigns <code>N0CALL</code> and any SSID matching <code>*-R</code>,
+    while also enabling debug logging.
   </p>
   <pre>
 go run ax25repeater.go --callsigns=N0CALL,*-R --debug
@@ -185,9 +186,9 @@ go run ax25repeater.go --callsigns=N0CALL,*-R --debug
 
   <h3>Example 4: Enabling File Saving</h3>
   <p>
-    To enable the saving of received files, simply add the <code>--save-files</code> flag.
-    When enabled, the repeater reassembles the file transfer by decoding and decompressing the data as needed,
-    then saves it locally with a filename that includes the sender, receiver, and file ID.
+    To enable saving of received files, add the <code>--save-files</code> flag.
+    When enabled, the repeater reassembles the file transfer by decoding (if base64‑encoded) and decompressing (if compressed)
+    the data, then saves it locally with a filename that includes the sender, receiver, and file ID.
   </p>
   <pre>
 go run ax25repeater.go --save-files
@@ -199,33 +200,37 @@ go run ax25repeater.go --save-files
       The repeater establishes a single TNC connection (via TCP or serial) for file‑transfer processing.
     </li>
     <li>
-      When a header packet (sequence 1) is received, its payload is parsed and logged.
-      The header details include fields such as filename, timeout parameters, original/compressed size, MD5 hash, total packets, and encoding method (translated as <code>binary</code> or <code>base64</code>).
+      A header packet’s payload contains delimited metadata (fields separated by <code>|</code>). This metadata includes parameters such as timeout seconds, timeout retries, filename, file ID, encoding method (0 for binary, 1 for base64), compression flag, and total packets.
+      These details are logged and used when reassembling file transfers.
     </li>
     <li>
       The state machine buffers data packets until a complete burst is received, then immediately forwards the burst to the receiver.
+      Duplicate data packets (detected during the burst) are forwarded immediately.
+    </li>
+    <li>
+      <strong>CMD/RSP Packets:</strong> Command/response packets are forwarded immediately after verifying allowed callsigns.
     </li>
     <li>
       <strong>Two‑Way Pass‑Through:</strong>
-      All KISS frames sent to the TNC are broadcast to any pass‑through clients connected on the specified port.
-      In addition, any data received on the pass‑through port from a client is forwarded to the TNC.
+      All KISS frames sent to the TNC are broadcast to connected pass‑through clients.
+      Additionally, any data received on the pass‑through port is forwarded to the TNC.
     </li>
     <li>
       If the <code>--callsigns</code> flag is not provided, all callsigns are accepted.
-      Otherwise, only packets with both sender and receiver matching one of the allowed callsigns or wildcard matches are processed.
+      Otherwise, only packets with both sender and receiver matching one of the allowed patterns are processed.
     </li>
     <li>
       <strong>File Saving:</strong>
-      When the <code>--save-files</code> flag is enabled, the repeater accumulates data packets for each file transfer.
-      Once all packets for a transfer have been received, the application reassembles the file in order.
-      If the transfer was base64‑encoded, each packet is decoded.
+      When <code>--save-files</code> is enabled, the repeater accumulates data packets for each file transfer.
+      Once all packets are received, the file is reassembled in order.
+      If the data was base64‑encoded, each packet is decoded.
       If compression was used, the reassembled data is decompressed via zlib before being saved.
-      The file is then stored locally using a unique filename based on the sender, receiver, file ID, and original filename.
+      The file is stored locally with a unique filename based on the sender, receiver, file ID, and original filename.
     </li>
     <li>
-      <strong>TCP Read Deadline:</strong>
-      The <code>--tcp-read-deadline</code> option sets an application‑level timeout for TCP‑based TNC connections.
-      If no complete KISS frame is received within the specified number of seconds, the connection is closed and a reconnect is triggered.
+      <strong>TCP Read Deadline &amp; Auto‑Reconnect:</strong>
+      The <code>--tcp-read-deadline</code> option sets an application‑level timeout for TCP TNC connections.
+      If no complete KISS frame is received within the specified period, the connection is closed, triggering an automatic reconnect after a brief delay.
     </li>
   </ul>
 

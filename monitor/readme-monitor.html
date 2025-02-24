@@ -16,9 +16,9 @@
 <body>
   <h1>KISS File Transfer Monitor Documentation</h1>
   <p>
-    The Monitor program connects to a broadcast server and displays incoming KISS‑framed packets from the file transfer system.
-    It decodes packets (including header, data, and ACK packets) and prints human‑readable summaries of their contents.
-    Optionally, the Monitor can publish raw packet data to an MQTT broker.
+    The Monitor program connects to a broadcast server over TCP and continuously reads incoming KISS‑framed packets. It removes the KISS framing,
+    unescapes special byte sequences, and decodes packets from the file transfer system – including header, data, ACK, as well as CMD and RSP packets.
+    Additionally, it can decode AX.25 packets and publish raw frame data to an MQTT broker.
   </p>
 
   <h2>Table of Contents</h2>
@@ -33,35 +33,39 @@
 
   <h2 id="overview">Overview</h2>
   <p>
-    The Monitor program is designed to assist in debugging and observing the file transfer process by decoding KISS‑framed packets.
-    It works with the KISS File Transfer combined Sender/Receiver system by:
+    The Monitor program is designed for debugging and observing the file transfer process. It works by:
   </p>
   <ul>
     <li>
-      Connecting to a broadcast server (via TCP) and continuously reading incoming frames.
+      Connecting to a broadcast server (via TCP) to receive continuous streams of KISS‑framed data.
     </li>
     <li>
-      Removing the KISS framing and unescaping the data.
+      Removing the KISS framing (delimited by the flag byte <code>0xC0</code>) and unescaping the payload.
     </li>
     <li>
-      Decoding the packet’s fields – such as the sender and receiver callsigns, file ID, sequence numbers, header payload (including timeout settings), and ACK values.
+      Decoding packet contents – including sender and receiver callsigns (using AX.25 addressing), file IDs, sequence numbers, header metadata (such as timeout settings, file name, sizes, MD5 hash, encoding and compression flags), and ACK values.
     </li>
     <li>
-      Optionally publishing raw packet data to an MQTT broker for further processing.
+      Recognizing and processing special CMD and RSP packets embedded in file transfer packets.
+    </li>
+    <li>
+      Optionally decoding all AX.25 packets when required.
+    </li>
+    <li>
+      Optionally publishing raw frame data to an MQTT broker for further processing.
     </li>
   </ul>
 
   <h2 id="installation">Installation &amp; Build</h2>
   <p>
-    To build the Monitor program, ensure that you have <a href="https://golang.org/">Go</a> installed.
-    Then compile the program using the following command:
+    To build the Monitor program, ensure that you have <a href="https://golang.org/">Go</a> installed. Then compile the program using the following command:
   </p>
   <pre>
 go build -o kissmonitor monitor.go
   </pre>
 
   <h2 id="options">Command‑Line Options</h2>
-  <p>The table below lists the available command‑line options for the Monitor program along with their descriptions and default values.</p>
+  <p>The table below lists the available command‑line options along with their descriptions and default values.</p>
   <table>
     <tr>
       <th>Flag</th>
@@ -85,7 +89,7 @@ go build -o kissmonitor monitor.go
     <tr>
       <td><code>--mqtt-host</code></td>
       <td>
-        Hostname of the MQTT broker. If provided, all MQTT parameters must be specified.
+        Hostname of the MQTT broker. When provided, all MQTT parameters must be specified.
       </td>
       <td><em>empty</em></td>
     </tr>
@@ -127,21 +131,21 @@ go build -o kissmonitor monitor.go
     <tr>
       <td><code>--ascii</code></td>
       <td>
-        When set, displays raw frames as ASCII text instead of hexadecimal.
+        Display raw frames as ASCII text instead of hexadecimal.
       </td>
       <td><code>false</code></td>
     </tr>
     <tr>
       <td><code>--decode-file-transfer</code></td>
       <td>
-        Attempt to decode known file transfer packets and display human‑readable summaries.
+        Decode known file transfer packets and display human‑readable summaries (including header, data, ACK, CMD, and RSP packets).
       </td>
       <td><code>false</code></td>
     </tr>
     <tr>
       <td><code>--decode-ax25</code></td>
       <td>
-        Attempt to decode all AX.25 packets. This option is mutually exclusive with <code>--ascii</code> and <code>--decode-file-transfer</code>.
+        Decode all AX.25 packets. This option is mutually exclusive with <code>--ascii</code> and <code>--decode-file-transfer</code>.
       </td>
       <td><code>false</code></td>
     </tr>
@@ -150,7 +154,7 @@ go build -o kissmonitor monitor.go
   <h2 id="usage">Usage Examples</h2>
   <h3>Example 1: Monitor Mode over TCP (Decoding File Transfer Packets)</h3>
   <p>
-    The following command connects to a broadcast server at <code>127.0.0.1</code> on port <code>9001</code> and decodes incoming file transfer packets.
+    Connect to a broadcast server at <code>127.0.0.1</code> on port <code>9001</code> and decode incoming file transfer packets:
   </p>
   <pre>
 go run monitor.go --host=127.0.0.1 --port=9001 --decode-file-transfer
@@ -158,8 +162,7 @@ go run monitor.go --host=127.0.0.1 --port=9001 --decode-file-transfer
 
   <h3>Example 2: Monitor Mode over TCP (Decoding AX.25 Packets)</h3>
   <p>
-    The following command connects to a broadcast server and decodes all AX.25 packets.
-    Note that this option cannot be combined with <code>--ascii</code> or <code>--decode-file-transfer</code>.
+    Connect to a broadcast server and decode all AX.25 packets. Note that this option cannot be combined with <code>--ascii</code> or <code>--decode-file-transfer</code>:
   </p>
   <pre>
 go run monitor.go --host=127.0.0.1 --port=9001 --decode-ax25
@@ -167,7 +170,7 @@ go run monitor.go --host=127.0.0.1 --port=9001 --decode-ax25
 
   <h3>Example 3: Monitor Mode with MQTT Publishing</h3>
   <p>
-    The following command connects to a broadcast server and publishes all raw frames to an MQTT broker at <code>mqtt.example.com:1883</code>.
+    Connect to a broadcast server and publish all raw frames to an MQTT broker at <code>mqtt.example.com:1883</code>:
   </p>
   <pre>
 go run monitor.go --host=127.0.0.1 --port=9001 --mqtt-host=mqtt.example.com --mqtt-port=1883 --mqtt-user=myuser --mqtt-pass=mypassword --mqtt-topic=kiss/frames
@@ -175,7 +178,7 @@ go run monitor.go --host=127.0.0.1 --port=9001 --mqtt-host=mqtt.example.com --mq
 
   <h3>Example 4: Monitor Mode with ASCII Output</h3>
   <p>
-    The following command displays the raw unescaped frames as ASCII text.
+    Display the raw, unescaped frames as ASCII text:
   </p>
   <pre>
 go run monitor.go --host=127.0.0.1 --port=9001 --ascii
@@ -190,14 +193,20 @@ go run monitor.go --host=127.0.0.1 --port=9001 --ascii
       When using MQTT, all MQTT parameters (<code>--mqtt-host</code>, <code>--mqtt-port</code>, <code>--mqtt-user</code>, <code>--mqtt-pass</code>, and <code>--mqtt-topic</code>) must be provided.
     </li>
     <li>
-      The <code>--decode-file-transfer</code> option instructs the program to parse and print details for file transfer packets (headers, data, and ACK packets).
+      The <code>--decode-file-transfer</code> option instructs the program to parse and print details for file transfer packets. This includes:
+      <ul>
+        <li>Header packets with file metadata (timeout settings, file name, sizes, MD5 hash, encoding, and compression flags).</li>
+        <li>Data packets with sequence information.</li>
+        <li>ACK packets showing the ACK value.</li>
+        <li>CMD and RSP packets, where command IDs and response statuses are extracted and displayed.</li>
+      </ul>
     </li>
     <li>
-      The <code>--decode-ax25</code> option instructs the program to decode all AX.25 packets.
-      This option is mutually exclusive with <code>--ascii</code> and <code>--decode-file-transfer</code>.
+      The <code>--decode-ax25</code> option decodes all AX.25 packets. It is mutually exclusive with <code>--ascii</code> and <code>--decode-file-transfer</code>.
     </li>
     <li>
-      ACK packets include an <code>ACK Value</code> field which may represent a range (e.g. <code>0001-XXXX</code>) or the final confirmation <code>FIN-ACK</code>.
+      The program tracks metrics such as total frames processed, total bytes received, and the minimum/maximum time between packets.
+      When you press <code>Ctrl-C</code> to exit, a summary of these metrics is printed.
     </li>
   </ul>
 

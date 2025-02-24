@@ -1,0 +1,227 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <title>File Server Documentation</title>
+  <style>
+    body { font-family: Arial, sans-serif; margin: 2em; line-height: 1.6; }
+    h1, h2, h3 { color: #333; }
+    code { background-color: #f4f4f4; padding: 2px 4px; border-radius: 4px; }
+    pre { background-color: #f4f4f4; padding: 1em; overflow-x: auto; }
+    table { border-collapse: collapse; margin-bottom: 1em; }
+    th, td { border: 1px solid #ddd; padding: 8px; }
+    th { background-color: #eee; }
+  </style>
+</head>
+<body>
+  <h1>File Server Documentation</h1>
+  <p>
+    The File Server program is designed to serve files and respond to remote file transfer commands over a KISS‑framed connection.
+    Using AX.25 headers, it accepts commands such as <code>GET</code>, <code>LIST</code>, and <code>PUT</code> from remote clients.
+    The server reads commands from an underlying connection (either TCP or serial), processes them, and sends back responses
+    as RSP packets. File content or directory listings are transferred by invoking external sender or receiver binaries.
+  </p>
+
+  <h2>Table of Contents</h2>
+  <ul>
+    <li><a href="#overview">Overview</a></li>
+    <li><a href="#installation">Installation &amp; Build</a></li>
+    <li><a href="#options">Command‑Line Options</a></li>
+    <li><a href="#usage">Usage &amp; Examples</a></li>
+    <li><a href="#notes">Additional Notes</a></li>
+    <li><a href="#support">Contact &amp; Support</a></li>
+  </ul>
+
+  <h2 id="overview">Overview</h2>
+  <p>
+    The File Server performs the following functions:
+  </p>
+  <ul>
+    <li>
+      <strong>Command Processing:</strong> It listens for KISS‑framed command packets containing an AX.25 header.
+      Commands are expected to begin with <code>CMD:</code> and include a unique 2‑character command ID.
+    </li>
+    <li>
+      <strong>GET Command:</strong> When a remote client issues a <code>GET [FILE]</code> command, the server reads the requested file from the
+      specified <code>serve-directory</code>, responds with a “GET OK” status, and then transfers the file using the sender binary.
+    </li>
+    <li>
+      <strong>LIST Command:</strong> A <code>LIST</code> command causes the server to generate a CSV file listing of all files in the serve directory.
+      The listing is then sent as <code>LIST.txt</code> via the sender binary.
+    </li>
+    <li>
+      <strong>PUT Command:</strong> For a <code>PUT [FILE]</code> command, the server verifies the sender’s callsign (if filtering is enabled)
+      and spawns the receiver binary to accept the incoming file. The file is then saved to the designated save directory.
+    </li>
+    <li>
+      <strong>Transparent Passthrough:</strong> A dedicated TCP listener (on the port specified by <code>--sender-port</code>) allows for a transparent data relay between
+      the underlying KISS connection and remote clients.
+    </li>
+    <li>
+      <strong>Reconnection Logic:</strong> The server monitors connection activity and automatically attempts to reconnect if no data is received within a defined timeout.
+    </li>
+  </ul>
+
+  <h2 id="installation">Installation &amp; Build</h2>
+  <p>
+    To build the File Server, ensure that you have <a href="https://golang.org/">Go</a> installed.
+    Then compile the program with the following command:
+  </p>
+  <pre>
+go build -o fileserver fileserver.go
+  </pre>
+  <p>
+    Make sure that any external binaries (the sender and receiver executables) are available in your system’s PATH or specify their paths via the command‑line options.
+  </p>
+
+  <h2 id="options">Command‑Line Options</h2>
+  <p>The table below lists all available command‑line options along with their descriptions and default values:</p>
+  <table>
+    <tr>
+      <th>Flag</th>
+      <th>Description</th>
+      <th>Default Value</th>
+    </tr>
+    <tr>
+      <td><code>--my-callsign</code></td>
+      <td>
+        Your server’s callsign (required). This value is used as the destination for incoming command packets.
+      </td>
+      <td><em>none</em></td>
+    </tr>
+    <tr>
+      <td><code>--connection</code></td>
+      <td>
+        Connection type to use: <code>tcp</code> or <code>serial</code>.
+      </td>
+      <td><code>tcp</code></td>
+    </tr>
+    <tr>
+      <td><code>--host</code></td>
+      <td>
+        TCP host to connect to (if using TCP connection).
+      </td>
+      <td><code>127.0.0.1</code></td>
+    </tr>
+    <tr>
+      <td><code>--port</code></td>
+      <td>
+        TCP port to connect to (if using TCP connection).
+      </td>
+      <td><code>9001</code></td>
+    </tr>
+    <tr>
+      <td><code>--serial-port</code></td>
+      <td>
+        Serial port device (e.g. <code>COM3</code> or <code>/dev/ttyUSB0</code>). Required for serial connections.
+      </td>
+      <td><em>empty</em></td>
+    </tr>
+    <tr>
+      <td><code>--baud</code></td>
+      <td>
+        Baud rate for the serial connection.
+      </td>
+      <td><code>115200</code></td>
+    </tr>
+    <tr>
+      <td><code>--get-callsigns</code></td>
+      <td>
+        Comma‑delimited list of allowed sender callsign patterns for GET commands (supports wildcards, e.g. <code>MM5NDH-*,*-15</code>).
+      </td>
+      <td><em>none</em></td>
+    </tr>
+    <tr>
+      <td><code>--put-callsigns</code></td>
+      <td>
+        Comma‑delimited list of allowed sender callsign patterns for PUT commands (supports wildcards).
+      </td>
+      <td><em>none</em></td>
+    </tr>
+    <tr>
+      <td><code>--serve-directory</code></td>
+      <td>
+        Directory from which files are served (mandatory).
+      </td>
+      <td><em>none</em></td>
+    </tr>
+    <tr>
+      <td><code>--save-directory</code></td>
+      <td>
+        Directory where received files should be saved.
+      </td>
+      <td><code>.</code></td>
+    </tr>
+    <tr>
+      <td><code>--sender-binary</code></td>
+      <td>
+        Path to the binary used to send files (mandatory). This binary is invoked for GET and LIST commands.
+      </td>
+      <td><em>none</em></td>
+    </tr>
+    <tr>
+      <td><code>--receiver-binary</code></td>
+      <td>
+        Path to the binary used to receive files (for PUT commands).
+      </td>
+      <td><code>receiver</code></td>
+    </tr>
+    <tr>
+      <td><code>--sender-port</code></td>
+      <td>
+        TCP port for transparent passthrough (used for file transfers). Remote clients connect here to receive file data.
+      </td>
+      <td><code>5011</code></td>
+    </tr>
+  </table>
+
+  <h2 id="usage">Usage &amp; Examples</h2>
+  <p>
+    Run the File Server by providing the required options. For example, to start the server with a TCP connection, serving files from the <code>files</code> directory:
+  </p>
+  <pre>
+./fileserver --my-callsign=SERVER1 --serve-directory=files --sender-binary=/path/to/sender
+  </pre>
+  <p>
+    For a serial connection, specify the serial port:
+  </p>
+  <pre>
+./fileserver --my-callsign=SERVER1 --connection=serial --serial-port=/dev/ttyUSB0 --baud=115200 --serve-directory=files --sender-binary=/path/to/sender
+  </pre>
+  <p>
+    Optionally, you can restrict which remote callsigns may issue GET or PUT commands by using the <code>--get-callsigns</code> and <code>--put-callsigns</code> flags.
+  </p>
+
+  <h2 id="notes">Additional Notes</h2>
+  <ul>
+    <li>
+      The server uses KISS framing and AX.25 headers to encapsulate command and response packets.
+    </li>
+    <li>
+      Commands supported include:
+      <ul>
+        <li><strong>GET [FILE]</strong>: Sends the requested file from the serve directory using the sender binary.</li>
+        <li><strong>LIST</strong>: Sends a CSV file listing of all files in the serve directory as <code>LIST.txt</code>.</li>
+        <li><strong>PUT [FILE]</strong>: Initiates a file upload by invoking the receiver binary; the received file is saved in the save directory.</li>
+      </ul>
+    </li>
+    <li>
+      A transparent TCP listener (on the port specified by <code>--sender-port</code>) relays data between the underlying KISS connection and remote clients.
+    </li>
+    <li>
+      The server monitors for inactivity on the connection and will automatically attempt to reconnect if no data is received within 600 seconds.
+    </li>
+    <li>
+      Filtering of allowed sender callsigns for GET and PUT commands can be enabled via the <code>--get-callsigns</code> and <code>--put-callsigns</code> flags.
+    </li>
+    <li>
+      External binaries (sender and receiver) are invoked to handle file transfers. Ensure they are correctly specified and accessible.
+    </li>
+  </ul>
+
+  <h2 id="support">Contact &amp; Support</h2>
+  <p>
+    For further questions, suggestions, or to report issues, please contact the project maintainer or visit the project’s repository.
+  </p>
+</body>
+</html>
