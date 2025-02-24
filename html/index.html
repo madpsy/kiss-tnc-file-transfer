@@ -10,7 +10,6 @@
     <script src="crypto-js.min.js"></script>
     <script src="pako.min.js"></script>
     <script src="bootstrap.bundle.min.js"></script>
-    <script src="fileserver.js"></script>
     <style>
         body { padding: 20px; }
         #status { margin-top: 1rem; font-weight: bold; }
@@ -24,6 +23,12 @@
           background-color: red;
           margin-left: 10px;
         }
+.modal-dialog {
+  display: table;
+  width: auto;
+  max-width: none;
+}
+
     </style>
 </head>
 
@@ -68,8 +73,16 @@
             <label for="senderCallsign" class="form-label">Your Callsign</label> <input type="text" id="senderCallsign" class="form-control" placeholder="Enter your callsign">
         </div>
         <div class="mb-3">
-            <label for="receiverCallsign" class="form-label">Receiver Callsign (for sending)</label> <input type="text" id="receiverCallsign" class="form-control" placeholder="Enter receiver callsign">
+            <label for="receiverCallsign" class="form-label">Remote Callsign</label> <input type="text" id="receiverCallsign" class="form-control" placeholder="Enter receiver callsign">
         </div>
+<div class="mb-3">
+      <div class="form-check">
+        <input type="checkbox" class="form-check-input" id="isFileServer">
+        <label class="form-check-label" for="isFileServer">Is file server?</label>
+      </div>
+      <!-- Container where the List button will be added dynamically -->
+      <span id="listButtonContainer"></span>
+    </div>
         <div class="mb-3">
             <label for="encodingMethod" class="form-label">Encoding Method</label> <select id="encodingMethod" class="form-select">
         <option value="binary" selected>
@@ -123,6 +136,25 @@
         <div id="receivedFiles">
             <p>No files received yet.</p>
         </div>
+<div class="modal fade" id="listFiles" tabindex="-1" aria-labelledby="listFilesLabel" aria-hidden="true">
+      <div class="modal-dialog">
+        <div class="modal-content">
+          <div class="modal-header">
+            <h5 class="modal-title" id="listFilesLabel">File Server</h5>
+            <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
+          </div>
+          <div class="modal-body">
+            <div id="cmdSent"></div>
+            <div id="rspResponse"></div>
+            <br>
+	    <div id="listTable"></div>
+          </div>
+          <div class="modal-footer">
+            <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Close</button>
+          </div>
+        </div>
+      </div>
+    </div>
     </div>
     <script>
         /***********************
@@ -155,6 +187,7 @@
         let sender = "";
         let receiver = "";
         let fileId = "";
+        let cachedListCSV = null;
         
         // Dynamic burst mode settings (allowed sizes: 1,2,4,6,8,10)
         const dynamicBurstSizes = [1, 2, 4, 6, 8, 10];
@@ -245,40 +278,52 @@
          * UI Update Functions
          ***********************/
         function updateReceivedFilesUI() {
-          const container = document.getElementById('receivedFiles');
-          if (!persistentReceivedFiles.length) {
-            container.innerHTML = "<p>No files received yet.</p>";
-            return;
-          }
-          let html = `<table class="table table-striped"><thead>
-            <tr><th>Date/Time</th><th>Sender</th><th>File Name</th>
-            <th>Original Size</th><th>Compressed Size</th>
-            <th>Elapsed Time (s)</th><th>Speed (Bytes/s)</th>
-            <th>Duplicates</th><th>Checksum</th><th>Download</th><th>Delete</th></tr>
-            </thead><tbody>`;
-          persistentReceivedFiles.forEach((file, index) => {
-            let checksumIcon = file.checksumMatch ? '<span style="color:green;">&#10004;</span>' :
-              '<span style="color:red;">&#10008;</span>';
-            let elapsedSec = file.elapsed / 1000;
-            let speed = elapsedSec > 0 ? Math.floor((file.bytesReceived || file.size) / elapsedSec) : 0;
-            let dupPercent = file.totalPackets ? Math.round((file.duplicates / file.totalPackets) * 100) : "0";
-            html += `<tr>
-              <td>${new Date(file.timestamp).toLocaleString()}</td>
-              <td>${file.sender}</td>
-              <td>${file.fileName}</td>
-              <td>${file.originalSize} bytes</td>
-              <td>${file.compressedSize} bytes</td>
-              <td>${elapsedSec.toFixed(2)}</td>
-              <td>${speed}</td>
-              <td>${file.duplicates} (${dupPercent}%)</td>
-              <td>${checksumIcon}</td>
-              <td><button class="btn btn-success btn-sm" onclick="downloadReceivedFile(${index})">Download</button></td>
-              <td><button class="btn btn-danger btn-sm" onclick="deleteReceivedFile(${index})">Delete</button></td>
-            </tr>`;
-          });
-          html += "</tbody></table>";
-          container.innerHTML = html;
-        }
+  const container = document.getElementById('receivedFiles');
+  // Filter out any file with the name "LIST.txt"
+  const filteredFiles = persistentReceivedFiles.filter(file => file.fileName.trim() !== "LIST.txt");
+  if (!filteredFiles.length) {
+    container.innerHTML = "<p>No files received yet.</p>";
+    return;
+  }
+  let html = `<table class="table table-striped"><thead>
+    <tr>
+      <th>Date/Time</th>
+      <th>Sender</th>
+      <th>File Name</th>
+      <th>Original Size</th>
+      <th>Compressed Size</th>
+      <th>Elapsed Time (s)</th>
+      <th>Speed (Bytes/s)</th>
+      <th>Duplicates</th>
+      <th>Checksum</th>
+      <th>Download</th>
+      <th>Delete</th>
+    </tr>
+    </thead><tbody>`;
+  filteredFiles.forEach((file, index) => {
+    let checksumIcon = file.checksumMatch ? '<span style="color:green;">&#10004;</span>' :
+      '<span style="color:red;">&#10008;</span>';
+    let elapsedSec = file.elapsed / 1000;
+    let speed = elapsedSec > 0 ? Math.floor((file.bytesReceived || file.size) / elapsedSec) : 0;
+    let dupPercent = file.totalPackets ? Math.round((file.duplicates / file.totalPackets) * 100) : "0";
+    html += `<tr>
+      <td>${new Date(file.timestamp).toLocaleString()}</td>
+      <td>${file.sender}</td>
+      <td>${file.fileName}</td>
+      <td>${file.originalSize} bytes</td>
+      <td>${file.compressedSize} bytes</td>
+      <td>${elapsedSec.toFixed(2)}</td>
+      <td>${speed}</td>
+      <td>${file.duplicates} (${dupPercent}%)</td>
+      <td>${checksumIcon}</td>
+      <td><button class="btn btn-success btn-sm" onclick="downloadReceivedFile(${index})">Download</button></td>
+      <td><button class="btn btn-danger btn-sm" onclick="deleteReceivedFile(${index})">Delete</button></td>
+    </tr>`;
+  });
+  html += "</tbody></table>";
+  container.innerHTML = html;
+}
+
         
         function updateSentFilesUI() {
           const container = document.getElementById('sentFiles');
@@ -1261,6 +1306,27 @@
         console.log("Decompressed file length:", decompressed.length);
     
         const blob = new Blob([decompressed]);
+
+if (transfer.header.fileName.trim() === "LIST.txt") {
+  // Process the CSV asynchronously.
+  const readerText = new FileReader();
+  readerText.onload = function(e) {
+    const csvText = e.target.result;
+    processListFile(csvText);
+    // Optionally, update state to indicate that LIST.txt has been handled.
+  };
+  readerText.onerror = function(e) {
+    console.error("Error reading LIST file:", e);
+  };
+  readerText.readAsText(blob);
+
+  // Instead of returning immediately, allow the FIN-ACK process to complete.
+  // You might set a flag so that the normal download isn't triggered later.
+  transfer.isListFile = true;
+  console.log("Processing LIST.txt file via CSV parser, but continuing with FIN-ACK.");
+  // Do not return here—continue so that the final ack cycle still runs.
+}
+
         const elapsedTotal = Date.now() - transfer.startTime;
         const dupCount = transfer.duplicateCount;
         const computedMd5 = CryptoJS.MD5(CryptoJS.lib.WordArray.create(decompressed)).toString();
@@ -1297,7 +1363,11 @@
           updateReceivedFilesUI();
     
           if (checksumMatch) {
-            downloadReceivedFile(existingIndex);
+	    if (!transfer.isListFile) {
+            	downloadReceivedFile(existingIndex);
+	    } else {
+		console.log("LIST.txt processed; skipping normal download.");
+            }
           } else {
             console.error("Checksum does not match; automatic download aborted.");
             updateStatus("Received file failed checksum verification.");
@@ -1548,7 +1618,35 @@
           document.getElementById('receiverCallsign').addEventListener('input', () => {
             localStorage.setItem('receiverCallsign', document.getElementById('receiverCallsign').value);
           });
-        
+
+        const fileServerCheckbox = document.getElementById('isFileServer');
+        const listButtonContainer = document.getElementById('listButtonContainer');
+
+if (fileServerCheckbox.checked) {
+  const listBtn = document.createElement('button');
+  listBtn.id = "listFilesBtn";
+  listBtn.className = "btn btn-info btn-sm ms-2";
+  listBtn.innerText = "List Files";
+  listBtn.addEventListener('click', openListFilesModal);
+  listButtonContainer.appendChild(listBtn);
+}
+
+
+
+        fileServerCheckbox.addEventListener('change', function() {
+          // Clear the container first.
+          listButtonContainer.innerHTML = "";
+          if (this.checked) {
+            // Create the List button.
+            const listBtn = document.createElement('button');
+            listBtn.id = "listFilesBtn";
+            listBtn.className = "btn btn-info btn-sm ms-2";
+            listBtn.innerText = "List Files";
+            listBtn.addEventListener('click', openListFilesModal);
+            listButtonContainer.appendChild(listBtn);
+          }
+        });
+
           const autoCheckbox = document.getElementById('autoBurstCheckbox');
           const burstSlider = document.getElementById('burstSlider');
           burstSlider.disabled = autoCheckbox.checked;
@@ -1841,6 +1939,252 @@
         }
       }
       }, 1000);
+
+
+// Generate a two-character command ID using crypto randomness.
+function generateCmdID() {
+  // crypto.getRandomValues returns a Uint8Array filled with cryptographically secure random bytes.
+  const randomByte = crypto.getRandomValues(new Uint8Array(1))[0];
+  // Convert to uppercase hex and pad with a leading zero if needed.
+  return randomByte.toString(16).padStart(2, '0').toUpperCase();
+}
+
+// Build a CMD packet given your callsigns and command text.
+// The packet consists of a 16-byte AX.25 header plus a 64-byte info field.
+function buildCmdPacket(myCallsign, fileServerCallsign, commandText) {
+  // Use your existing helper to build the AX.25 header (assumed to return a Uint8Array of length 16).
+  const header = buildAX25Header(myCallsign, fileServerCallsign);
+  // Generate a two-character command ID.
+  const cmdID = generateCmdID();
+  // Build the info field starting with "CMD:" + cmdID + " " followed by the command text.
+  let infoStr = "CMD:" + cmdID + " " + commandText;
+  // Ensure the info field is exactly 64 characters.
+  if (infoStr.length > 64) {
+    infoStr = infoStr.substring(0, 64);
+  } else {
+    infoStr = infoStr.padEnd(64, ' ');
+  }
+  const encoder = new TextEncoder();
+  const infoBytes = encoder.encode(infoStr); // Should yield 64 bytes (assuming ASCII)
+  // Concatenate the header and info field into an 80-byte packet.
+  const packet = new Uint8Array(header.length + infoBytes.length);
+  packet.set(header, 0);
+  packet.set(infoBytes, header.length);
+  return { packet, cmdID };
+}
+
+// Parse an RSP packet's info field. Expected format:
+// "RSP:" + <2-character cmdID> + " " + <status> + " " + <message>
+// Returns an object with the parsed cmdID, status (as a number), message, and an ok flag.
+function parseRspPacket(payload) {
+  // Assume 'payload' is a Uint8Array (the 64-byte info field after unescaping and trimming header if needed)
+  const decoder = new TextDecoder();
+  const str = decoder.decode(payload).trim();
+  
+  if (!str.startsWith("RSP:")) {
+    return { ok: false, error: "Not an RSP packet" };
+  }
+  
+  // Split the string by whitespace.
+  const parts = str.split(/\s+/);
+  if (parts.length < 2) {
+    return { ok: false, error: "Incomplete RSP packet" };
+  }
+  
+  // The first part should be "RSP:XX" where XX is the cmdID.
+  const rspHeader = parts[0];
+  if (rspHeader.length < 5) {
+    return { ok: false, error: "Invalid RSP header" };
+  }
+  const cmdID = rspHeader.substring(4, 6);
+  const status = parseInt(parts[1], 10);
+  if (isNaN(status)) {
+    return { ok: false, error: "Invalid status value" };
+  }
+  // The remainder of the parts (if any) form the response message.
+  const message = parts.slice(2).join(" ");
+  return { ok: true, cmdID, status, message };
+}
+
+// Optional: Send a CMD packet over the active connection and wait for its corresponding RSP.
+// This function uses a pending responses map to associate incoming responses with sent commands.
+const pendingCmdResponses = {};
+
+function sendCmd(commandText) {
+  return new Promise((resolve, reject) => {
+    // Read the callsigns from the UI fields.
+    const myCallsign = document.getElementById('senderCallsign').value.trim();
+    const fileServerCallsign = document.getElementById('receiverCallsign').value.trim();
+    // Build the CMD packet.
+    const { packet, cmdID } = buildCmdPacket(myCallsign, fileServerCallsign, commandText);
+    // Wrap the packet in a KISS frame.
+    const kissFrame = buildKissFrame(packet);
+    
+    // Store the promise resolvers keyed by the command ID.
+    pendingCmdResponses[cmdID] = { resolve, reject, timestamp: Date.now() };
+    
+    // Send the frame via websockets or serial.
+    if (document.getElementById('connectionType').value === 'websockets') {
+      if (socket) socket.emit('raw_kiss_frame', kissFrame);
+      else reject("No websocket connection available.");
+    } else if (document.getElementById('connectionType').value === 'serial' && serialWriter) {
+      serialWriter.write(kissFrame).catch(err => reject(err));
+    } else {
+      reject("No valid connection available.");
+    }
+    
+    // Optionally, set a timeout to reject the promise if no response arrives in time.
+    const timeoutMS = (parseFloat(document.getElementById('timeoutSeconds').value) * 1000) || 10000;
+    setTimeout(() => {
+      if (pendingCmdResponses[cmdID]) {
+        delete pendingCmdResponses[cmdID];
+        reject("Timeout waiting for response for CMD ID " + cmdID);
+      }
+    }, timeoutMS);
+  });
+}
+
+function openListFilesModal() {
+  // Clear previous command, response text, and CSV table.
+  document.getElementById('cmdSent').innerText = "";
+  document.getElementById('rspResponse').innerText = "";
+  document.getElementById('listTable').innerHTML = "";
+
+  // Get a reference to the modal header and the modal title element.
+  const modalHeader = document.querySelector('#listFiles .modal-header');
+  const modalTitle = document.getElementById('listFilesLabel');
+  
+  // Check if the refresh button already exists.
+  let refreshBtn = document.getElementById('refreshListBtn');
+  if (!refreshBtn) {
+    // Create the Refresh button.
+    refreshBtn = document.createElement('button');
+    refreshBtn.id = 'refreshListBtn';
+    refreshBtn.className = 'btn btn-danger btn-sm ms-2';
+    refreshBtn.innerText = 'Refresh List';
+refreshBtn.addEventListener('click', function() {
+  // Clear the cached list and the table, then fetch a new list.
+  this.style.display = 'none';
+  cachedListCSV = null;
+  document.getElementById('cmdSent').innerText = "CMD: LIST"; // Set CMD text here
+  document.getElementById('listTable').innerHTML = '<p>Waiting for file list...</p>';
+  fetchListFiles();
+});
+
+    // Insert the button immediately after the modal title so it appears next to the header text.
+    modalTitle.insertAdjacentElement('afterend', refreshBtn);
+  }
+
+  // Only show the refresh button if we have cached content.
+  if (cachedListCSV) {
+    refreshBtn.style.display = 'inline-block';
+  } else {
+    refreshBtn.style.display = 'none';
+  }
+
+  // Show the modal.
+  const listFilesModal = new bootstrap.Modal(document.getElementById('listFiles'));
+  listFilesModal.show();
+
+  // If a previous file list was received, reuse it; otherwise, fetch it.
+  if (cachedListCSV) {
+    processListFile(cachedListCSV);
+  } else {
+    document.getElementById('cmdSent').innerText = "CMD: LIST";
+    document.getElementById('listTable').innerHTML = '<p>Waiting for file list...</p>';
+    fetchListFiles();
+  }
+}
+
+
+
+
+function processListFile(csvText) {
+  // Cache the CSV text so that we can reuse it on subsequent modal openings.
+  cachedListCSV = csvText;
+
+  // Split into lines and filter out empty ones.
+  const lines = csvText.split('\n').filter(line => line.trim() !== '');
+  if (lines.length === 0) return;
+  
+  let html = '<div class="table-responsive"><table class="table table-striped table-hover table-bordered"><thead><tr>';
+  // Assume the first line is the header.
+  const headers = lines[0].split(',');
+  headers.forEach(header => {
+    html += '<th>' + header.replace(/"/g, '') + '</th>';
+  });
+  html += '<th>Action</th></tr></thead><tbody>';
+  
+  // Process each subsequent row.
+  for (let i = 1; i < lines.length; i++) {
+    const cols = lines[i].split(',');
+    if (cols.length < 3) continue;
+    html += '<tr>';
+    cols.forEach(col => {
+      html += '<td>' + col.replace(/"/g, '') + '</td>';
+    });
+    // Use the file name from the first column (without quotes)
+    const fileName = cols[0].replace(/"/g, '');
+    html += '<td><button class="btn btn-primary btn-sm" onclick="getFile(\'' + fileName + '\')">Get</button></td>';
+    html += '</tr>';
+  }
+  html += '</tbody></table></div>';
+  document.getElementById('listTable').innerHTML = html;
+}
+
+
+
+// New function: when a Get button is clicked.
+function getFile(fileName) {
+  // Hide the refresh button when the GET command is triggered.
+  const refreshBtn = document.getElementById('refreshListBtn');
+  if (refreshBtn) {
+    refreshBtn.style.display = 'none';
+  }
+
+  // Update the modal's top CMD display.
+  document.getElementById('cmdSent').innerText = "CMD: GET " + fileName;
+  // Clear any previous response and table.
+  document.getElementById('rspResponse').innerText = "";
+  document.getElementById('listTable').innerHTML = "";
+  
+  // Send the GET command.
+  sendCmd("GET " + fileName)
+    .then(rsp => {
+      const statusText = (rsp.status === 1) ? "Success" : (rsp.status === 0 ? "Failed" : "Unknown");
+      document.getElementById('rspResponse').innerText = "RSP: " + statusText + " - " + rsp.message;
+      
+      // If the response indicates success, delay 1 second, then close the modal and scroll to the bottom.
+      if (rsp.status === 1) {
+        setTimeout(() => {
+          const modalEl = document.getElementById('listFiles');
+          const modalInstance = bootstrap.Modal.getInstance(modalEl);
+          if (modalInstance) {
+            modalInstance.hide();
+          }
+          window.scrollTo({ top: document.body.scrollHeight, behavior: 'smooth' });
+        }, 1000);
+      }
+    })
+    .catch(err => {
+      document.getElementById('rspResponse').innerText = "Error: " + err;
+    });
+}
+
+
+function fetchListFiles() {
+  sendCmd("LIST")
+    .then(rsp => {
+      const statusText = (rsp.status === 1) ? "Success" : (rsp.status === 0 ? "Failed" : "Unknown");
+      document.getElementById('rspResponse').innerText = "RSP: " + statusText + " - " + rsp.message;
+      // (Assuming that once LIST.txt is received via the data path, processListFile() will be called.)
+    })
+    .catch(err => {
+      document.getElementById('rspResponse').innerText = "Error: " + err;
+    });
+}
+
+
     </script>
 </body>
 
