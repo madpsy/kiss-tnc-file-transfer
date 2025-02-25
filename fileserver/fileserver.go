@@ -46,6 +46,9 @@ var putAllowedCallsigns []string
 // New: allowed ADMIN callsigns. If empty then admin commands are denied.
 var adminAllowedCallsigns []string
 
+// Maximum allowed file name length.
+const maxFileNameLen = 58
+
 // Command-line arguments structure.
 type Arguments struct {
 	MyCallsign     string // your own callsign
@@ -187,7 +190,7 @@ func (s *SerialKISSConnection) Close() error {
 	return s.ser.Close()
 }
 
-// New helper function: createRSPPacket builds the RSP packet with an AX.25 header.
+// createRSPPacket builds the RSP packet with an AX.25 header.
 func createRSPPacket(destCallsign, srcCallsign, cmdID string, status int, msg string) []byte {
 	// Build the AX.25 header:
 	//  - Destination: original sender's callsign (no "last" flag).
@@ -197,12 +200,12 @@ func createRSPPacket(destCallsign, srcCallsign, cmdID string, status int, msg st
 	// Append control (0x03) and PID (0xF0) bytes to complete the 16-byte header.
 	header := append(append(destAddr, srcAddr...), 0x03, 0xF0)
 
-	// Build the info field (64 bytes) with the RSP message.
+	// Build the info field (128 bytes) with the RSP message.
 	responseText := fmt.Sprintf("RSP:%s %d %s", cmdID, status, msg)
-	if len(responseText) > 64 {
-		responseText = responseText[:64]
+	if len(responseText) > 128 {
+		responseText = responseText[:128]
 	} else {
-		responseText = responseText + strings.Repeat(" ", 64-len(responseText))
+		responseText = responseText + strings.Repeat(" ", 128-len(responseText))
 	}
 	infoField := []byte(responseText)
 
@@ -342,8 +345,9 @@ func decodeAX25Address(addr []byte) string {
 }
 
 // parseCommandPacket now extracts the 2-character ID after "CMD:".
+// Note: the packet now must be at least 144 bytes long (16-byte header + 128-byte info field).
 func parseCommandPacket(packet []byte) (sender, cmdID, command string, ok bool) {
-	if len(packet) < 80 {
+	if len(packet) < 144 {
 		return "", "", "", false
 	}
 	header := packet[:16]
@@ -352,7 +356,7 @@ func parseCommandPacket(packet []byte) (sender, cmdID, command string, ok bool) 
 		log.Printf("Dropping packet: destination %s does not match our callsign %s", dest, serverCallsign)
 		return "", "", "", false
 	}
-	infoField := packet[16:80]
+	infoField := packet[16:144]
 	infoStr := strings.TrimSpace(string(infoField))
 	if !strings.HasPrefix(infoStr, "CMD:") {
 		return "", "", "", false
@@ -368,13 +372,13 @@ func parseCommandPacket(packet []byte) (sender, cmdID, command string, ok bool) 
 }
 
 // createResponsePacket builds the response payload.
-// The response format is "RSP:<cmdID> <status> <message>" padded or truncated to 64 bytes.
+// The response format is "RSP:<cmdID> <status> <message>" padded or truncated to 128 bytes.
 func createResponsePacket(cmdID string, status int, msg string) []byte {
 	responseText := fmt.Sprintf("RSP:%s %d %s", cmdID, status, msg)
-	if len(responseText) > 64 {
-		responseText = responseText[:64]
+	if len(responseText) > 128 {
+		responseText = responseText[:128]
 	} else {
-		responseText = responseText + strings.Repeat(" ", 64-len(responseText))
+		responseText = responseText + strings.Repeat(" ", 128-len(responseText))
 	}
 	return []byte(responseText)
 }
@@ -849,6 +853,11 @@ func main() {
 					continue
 				}
 				fileName := strings.TrimSpace(command[4:])
+				if len(fileName) > maxFileNameLen {
+					log.Printf("GET command: file name '%s' too long", fileName)
+					sendResponseWithDetails(conn, sender, cmdID, command, 0, "FILE NAME TOO LONG")
+					continue
+				}
 				fullPath := filepath.Join(args.ServeDirectory, fileName)
 				content, err := ioutil.ReadFile(fullPath)
 				if err != nil {
@@ -882,6 +891,11 @@ func main() {
 					continue
 				}
 				fileName := strings.TrimSpace(command[4:])
+				if len(fileName) > maxFileNameLen {
+					log.Printf("PUT command: file name '%s' too long", fileName)
+					sendResponseWithDetails(conn, sender, cmdID, command, 0, "FILE NAME TOO LONG")
+					continue
+				}
 				err := invokeReceiverBinary(args, sender, fileName, cmdID)
 				if err != nil {
 					log.Printf("Receiver binary error: %v", err)
@@ -890,66 +904,74 @@ func main() {
 					sendResponseWithDetails(conn, sender, cmdID, command, 1, "PUT OK - WAITING FOR FILE")
 				}
 			} else if strings.HasPrefix(upperCmd, "DEL ") {
-				// Process DEL admin command.
+    			// Check if the sender is allowed to perform admin commands.
+			if !callsignAllowedForAdmin(sender) {
+        			log.Printf("Admin command DEL from sender %s not allowed.", sender)
+			        sendResponseWithDetails(conn, sender, cmdID, command, 0, "CALLSIGN NOT ALLOWED")
+			        continue
+		        }
+			    fileName := strings.TrimSpace(command[4:])
+			    if len(fileName) > maxFileNameLen {
+			        log.Printf("DEL command: file name '%s' too long", fileName)
+			        sendResponseWithDetails(conn, sender, cmdID, command, 0, "FILE NAME TOO LONG")
+			        continue
+			    }
+			    fullPath := filepath.Join(args.ServeDirectory, fileName)
+			    if _, err := os.Stat(fullPath); os.IsNotExist(err) {
+			        log.Printf("DEL command: file '%s' does not exist", fileName)
+			        sendResponseWithDetails(conn, sender, cmdID, command, 0, "FILE DOES NOT EXIST")
+			        continue
+			    }
+			    err := os.Remove(fullPath)
+			    if err != nil {
+			        log.Printf("DEL command: error deleting file '%s': %v", fileName, err)
+			        sendResponseWithDetails(conn, sender, cmdID, command, 0, "DEL FAILED")
+			    } else {
+			        log.Printf("DEL command: file '%s' deleted successfully", fileName)
+			        sendResponseWithDetails(conn, sender, cmdID, command, 1, "DEL OK")
+			    }
+			}  else if strings.HasPrefix(upperCmd, "REN ") {
+				// Process REN admin command.
 				if !callsignAllowedForAdmin(sender) {
-					log.Printf("Admin command DEL from sender %s not allowed.", sender)
+					log.Printf("Admin command REN from sender %s not allowed.", sender)
 					sendResponseWithDetails(conn, sender, cmdID, command, 0, "CALLSIGN NOT ALLOWED")
 					continue
 				}
-				fileName := strings.TrimSpace(command[4:])
-				fullPath := filepath.Join(args.ServeDirectory, fileName)
-				if _, err := os.Stat(fullPath); os.IsNotExist(err) {
-					log.Printf("DEL command: file '%s' does not exist", fileName)
-					sendResponseWithDetails(conn, sender, cmdID, command, 0, "FILE DOES NOT EXIST")
+				params := strings.TrimSpace(command[4:])
+				parts := strings.SplitN(params, "|", 2)
+				if len(parts) != 2 || strings.TrimSpace(parts[1]) == "" {
+					log.Printf("REN command: new filename not specified in '%s'", params)
+					sendResponseWithDetails(conn, sender, cmdID, command, 0, "NEW FILENAME NOT SPECIFIED")
 					continue
 				}
-				err := os.Remove(fullPath)
-				if err != nil {
-					log.Printf("DEL command: error deleting file '%s': %v", fileName, err)
-					sendResponseWithDetails(conn, sender, cmdID, command, 0, "DEL FAILED")
-				} else {
-					log.Printf("DEL command: file '%s' deleted successfully", fileName)
-					sendResponseWithDetails(conn, sender, cmdID, command, 1, "DEL OK")
+				currentFile := strings.TrimSpace(parts[0])
+				newFile := strings.TrimSpace(parts[1])
+				if len(currentFile) > maxFileNameLen || len(newFile) > maxFileNameLen {
+					log.Printf("REN command: one or both filenames ('%s', '%s') are too long", currentFile, newFile)
+					sendResponseWithDetails(conn, sender, cmdID, command, 0, "FILE NAME TOO LONG")
+					continue
 				}
-			} else if strings.HasPrefix(upperCmd, "REN ") {
-    // Process REN admin command.
-    if !callsignAllowedForAdmin(sender) {
-        log.Printf("Admin command REN from sender %s not allowed.", sender)
-        sendResponseWithDetails(conn, sender, cmdID, command, 0, "CALLSIGN NOT ALLOWED")
-        continue
-    }
-    params := strings.TrimSpace(command[4:])
-    parts := strings.SplitN(params, "|", 2)
-    if len(parts) != 2 || strings.TrimSpace(parts[1]) == "" {
-        log.Printf("REN command: new filename not specified in '%s'", params)
-        sendResponseWithDetails(conn, sender, cmdID, command, 0, "NEW FILENAME NOT SPECIFIED")
-        continue
-    }
-    currentFile := strings.TrimSpace(parts[0])
-    newFile := strings.TrimSpace(parts[1])
-    currentPath := filepath.Join(args.ServeDirectory, currentFile)
-    newPath := filepath.Join(args.ServeDirectory, newFile)
-    if _, err := os.Stat(currentPath); os.IsNotExist(err) {
-        log.Printf("REN command: current file '%s' does not exist", currentFile)
-        sendResponseWithDetails(conn, sender, cmdID, command, 0, "CURRENT FILE DOES NOT EXIST")
-        continue
-    }
-    // Check if new filename already exists
-    if _, err := os.Stat(newPath); err == nil {
-        log.Printf("REN command: new file '%s' already exists", newFile)
-        sendResponseWithDetails(conn, sender, cmdID, command, 0, "NEW FILE ALREADY EXISTS")
-        continue
-    }
-    err := os.Rename(currentPath, newPath)
-    if err != nil {
-        log.Printf("REN command: error renaming file from '%s' to '%s': %v", currentFile, newFile, err)
-        sendResponseWithDetails(conn, sender, cmdID, command, 0, "REN FAILED")
-    } else {
-        log.Printf("REN command: file renamed from '%s' to '%s' successfully", currentFile, newFile)
-        sendResponseWithDetails(conn, sender, cmdID, command, 1, "REN OK")
-    }
-
-
+				currentPath := filepath.Join(args.ServeDirectory, currentFile)
+				newPath := filepath.Join(args.ServeDirectory, newFile)
+				if _, err := os.Stat(currentPath); os.IsNotExist(err) {
+					log.Printf("REN command: current file '%s' does not exist", currentFile)
+					sendResponseWithDetails(conn, sender, cmdID, command, 0, "CURRENT FILE DOES NOT EXIST")
+					continue
+				}
+				// Check if new filename already exists
+				if _, err := os.Stat(newPath); err == nil {
+					log.Printf("REN command: new file '%s' already exists", newFile)
+					sendResponseWithDetails(conn, sender, cmdID, command, 0, "NEW FILE ALREADY EXISTS")
+					continue
+				}
+				err := os.Rename(currentPath, newPath)
+				if err != nil {
+					log.Printf("REN command: error renaming file from '%s' to '%s': %v", currentFile, newFile, err)
+					sendResponseWithDetails(conn, sender, cmdID, command, 0, "REN FAILED")
+				} else {
+					log.Printf("REN command: file renamed from '%s' to '%s' successfully", currentFile, newFile)
+					sendResponseWithDetails(conn, sender, cmdID, command, 1, "REN OK")
+				}
 			} else {
 				log.Printf("Unrecognized command: %s", command)
 				sendResponseWithDetails(conn, sender, cmdID, command, 0, "AVAILABLE: LIST, GET [FILE], PUT [FILE], DEL [FILE], REN [CUR]|[NEW]")

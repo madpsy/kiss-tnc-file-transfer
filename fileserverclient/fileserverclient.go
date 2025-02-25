@@ -390,23 +390,23 @@ func buildAX25Header(source, destination string) []byte {
 	return header
 }
 
-// buildCommandPacket creates an 80-byte command packet.
+// buildCommandPacket creates an 144-byte command packet.
 // The new format is "CMD:" + <2-char cmdID> + " " + <command text>
-// (The rest of the 64-byte info field is padded or truncated.)
+// (The rest of the 128-byte info field is padded or truncated.)
 func buildCommandPacket(myCallsign, fileServerCallsign, commandText string) ([]byte, string) {
 	header := buildAX25Header(myCallsign, fileServerCallsign)
 	cmdID := generateCmdID() // Randomized CMD ID.
 	info := "CMD:" + cmdID + " " + commandText
-	if len(info) > 64 {
-		info = info[:64]
+	if len(info) > 128 {
+		info = info[:128]
 	} else {
-		info = info + strings.Repeat(" ", 64-len(info))
+		info = info + strings.Repeat(" ", 128-len(info))
 	}
 	packet := append(header, []byte(info)...)
 	return packet, cmdID
 }
 
-// parseResponsePacket parses a 64-byte response info field in the format:
+// parseResponsePacket parses a 128-byte response info field in the format:
 // "RSP:<cmdID> <status> <message>".
 func parseResponsePacket(payload []byte) (cmdID string, status int, msg string, ok bool) {
 	str := strings.TrimSpace(string(payload))
@@ -557,7 +557,7 @@ func startUnderlyingReader(underlying io.Reader, b *Broadcaster) {
 }
 
 // waitForResponse waits for a complete KISS frame from the broadcaster that contains a response.
-// It returns the unescaped 64-byte payload.
+// It returns the unescaped 128-byte payload.
 func waitForResponse(b *Broadcaster, timeout time.Duration, expectedCmdID string) ([]byte, error) {
 	sub := b.Subscribe()
 	defer b.Unsubscribe(sub)
@@ -577,10 +577,10 @@ func waitForResponse(b *Broadcaster, timeout time.Duration, expectedCmdID string
 				inner := frame[2 : len(frame)-1]
 				payload := unescapeData(inner)
 				var info []byte
-				if len(payload) == 80 {
+				if len(payload) == 144 {
 					// New RSP packet with header: skip the 16-byte header.
 					info = payload[16:]
-				} else if len(payload) == 64 {
+				} else if len(payload) == 128 {
 					// Old style RSP packet without header.
 					info = payload
 				} else {
