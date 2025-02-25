@@ -61,16 +61,16 @@ type Arguments struct {
 	Port           int    // used with TCP
 	SerialPort     string // used with serial
 	Baud           int    // used with serial
-	GetCallsigns   string // comma-delimited list for filtering GET sender callsigns (supports wildcards). If not specified, GET is denied for everyone.
-	PutCallsigns   string // comma-delimited list for filtering PUT sender callsigns (supports wildcards). If not specified, PUT is denied for everyone.
-	AdminCallsigns string // comma-delimited list for filtering ADMIN sender callsigns (supports wildcards). If not specified, admin commands are denied.
-	ServeDirectory string // directory to serve files from (mandatory)
-	SaveDirectory  string // where received files should be saved (default current directory)
+	GetCallsigns   string // comma-delimited list for filtering GET sender callsigns (supports wildcards).
+	PutCallsigns   string // comma-delimited list for filtering PUT sender callsigns (supports wildcards).
+	AdminCallsigns string // comma-delimited list for filtering ADMIN sender callsigns (supports wildcards).
+	ServeDirectory string // directory to serve files from (mandatory unless -per-callsign is used)
+	SaveDirectory  string // where received files should be saved (default current directory; not used in per-callsign mode)
 	SenderBinary   string // path to the binary used to send files (mandatory)
 	ReceiverBinary string // path to the binary used to receive files (default "receiver")
 	SenderPort     int    // TCP port for transparent passthrough (default 5011)
-	// New flag: id-period specifies in minutes how often to send an ID packet (0 means never)
-	IdPeriod int
+	IdPeriod       int    // Minutes between sending an ID packet (0 means never)
+	PerCallsignDir string // New: base directory for per-callsign subdirectories (mutually exclusive with serve-directory, save-directory, get-callsigns, put-callsigns, and admin-callsigns)
 }
 
 func parseArguments() *Arguments {
@@ -81,25 +81,32 @@ func parseArguments() *Arguments {
 	flag.IntVar(&args.Port, "port", 9001, "TCP port (if connection is tcp)")
 	flag.StringVar(&args.SerialPort, "serial-port", "", "Serial port (e.g., COM3 or /dev/ttyUSB0)")
 	flag.IntVar(&args.Baud, "baud", 115200, "Baud rate for serial connection")
-	flag.StringVar(&args.GetCallsigns, "get-callsigns", "", "Comma delimited list of allowed sender callsign patterns for GET command (supports wildcards, e.g. MM5NDH-*,*-15). If not specified, GET is denied for everyone.")
-	flag.StringVar(&args.PutCallsigns, "put-callsigns", "", "Comma delimited list of allowed sender callsign patterns for PUT command (supports wildcards). If not specified, PUT is denied for everyone.")
-	flag.StringVar(&args.AdminCallsigns, "admin-callsigns", "", "Comma delimited list of allowed sender callsign patterns for ADMIN commands (supports wildcards). If not specified, admin commands are denied.")
-	flag.StringVar(&args.ServeDirectory, "serve-directory", "", "Directory to serve files from (mandatory)")
-	flag.StringVar(&args.SaveDirectory, "save-directory", ".", "Directory where received files should be saved (default current directory)")
+	flag.StringVar(&args.GetCallsigns, "get-callsigns", "", "Comma delimited list of allowed sender callsign patterns for GET command (supports wildcards)")
+	flag.StringVar(&args.PutCallsigns, "put-callsigns", "", "Comma delimited list of allowed sender callsign patterns for PUT command (supports wildcards)")
+	flag.StringVar(&args.AdminCallsigns, "admin-callsigns", "", "Comma delimited list of allowed sender callsign patterns for ADMIN commands (supports wildcards)")
+	flag.StringVar(&args.ServeDirectory, "serve-directory", "", "Directory to serve files from (mandatory unless -per-callsign is used)")
+	flag.StringVar(&args.SaveDirectory, "save-directory", ".", "Directory where received files should be saved (default current directory; not used in per-callsign mode)")
 	flag.StringVar(&args.SenderBinary, "sender-binary", "", "Path to the binary used to send files (mandatory)")
 	flag.StringVar(&args.ReceiverBinary, "receiver-binary", "receiver", "Path to the binary used to receive files (default 'receiver')")
 	flag.IntVar(&args.SenderPort, "sender-port", 5011, "TCP port for transparent passthrough (default 5011)")
 	flag.IntVar(&args.IdPeriod, "id-period", 30, "Minutes between sending an ID packet (0 means never)")
+	flag.StringVar(&args.PerCallsignDir, "per-callsign", "", "Base directory for per-callsign subdirectories (mutually exclusive with serve-directory, save-directory, get-callsigns, put-callsigns, and admin-callsigns)")
 	flag.Parse()
 
+	if args.PerCallsignDir != "" {
+		if args.ServeDirectory != "" || args.SaveDirectory != "." || args.GetCallsigns != "" || args.PutCallsigns != "" || args.AdminCallsigns != "" {
+			log.Fatalf("When using -per-callsign, do not specify serve-directory, save-directory, get-callsigns, put-callsigns or admin-callsigns.")
+		}
+	} else {
+		if args.ServeDirectory == "" {
+			log.Fatalf("--serve-directory is required.")
+		}
+	}
 	if args.MyCallsign == "" {
 		log.Fatalf("--my-callsign is required.")
 	}
 	if args.Connection == "serial" && args.SerialPort == "" {
 		log.Fatalf("--serial-port is required for serial connection.")
-	}
-	if args.ServeDirectory == "" {
-		log.Fatalf("--serve-directory is required.")
 	}
 	if args.SenderBinary == "" {
 		log.Fatalf("--sender-binary is required.")
@@ -419,7 +426,6 @@ func callsignAllowedForPut(cs string) bool {
 }
 
 // Helper function to check if a sender is allowed for ADMIN commands.
-// Unlike GET/PUT, if no admin callsigns are provided then admin commands are denied.
 func callsignAllowedForAdmin(cs string) bool {
 	if len(adminAllowedCallsigns) == 0 {
 		return false
@@ -459,7 +465,6 @@ func listFiles(dir string) (string, error) {
 	// Write file details in CSV format.
 	for _, file := range files {
 		modTime := file.ModTime().Format("2006-01-02 15:04:05")
-		// Wrap values in quotes in case they contain commas.
 		output.WriteString(fmt.Sprintf("\"%s\",\"%s\",%d\n", file.Name(), modTime, file.Size()))
 	}
 
@@ -467,8 +472,7 @@ func listFiles(dir string) (string, error) {
 }
 
 // --- Broadcaster ---
-// This helper will allow multiple goroutines (the command processor and transparent passthrough)
-// to receive the same data coming from the underlying KISS connection.
+// This helper will allow multiple goroutines to receive the same data from the underlying KISS connection.
 type Broadcaster struct {
 	subscribers map[chan []byte]struct{}
 	lock        sync.Mutex
@@ -513,13 +517,12 @@ func startKISSReader(conn KISSConnection, b *Broadcaster) {
 		if err != nil {
 			if err != io.EOF {
 				log.Printf("Underlying read error: %v", err)
-				// On error, trigger a reconnect.
 				go doReconnect()
 			}
 			break
 		}
 		if len(data) > 0 {
-			lastDataTime = time.Now() // Update the inactivity timer.
+			lastDataTime = time.Now()
 			b.Broadcast(data)
 		}
 	}
@@ -546,17 +549,14 @@ func doReconnect() {
 
 	log.Println("Triggering reconnect...")
 
-	// Close the current connection.
 	if globalConn != nil {
 		globalConn.Close()
 	}
 
-	// Loop until a new connection is established.
 	for {
 		log.Println("Attempting to reconnect in 5 seconds...")
 		time.Sleep(5 * time.Second)
 		var err error
-		// Use globalArgs instead of args.
 		if strings.ToLower(globalArgs.Connection) == "tcp" {
 			globalConn, err = newTCPKISSConnection(globalArgs.Host, globalArgs.Port)
 		} else {
@@ -566,12 +566,9 @@ func doReconnect() {
 			log.Printf("Reconnect failed: %v", err)
 			continue
 		}
-		// Update the timestamp.
 		lastDataTime = time.Now()
 		log.Println("Reconnected successfully to the underlying device")
-		// Restart the reader so new data is broadcast.
 		go startKISSReader(globalConn, broadcaster)
-		// Optionally, restart the inactivity monitor if not already running.
 		go monitorInactivity(600 * time.Second)
 		break
 	}
@@ -582,18 +579,15 @@ func doReconnect() {
 }
 
 // --- Transparent Passthrough Handler ---
-// This function relays data in both directions between the connected client and the underlying KISS connection.
 func handleTransparentConnection(remoteConn net.Conn, b *Broadcaster, conn KISSConnection) {
 	defer remoteConn.Close()
 	log.Printf("Accepted transparent connection from %s", remoteConn.RemoteAddr())
-	// Start forwarding data from the transparent connection to the underlying KISS connection.
 	go func() {
 		_, err := io.Copy(conn, remoteConn)
 		if err != nil && !strings.Contains(err.Error(), "use of closed network connection") {
 			log.Printf("Error copying from transparent client to underlying: %v", err)
 		}
 	}()
-	// Subscribe to the broadcaster to forward underlying data to the transparent client.
 	sub := b.Subscribe()
 	defer b.Unsubscribe(sub)
 	for data := range sub {
@@ -604,7 +598,6 @@ func handleTransparentConnection(remoteConn net.Conn, b *Broadcaster, conn KISSC
 	}
 }
 
-// startTransparentListener listens on the SenderPort and handles transparent connections.
 func startTransparentListener(port int, b *Broadcaster, conn KISSConnection) {
 	addr := fmt.Sprintf(":%d", port)
 	listener, err := net.Listen("tcp", addr)
@@ -624,7 +617,6 @@ func startTransparentListener(port int, b *Broadcaster, conn KISSConnection) {
 }
 
 // --- Invoking the Sender Binary ---
-// This function is still used for sending files (for GET file transfers) via the sender binary.
 func invokeSenderBinary(args *Arguments, receiverCallsign, fileName, inputData, cmdID string) {
 	var cmdArgs []string
 	cmdArgs = append(cmdArgs, "-connection=tcp", "-host=localhost", fmt.Sprintf("-port=%d", args.SenderPort))
@@ -681,19 +673,14 @@ func invokeSenderBinary(args *Arguments, receiverCallsign, fileName, inputData, 
 }
 
 // --- Invoking the Receiver Binary ---
-// For a PUT command, this function attempts to start the receiver binary.
-// It first tries to obtain stdout and stderr pipes and calls cmd.Start().
-// If starting fails (for example, if the binary is not found), it returns an error.
-// If starting succeeds, it spawns a goroutine to capture stdout (the received file)
-// and write it to a file in the save directory.
-func invokeReceiverBinary(args *Arguments, senderCallsign, fileName, cmdID string) error {
+// Modified: the function now accepts an extra parameter "baseDir" which is the directory under which to save the file.
+func invokeReceiverBinary(args *Arguments, senderCallsign, fileName, cmdID, baseDir string) error {
 	var cmdArgs []string
 	cmdArgs = append(cmdArgs, "-connection=tcp", "-host=localhost", fmt.Sprintf("-port=%d", args.SenderPort))
 	cmdArgs = append(cmdArgs, fmt.Sprintf("-my-callsign=%s", args.MyCallsign))
 	cmdArgs = append(cmdArgs, fmt.Sprintf("-callsigns=%s", senderCallsign))
 	cmdArgs = append(cmdArgs, fmt.Sprintf("-fileid=%s", cmdID))
-	cmdArgs = append(cmdArgs, fmt.Sprintf("-one-file"))
-	cmdArgs = append(cmdArgs, fmt.Sprintf("-stdout"))
+	cmdArgs = append(cmdArgs, "-one-file", "-stdout")
 	fullCmd := fmt.Sprintf("%s %s", args.ReceiverBinary, strings.Join(cmdArgs, " "))
 	log.Printf("Invoking receiver binary: %s", fullCmd)
 
@@ -710,7 +697,6 @@ func invokeReceiverBinary(args *Arguments, senderCallsign, fileName, cmdID strin
 		return fmt.Errorf("Error starting receiver binary: %v", err)
 	}
 
-	// Spawn goroutine to log any stderr output.
 	go func() {
 		scanner := bufio.NewScanner(stderrPipe)
 		for scanner.Scan() {
@@ -721,7 +707,6 @@ func invokeReceiverBinary(args *Arguments, senderCallsign, fileName, cmdID strin
 		}
 	}()
 
-	// Spawn goroutine to capture stdout and save the file.
 	go func() {
 		output, err := io.ReadAll(stdoutPipe)
 		if err != nil {
@@ -732,10 +717,10 @@ func invokeReceiverBinary(args *Arguments, senderCallsign, fileName, cmdID strin
 			log.Printf("Receiver binary exited with error: %v", err)
 			return
 		}
-		// Compute the intended save path and ensure it is within the save directory.
-		savePath := filepath.Join(absSaveDir, fileName)
+		// Compute the intended save path using the provided baseDir.
+		savePath := filepath.Join(baseDir, fileName)
 		cleanSavePath := filepath.Clean(savePath)
-		if !strings.HasPrefix(cleanSavePath, absSaveDir) {
+		if !strings.HasPrefix(cleanSavePath, baseDir) {
 			log.Printf("PUT command: attempted directory traversal in file name '%s'", fileName)
 			return
 		}
@@ -746,7 +731,7 @@ func invokeReceiverBinary(args *Arguments, senderCallsign, fileName, cmdID strin
 			counter := 1
 			for {
 				newFileName := fmt.Sprintf("%s_%d%s", baseName, counter, ext)
-				newPath := filepath.Join(absSaveDir, newFileName)
+				newPath := filepath.Join(baseDir, newFileName)
 				newPath = filepath.Clean(newPath)
 				if _, err := os.Stat(newPath); os.IsNotExist(err) {
 					cleanSavePath = newPath
@@ -766,9 +751,6 @@ func invokeReceiverBinary(args *Arguments, senderCallsign, fileName, cmdID strin
 }
 
 // --- Periodic ID Packet Functions ---
-
-// createIDPacket builds an ID packet with destination "ID", source as our server callsign,
-// and an info field containing the KISS File Server message.
 func createIDPacket() []byte {
 	dest := encodeAX25Address("ID", false)
 	src := encodeAX25Address(serverCallsign, true)
@@ -782,7 +764,6 @@ func createIDPacket() []byte {
 	return append(header, []byte(info)...)
 }
 
-// sendIDPacket wraps the ID packet in a KISS frame and writes it to the connection.
 func sendIDPacket(conn KISSConnection) {
 	packet := createIDPacket()
 	escaped := escapeData(packet)
@@ -801,18 +782,28 @@ func main() {
 	globalArgs = args
 	serverCallsign = strings.ToUpper(args.MyCallsign)
 
-	// Resolve absolute paths for the serve and save directories.
-	var err error
-	absServeDir, err = filepath.Abs(args.ServeDirectory)
-	if err != nil {
-		log.Fatalf("Error resolving serve directory: %v", err)
+	var absPerCallsignDir string
+	if args.PerCallsignDir != "" {
+		var err error
+		absPerCallsignDir, err = filepath.Abs(args.PerCallsignDir)
+		if err != nil {
+			log.Fatalf("Error resolving per-callsign directory: %v", err)
+		}
+		log.Printf("Per-callsign mode active. Base directory: %s", absPerCallsignDir)
+	} else {
+		var err error
+		absServeDir, err = filepath.Abs(args.ServeDirectory)
+		if err != nil {
+			log.Fatalf("Error resolving serve directory: %v", err)
+		}
+		absSaveDir, err = filepath.Abs(args.SaveDirectory)
+		if err != nil {
+			log.Fatalf("Error resolving save directory: %v", err)
+		}
+		log.Printf("Serving files from directory: %s", absServeDir)
+		log.Printf("Received files will be saved to: %s", absSaveDir)
 	}
-	absSaveDir, err = filepath.Abs(args.SaveDirectory)
-	if err != nil {
-		log.Fatalf("Error resolving save directory: %v", err)
-	}
-	log.Printf("Serving files from directory: %s", absServeDir)
-	log.Printf("Received files will be saved to: %s", absSaveDir)
+
 	log.Printf("Sender binary set to: %s", args.SenderBinary)
 	log.Printf("Receiver binary set to: %s", args.ReceiverBinary)
 
@@ -857,6 +848,7 @@ func main() {
 
 	// Establish the underlying KISS connection.
 	var conn KISSConnection
+	var err error
 	if strings.ToLower(args.Connection) == "tcp" {
 		conn, err = newTCPKISSConnection(args.Host, args.Port)
 		if err != nil {
@@ -878,7 +870,6 @@ func main() {
 		go func() {
 			ticker := time.NewTicker(time.Duration(args.IdPeriod) * time.Minute)
 			defer ticker.Stop()
-			// Send an initial ID packet immediately.
 			sendIDPacket(globalConn)
 			for range ticker.C {
 				sendIDPacket(globalConn)
@@ -891,7 +882,6 @@ func main() {
 	lastDataTime = time.Now()
 	go startKISSReader(globalConn, broadcaster)
 	go monitorInactivity(600 * time.Second)
-	// Start the transparent passthrough listener.
 	go startTransparentListener(args.SenderPort, broadcaster, conn)
 
 	// Command processing: subscribe to the broadcaster.
@@ -913,9 +903,15 @@ func main() {
 				continue
 			}
 			upperCmd := strings.ToUpper(command)
-			// Process GET command
+			// Determine the base directory to use for this sender if per-callsign mode is active.
+			var baseDir string
+			if globalArgs.PerCallsignDir != "" {
+				baseDir = filepath.Join(absPerCallsignDir, sender)
+				os.MkdirAll(baseDir, 0755)
+			}
+			// Process GET command.
 			if strings.HasPrefix(upperCmd, "GET ") {
-				if !callsignAllowedForGet(sender) {
+				if globalArgs.PerCallsignDir == "" && !callsignAllowedForGet(sender) {
 					log.Printf("Dropping GET command from sender %s: not allowed.", sender)
 					sendResponseWithDetails(conn, sender, cmdID, command, 0, "CALLSIGN NOT ALLOWED")
 					continue
@@ -926,30 +922,35 @@ func main() {
 					sendResponseWithDetails(conn, sender, cmdID, command, 0, "FILE NAME TOO LONG")
 					continue
 				}
-				requestedPath := filepath.Join(absServeDir, fileName)
+				var dir string
+				if globalArgs.PerCallsignDir != "" {
+					dir = baseDir
+				} else {
+					dir = absServeDir
+				}
+				requestedPath := filepath.Join(dir, fileName)
 				cleanPath := filepath.Clean(requestedPath)
-				if !strings.HasPrefix(cleanPath, absServeDir) {
+				if !strings.HasPrefix(cleanPath, dir) {
 					log.Printf("GET command: attempted directory traversal in '%s'", fileName)
 					sendResponseWithDetails(conn, sender, cmdID, command, 0, "INVALID FILE PATH")
 					continue
 				}
 				content, err := ioutil.ReadFile(cleanPath)
 				if err != nil {
-					log.Printf("Requested file '%s' does not exist in directory %s", fileName, absServeDir)
+					log.Printf("Requested file '%s' does not exist in directory %s", fileName, dir)
 					sendResponseWithDetails(conn, sender, cmdID, command, 0, "CANNOT FIND/READ FILE")
-					continue
-				}
-				// Double-check file read.
-				_, err = ioutil.ReadFile(cleanPath)
-				if err != nil {
-					log.Printf("Error reading file '%s': %v", cleanPath, err)
-					sendResponseWithDetails(conn, sender, cmdID, command, 0, "GET FAILED")
 					continue
 				}
 				sendResponseWithDetails(conn, sender, cmdID, command, 1, "GET OK")
 				go invokeSenderBinary(args, sender, fileName, string(content), cmdID)
 			} else if strings.HasPrefix(upperCmd, "LIST") {
-				listing, err := listFiles(absServeDir)
+				var dir string
+				if globalArgs.PerCallsignDir != "" {
+					dir = baseDir
+				} else {
+					dir = absServeDir
+				}
+				listing, err := listFiles(dir)
 				if err != nil {
 					log.Printf("Error listing files: %v", err)
 					sendResponseWithDetails(conn, sender, cmdID, command, 0, "LIST CANNOT READ")
@@ -958,8 +959,7 @@ func main() {
 				sendResponseWithDetails(conn, sender, cmdID, command, 1, "LIST OK")
 				go invokeSenderBinary(args, sender, "LIST.txt", listing, cmdID)
 			} else if strings.HasPrefix(upperCmd, "PUT ") {
-				// Process PUT command for receiving files.
-				if !callsignAllowedForPut(sender) {
+				if globalArgs.PerCallsignDir == "" && !callsignAllowedForPut(sender) {
 					log.Printf("PUT command from sender %s not allowed.", sender)
 					sendResponseWithDetails(conn, sender, cmdID, command, 0, "CALLSIGN NOT ALLOWED")
 					continue
@@ -970,15 +970,21 @@ func main() {
 					sendResponseWithDetails(conn, sender, cmdID, command, 0, "FILE NAME TOO LONG")
 					continue
 				}
-				// For PUT, we validate the file name when writing to the save directory.
-				savePath := filepath.Join(absSaveDir, fileName)
+				var dir string
+				if globalArgs.PerCallsignDir != "" {
+					dir = baseDir
+				} else {
+					dir = absSaveDir
+				}
+				savePath := filepath.Join(dir, fileName)
 				cleanSavePath := filepath.Clean(savePath)
-				if !strings.HasPrefix(cleanSavePath, absSaveDir) {
+				if !strings.HasPrefix(cleanSavePath, dir) {
 					log.Printf("PUT command: attempted directory traversal in '%s'", fileName)
 					sendResponseWithDetails(conn, sender, cmdID, command, 0, "INVALID FILE PATH")
 					continue
 				}
-				err := invokeReceiverBinary(args, sender, fileName, cmdID)
+				// Pass the correct base directory (dir) to invokeReceiverBinary.
+				err := invokeReceiverBinary(args, sender, fileName, cmdID, dir)
 				if err != nil {
 					log.Printf("Receiver binary error: %v", err)
 					sendResponseWithDetails(conn, sender, cmdID, command, 0, "PUT FAILED: CANNOT START RECEIVER")
@@ -986,8 +992,7 @@ func main() {
 					sendResponseWithDetails(conn, sender, cmdID, command, 1, "PUT OK - WAITING FOR FILE")
 				}
 			} else if strings.HasPrefix(upperCmd, "DEL ") {
-				// Check if the sender is allowed to perform admin commands.
-				if !callsignAllowedForAdmin(sender) {
+				if globalArgs.PerCallsignDir == "" && !callsignAllowedForAdmin(sender) {
 					log.Printf("Admin command DEL from sender %s not allowed.", sender)
 					sendResponseWithDetails(conn, sender, cmdID, command, 0, "CALLSIGN NOT ALLOWED")
 					continue
@@ -998,9 +1003,15 @@ func main() {
 					sendResponseWithDetails(conn, sender, cmdID, command, 0, "FILE NAME TOO LONG")
 					continue
 				}
-				fullPath := filepath.Join(absServeDir, fileName)
+				var dir string
+				if globalArgs.PerCallsignDir != "" {
+					dir = baseDir
+				} else {
+					dir = absServeDir
+				}
+				fullPath := filepath.Join(dir, fileName)
 				cleanPath := filepath.Clean(fullPath)
-				if !strings.HasPrefix(cleanPath, absServeDir) {
+				if !strings.HasPrefix(cleanPath, dir) {
 					log.Printf("DEL command: attempted directory traversal in '%s'", fileName)
 					sendResponseWithDetails(conn, sender, cmdID, command, 0, "INVALID FILE PATH")
 					continue
@@ -1019,8 +1030,7 @@ func main() {
 					sendResponseWithDetails(conn, sender, cmdID, command, 1, "DEL OK")
 				}
 			} else if strings.HasPrefix(upperCmd, "REN ") {
-				// Process REN admin command.
-				if !callsignAllowedForAdmin(sender) {
+				if globalArgs.PerCallsignDir == "" && !callsignAllowedForAdmin(sender) {
 					log.Printf("Admin command REN from sender %s not allowed.", sender)
 					sendResponseWithDetails(conn, sender, cmdID, command, 0, "CALLSIGN NOT ALLOWED")
 					continue
@@ -1039,11 +1049,17 @@ func main() {
 					sendResponseWithDetails(conn, sender, cmdID, command, 0, "FILE NAME TOO LONG")
 					continue
 				}
-				currentPath := filepath.Join(absServeDir, currentFile)
-				newPath := filepath.Join(absServeDir, newFile)
+				var dir string
+				if globalArgs.PerCallsignDir != "" {
+					dir = baseDir
+				} else {
+					dir = absServeDir
+				}
+				currentPath := filepath.Join(dir, currentFile)
+				newPath := filepath.Join(dir, newFile)
 				cleanCurrent := filepath.Clean(currentPath)
 				cleanNew := filepath.Clean(newPath)
-				if !strings.HasPrefix(cleanCurrent, absServeDir) || !strings.HasPrefix(cleanNew, absServeDir) {
+				if !strings.HasPrefix(cleanCurrent, dir) || !strings.HasPrefix(cleanNew, dir) {
 					log.Printf("REN command: attempted directory traversal with filenames '%s' or '%s'", currentFile, newFile)
 					sendResponseWithDetails(conn, sender, cmdID, command, 0, "INVALID FILE PATH")
 					continue
@@ -1053,7 +1069,6 @@ func main() {
 					sendResponseWithDetails(conn, sender, cmdID, command, 0, "CURRENT FILE DOES NOT EXIST")
 					continue
 				}
-				// Check if new filename already exists
 				if _, err := os.Stat(cleanNew); err == nil {
 					log.Printf("REN command: new file '%s' already exists", newFile)
 					sendResponseWithDetails(conn, sender, cmdID, command, 0, "NEW FILE ALREADY EXISTS")

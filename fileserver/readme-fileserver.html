@@ -44,23 +44,24 @@
     </li>
     <li>
       <strong>GET Command:</strong> When a remote client issues a <code>GET [FILE]</code> command, the server reads the requested file from the
-      specified <code>serve-directory</code>, responds with a “GET OK” status, and then transfers the file using the sender binary.
+      specified <code>serve-directory</code> (or from the sender’s own subdirectory in per‑callsign mode), responds with a “GET OK” status,
+      and then transfers the file using the sender binary.
     </li>
     <li>
-      <strong>LIST Command:</strong> A <code>LIST</code> command causes the server to generate a CSV file listing of all files in the serve directory.
-      The listing is then sent as <code>LIST.txt</code> via the sender binary.
+      <strong>LIST Command:</strong> A <code>LIST</code> command causes the server to generate a CSV file listing of all files in the serve directory
+      (or the sender’s subdirectory in per‑callsign mode). The listing is then sent as <code>LIST.txt</code> via the sender binary.
     </li>
     <li>
       <strong>PUT Command:</strong> For a <code>PUT [FILE]</code> command, the server verifies the sender’s callsign (if filtering is enabled)
-      and spawns the receiver binary to accept the incoming file. The file is then saved to the designated save directory.
+      and spawns the receiver binary to accept the incoming file. The file is then saved to the designated save directory or into the sender’s subdirectory in per‑callsign mode.
     </li>
     <li>
-      <strong>DEL Command:</strong> The <code>DEL [FILE]</code> command deletes a specified file from the serve directory.
+      <strong>DEL Command:</strong> The <code>DEL [FILE]</code> command deletes a specified file from the serve directory (or the sender’s subdirectory).
       This is an administrative command and requires the sender to be authorized via the <code>--admin-callsigns</code> flag.
     </li>
     <li>
-      <strong>REN Command:</strong> The <code>REN [CURRENT FILE]|[NEW FILE]</code> command renames a file in the serve directory.
-      Like the DEL command, this is restricted to senders whose callsigns match the patterns specified by <code>--admin-callsigns</code>.
+      <strong>REN Command:</strong> The <code>REN [CURRENT FILE]|[NEW FILE]</code> command renames a file in the serve directory (or the sender’s subdirectory)
+      from the current filename to the new filename. Like the DEL command, this is restricted to senders whose callsigns match the patterns specified by <code>--admin-callsigns</code>.
     </li>
     <li>
       <strong>Transparent Passthrough:</strong> A dedicated TCP listener (on the port specified by <code>--sender-port</code>) allows for a transparent data relay between
@@ -72,6 +73,12 @@
     <li>
       <strong>ID Packet Transmission:</strong> The server periodically sends an ID packet containing its identity and a URL for more information.
       This interval is configurable using the <code>--id-period</code> flag.
+    </li>
+    <li>
+      <strong>Per‑Callsign Mode:</strong> When the <code>--per-callsign</code> option is specified, the server operates in per‑callsign mode.
+      In this mode, a base directory is provided and the server automatically creates a subdirectory for each sender (using the sender’s callsign).
+      All file operations (GET, LIST, PUT, DEL, and REN) then act only within the sender’s own subdirectory, and filtering based on allowed callsigns is bypassed.
+      Security checks are still enforced to prevent directory traversal (e.g. using "../").
     </li>
   </ul>
 
@@ -141,6 +148,7 @@ go build -o fileserver fileserver.go
       <td><code>--get-callsigns</code></td>
       <td>
         Comma‑delimited list of allowed sender callsign patterns for GET commands (supports wildcards, e.g. <code>MM5NDH-*,*-15</code>).
+        (Ignored in per‑callsign mode.)
       </td>
       <td><em>none</em></td>
     </tr>
@@ -148,21 +156,22 @@ go build -o fileserver fileserver.go
       <td><code>--put-callsigns</code></td>
       <td>
         Comma‑delimited list of allowed sender callsign patterns for PUT commands (supports wildcards).
+        (Ignored in per‑callsign mode.)
       </td>
       <td><em>none</em></td>
     </tr>
     <tr>
       <td><code>--admin-callsigns</code></td>
       <td>
-        Comma‑delimited list of allowed sender callsign patterns for administrative commands (such as <code>DEL</code> and <code>REN</code>). If not specified,
-        admin commands are denied.
+        Comma‑delimited list of allowed sender callsign patterns for administrative commands (<code>DEL</code> and <code>REN</code>).
+        If not specified, admin commands are denied. (Ignored in per‑callsign mode.)
       </td>
       <td><em>none</em></td>
     </tr>
     <tr>
       <td><code>--serve-directory</code></td>
       <td>
-        Directory from which files are served (mandatory).
+        Directory from which files are served (mandatory unless <code>--per-callsign</code> is used).
       </td>
       <td><em>none</em></td>
     </tr>
@@ -170,6 +179,7 @@ go build -o fileserver fileserver.go
       <td><code>--save-directory</code></td>
       <td>
         Directory where received files should be saved.
+        (Not used in per‑callsign mode.)
       </td>
       <td><code>.</code></td>
     </tr>
@@ -202,6 +212,15 @@ go build -o fileserver fileserver.go
       </td>
       <td><code>30</code></td>
     </tr>
+    <tr>
+      <td><code>--per-callsign</code></td>
+      <td>
+        Base directory for per‑callsign subdirectories. When specified, the server creates a subdirectory for each sender (named after the sender’s callsign).
+        All file operations (GET, LIST, PUT, DEL, REN) then operate within that subdirectory, and callsign filtering is bypassed.
+        This option is mutually exclusive with <code>--serve-directory</code>, <code>--save-directory</code>, <code>--get-callsigns</code>, <code>--put-callsigns</code>, and <code>--admin-callsigns</code>.
+      </td>
+      <td><em>none</em></td>
+    </tr>
   </table>
 
   <h2 id="usage">Usage &amp; Examples</h2>
@@ -218,9 +237,14 @@ go build -o fileserver fileserver.go
 ./fileserver --my-callsign=SERVER1 --connection=serial --serial-port=/dev/ttyUSB0 --baud=115200 --serve-directory=files --sender-binary=/path/to/sender
   </pre>
   <p>
-    Optionally, you can restrict which remote callsigns may issue GET, PUT, or admin commands by using the <code>--get-callsigns</code>, <code>--put-callsigns</code>,
-    and <code>--admin-callsigns</code> flags.
+    To run in per‑callsign mode, specify the <code>--per-callsign</code> flag with a base directory.
+    In this mode, the server ignores the global <code>serve-directory</code>, <code>save-directory</code>, and callsign filtering options.
+    Instead, it automatically creates a subdirectory (named after each sender’s callsign) under the provided base directory.
+    For example:
   </p>
+  <pre>
+./fileserver --my-callsign=SERVER1 --per-callsign=/path/to/base --sender-binary=/path/to/sender
+  </pre>
 
   <h2 id="commands">Commands</h2>
   <p>
@@ -228,20 +252,24 @@ go build -o fileserver fileserver.go
   </p>
   <ul>
     <li>
-      <strong>GET [FILE]</strong>: Reads the specified file from the serve directory, responds with a “GET OK” message, and transfers the file using the sender binary.
+      <strong>GET [FILE]</strong>: Reads the specified file from the serve directory (or the sender’s subdirectory in per‑callsign mode),
+      responds with a “GET OK” message, and transfers the file using the sender binary.
     </li>
     <li>
-      <strong>LIST</strong>: Generates a CSV file listing of all files in the serve directory (named <code>LIST.txt</code>) and transfers it using the sender binary.
+      <strong>LIST</strong>: Generates a CSV file listing of all files in the serve directory (or in the sender’s subdirectory)
+      (named <code>LIST.txt</code>) and transfers it using the sender binary.
     </li>
     <li>
-      <strong>PUT [FILE]</strong>: Initiates a file upload. The server verifies the sender’s callsign (if filtering is enabled) and spawns the receiver binary to save the incoming file in the save directory.
+      <strong>PUT [FILE]</strong>: Initiates a file upload. The server spawns the receiver binary to save the incoming file.
+      In per‑callsign mode, the file is saved into the sender’s own subdirectory.
     </li>
     <li>
-      <strong>DEL [FILE]</strong>: Deletes the specified file from the serve directory. This command is restricted to senders authorized via <code>--admin-callsigns</code>.
+      <strong>DEL [FILE]</strong>: Deletes the specified file from the serve directory (or the sender’s subdirectory).
+      This command is restricted to senders authorized via <code>--admin-callsigns</code> (ignored in per‑callsign mode).
     </li>
     <li>
-      <strong>REN [CURRENT FILE]|[NEW FILE]</strong>: Renames a file in the serve directory from the current filename to the new filename.
-      This administrative command is also restricted to senders matching the <code>--admin-callsigns</code> patterns.
+      <strong>REN [CURRENT FILE]|[NEW FILE]</strong>: Renames a file from the current filename to the new filename in the serve directory (or sender’s subdirectory).
+      Like <code>DEL</code>, this is restricted to authorized senders.
     </li>
   </ul>
 
@@ -252,15 +280,21 @@ go build -o fileserver fileserver.go
     </li>
     <li>
       Filtering of allowed sender callsigns for GET, PUT, and administrative commands can be enabled via the <code>--get-callsigns</code>, <code>--put-callsigns</code>, and <code>--admin-callsigns</code> flags.
+      These options are ignored when operating in per‑callsign mode.
     </li>
     <li>
-      Administrative commands (<code>DEL</code> and <code>REN</code>) will only be executed if the sender’s callsign matches one of the allowed patterns provided with <code>--admin-callsigns</code>.
+      Administrative commands (<code>DEL</code> and <code>REN</code>) are only executed if the sender’s callsign matches the allowed patterns provided with <code>--admin-callsigns</code>.
+      In per‑callsign mode, all senders have full access to their own subdirectory.
     </li>
     <li>
       A transparent TCP listener (on the port specified by <code>--sender-port</code>) relays data between the underlying KISS connection and remote clients.
     </li>
     <li>
       The server monitors for inactivity on the connection and will automatically attempt to reconnect if no data is received within 600 seconds.
+    </li>
+    <li>
+      In per‑callsign mode, security checks still ensure that file paths are contained within the sender’s subdirectory,
+      preventing directory traversal (e.g. via "../") from escaping the designated area.
     </li>
     <li>
       External binaries (sender and receiver) are invoked to handle file transfers. Ensure they are correctly specified and accessible.
