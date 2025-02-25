@@ -75,9 +75,13 @@
             <label for="receiverCallsign" class="form-label">Remote Callsign</label> <input type="text" id="receiverCallsign" class="form-control" placeholder="Enter receiver callsign">
         </div>
         <div class="mb-3">
+    	    <div class="form-check">
+	      <input type="checkbox" class="form-check-input" id="restrictCallsign">
+	      <label class="form-check-label" for="restrictCallsign">Only accept files from this callsign?</label>
+	    </div>
             <div class="form-check">
                 <input type="checkbox" class="form-check-input" id="isFileServer">
-                <label class="form-check-label" for="isFileServer">Is file server?</label>
+                <label class="form-check-label" for="isFileServer">Is a file server?</label>
             </div>
             <!-- Container where the List button will be added dynamically -->
             <span id="listButtonContainer"></span>
@@ -1079,7 +1083,15 @@
         // Now decode sender/receiver from the header:
         const senderStr = decodeAX25Address(header.slice(7, 14));
         const receiverStr = decodeAX25Address(header.slice(0, 7));
-        
+
+	if (document.getElementById('restrictCallsign').checked) {
+	  const allowedCallsign = document.getElementById('receiverCallsign').value.trim().toUpperCase();
+	  if (senderStr !== allowedCallsign) {
+	    console.log(`Rejecting file from ${senderStr} as it does not match remote callsign ${allowedCallsign}.`);
+	    return;
+	  }
+	}
+       
         // Then parse the info field which now has the new format:
         // Expected formats:
         //   - ACK packets: fileId + ':' + "ACK" + ':' + ackValue + ':'
