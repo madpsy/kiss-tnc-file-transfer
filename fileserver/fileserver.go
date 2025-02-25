@@ -69,6 +69,8 @@ type Arguments struct {
 	SenderBinary   string // path to the binary used to send files (mandatory)
 	ReceiverBinary string // path to the binary used to receive files (default "receiver")
 	SenderPort     int    // TCP port for transparent passthrough (default 5011)
+	// New flag: id-period specifies in minutes how often to send an ID packet (0 means never)
+	IdPeriod int
 }
 
 func parseArguments() *Arguments {
@@ -87,6 +89,7 @@ func parseArguments() *Arguments {
 	flag.StringVar(&args.SenderBinary, "sender-binary", "", "Path to the binary used to send files (mandatory)")
 	flag.StringVar(&args.ReceiverBinary, "receiver-binary", "receiver", "Path to the binary used to receive files (default 'receiver')")
 	flag.IntVar(&args.SenderPort, "sender-port", 5011, "TCP port for transparent passthrough (default 5011)")
+	flag.IntVar(&args.IdPeriod, "id-period", 30, "Minutes between sending an ID packet (0 means never)")
 	flag.Parse()
 
 	if args.MyCallsign == "" {
@@ -388,7 +391,7 @@ func createResponsePacket(cmdID string, status int, msg string) []byte {
 }
 
 func callsignAllowedForGet(cs string) bool {
-	// If no restrictions provided, do not allow any PUTs.
+	// If no restrictions provided, do not allow any GETs.
 	if len(getAllowedCallsigns) == 0 {
 		return false
 	}
@@ -762,6 +765,37 @@ func invokeReceiverBinary(args *Arguments, senderCallsign, fileName, cmdID strin
 	return nil
 }
 
+// --- Periodic ID Packet Functions ---
+
+// createIDPacket builds an ID packet with destination "ID", source as our server callsign,
+// and an info field containing the KISS File Server message.
+func createIDPacket() []byte {
+	dest := encodeAX25Address("ID", false)
+	src := encodeAX25Address(serverCallsign, true)
+	header := append(append(dest, src...), 0x03, 0xF0)
+	info := "KISS File Server https://github.com/madpsy/kiss-tnc-file-transfer"
+	if len(info) > 128 {
+		info = info[:128]
+	} else {
+		info += strings.Repeat(" ", 128-len(info))
+	}
+	return append(header, []byte(info)...)
+}
+
+// sendIDPacket wraps the ID packet in a KISS frame and writes it to the connection.
+func sendIDPacket(conn KISSConnection) {
+	packet := createIDPacket()
+	escaped := escapeData(packet)
+	frame := []byte{KISS_FLAG, KISS_CMD_DATA}
+	frame = append(frame, escaped...)
+	frame = append(frame, KISS_FLAG)
+	if _, err := conn.Write(frame); err != nil {
+		log.Printf("Error sending ID packet: %v", err)
+	} else {
+		log.Printf("Sent ID packet")
+	}
+}
+
 func main() {
 	args := parseArguments()
 	globalArgs = args
@@ -838,6 +872,19 @@ func main() {
 	defer conn.Close()
 
 	log.Printf("File Server started. My callsign: %s", serverCallsign)
+
+	// Start periodic ID packet sender if enabled.
+	if args.IdPeriod > 0 {
+		go func() {
+			ticker := time.NewTicker(time.Duration(args.IdPeriod) * time.Minute)
+			defer ticker.Stop()
+			// Send an initial ID packet immediately.
+			sendIDPacket(globalConn)
+			for range ticker.C {
+				sendIDPacket(globalConn)
+			}
+		}()
+	}
 
 	// Create a broadcaster to distribute data read from the underlying connection.
 	broadcaster = NewBroadcaster()

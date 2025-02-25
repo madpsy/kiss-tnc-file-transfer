@@ -69,6 +69,10 @@
     <li>
       <strong>Reconnection Logic:</strong> The server monitors connection activity and automatically attempts to reconnect if no data is received within a defined timeout.
     </li>
+    <li>
+      <strong>ID Packet Transmission:</strong> The server periodically sends an ID packet containing its identity and a URL for more information.
+      This interval is configurable using the <code>--id-period</code> flag.
+    </li>
   </ul>
 
   <h2 id="installation">Installation &amp; Build</h2>
@@ -189,6 +193,14 @@ go build -o fileserver fileserver.go
         TCP port for transparent passthrough (used for file transfers). Remote clients connect here to receive file data.
       </td>
       <td><code>5011</code></td>
+    </tr>
+    <tr>
+      <td><code>--id-period</code></td>
+      <td>
+        Interval (in minutes) between sending an ID packet containing the server identity.
+        A value of 0 disables periodic ID transmission.
+      </td>
+      <td><code>30</code></td>
     </tr>
   </table>
 
