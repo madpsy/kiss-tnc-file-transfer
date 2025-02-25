@@ -1412,7 +1412,7 @@ function deleteReceivedFileById(fileId) {
         
               if (checksumMatch) {
     	    if (!transfer.isListFile) {
-                	downloadReceivedFile(existingIndex);
+                	downloadReceivedFile(fileObj.fileId);
     	    } else {
     		console.log("LIST.txt processed; skipping normal download.");
                 }
