@@ -61,8 +61,8 @@ type Arguments struct {
 	Port           int    // used with TCP
 	SerialPort     string // used with serial
 	Baud           int    // used with serial
-	GetCallsigns   string // comma-delimited list for filtering GET sender callsigns (supports wildcards)
-	PutCallsigns   string // comma-delimited list for filtering PUT sender callsigns (supports wildcards)
+	GetCallsigns   string // comma-delimited list for filtering GET sender callsigns (supports wildcards). If not specified, GET is denied for everyone.
+	PutCallsigns   string // comma-delimited list for filtering PUT sender callsigns (supports wildcards). If not specified, PUT is denied for everyone.
 	AdminCallsigns string // comma-delimited list for filtering ADMIN sender callsigns (supports wildcards). If not specified, admin commands are denied.
 	ServeDirectory string // directory to serve files from (mandatory)
 	SaveDirectory  string // where received files should be saved (default current directory)
@@ -79,8 +79,8 @@ func parseArguments() *Arguments {
 	flag.IntVar(&args.Port, "port", 9001, "TCP port (if connection is tcp)")
 	flag.StringVar(&args.SerialPort, "serial-port", "", "Serial port (e.g., COM3 or /dev/ttyUSB0)")
 	flag.IntVar(&args.Baud, "baud", 115200, "Baud rate for serial connection")
-	flag.StringVar(&args.GetCallsigns, "get-callsigns", "", "Comma delimited list of allowed sender callsign patterns for GET command (supports wildcards, e.g. MM5NDH-*,*-15)")
-	flag.StringVar(&args.PutCallsigns, "put-callsigns", "", "Comma delimited list of allowed sender callsign patterns for PUT command (supports wildcards)")
+	flag.StringVar(&args.GetCallsigns, "get-callsigns", "", "Comma delimited list of allowed sender callsign patterns for GET command (supports wildcards, e.g. MM5NDH-*,*-15). If not specified, GET is denied for everyone.")
+	flag.StringVar(&args.PutCallsigns, "put-callsigns", "", "Comma delimited list of allowed sender callsign patterns for PUT command (supports wildcards). If not specified, PUT is denied for everyone.")
 	flag.StringVar(&args.AdminCallsigns, "admin-callsigns", "", "Comma delimited list of allowed sender callsign patterns for ADMIN commands (supports wildcards). If not specified, admin commands are denied.")
 	flag.StringVar(&args.ServeDirectory, "serve-directory", "", "Directory to serve files from (mandatory)")
 	flag.StringVar(&args.SaveDirectory, "save-directory", ".", "Directory where received files should be saved (default current directory)")
@@ -388,9 +388,9 @@ func createResponsePacket(cmdID string, status int, msg string) []byte {
 }
 
 func callsignAllowedForGet(cs string) bool {
-	// If no restrictions provided, allow all.
+	// If no restrictions provided, do not allow any PUTs.
 	if len(getAllowedCallsigns) == 0 {
-		return true
+		return false
 	}
 	cs = strings.ToUpper(strings.TrimSpace(cs))
 	for _, pattern := range getAllowedCallsigns {
@@ -402,9 +402,9 @@ func callsignAllowedForGet(cs string) bool {
 }
 
 func callsignAllowedForPut(cs string) bool {
-	// If no restrictions provided, allow all.
+	// If no restrictions provided, do not allow any PUTs.
 	if len(putAllowedCallsigns) == 0 {
-		return true
+		return false
 	}
 	cs = strings.ToUpper(strings.TrimSpace(cs))
 	for _, pattern := range putAllowedCallsigns {
