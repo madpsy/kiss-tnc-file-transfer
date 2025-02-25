@@ -2460,9 +2460,10 @@ function deleteFile(fileName) {
       .then(rsp => {
         const statusText = (rsp.status === 1) ? "Success" : (rsp.status === 0 ? "Failed" : "Unknown");
         document.getElementById('rspResponseList').innerText = "RSP: " + statusText + " - " + rsp.message;
-        // Optionally, refresh the file list after a delay.
+        // If successful, show "Waiting for file list..." and then refresh.
         if (rsp.status === 1) {
           setTimeout(() => {
+            document.getElementById('listTable').innerHTML = '<p>Refreshing file list...</p>';
             fetchListFiles();
           }, 1000);
         }
@@ -2491,9 +2492,10 @@ function renameFile(fileName) {
       .then(rsp => {
         const statusText = (rsp.status === 1) ? "Success" : (rsp.status === 0 ? "Failed" : "Unknown");
         document.getElementById('rspResponseList').innerText = "RSP: " + statusText + " - " + rsp.message;
-        // Optionally, refresh the file list after a delay.
+        // If successful, show "Waiting for file list..." and then refresh.
         if (rsp.status === 1) {
           setTimeout(() => {
+            document.getElementById('listTable').innerHTML = '<p>Refreshing file list...</p>';
             fetchListFiles();
           }, 1000);
         }
