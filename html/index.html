@@ -1938,10 +1938,10 @@ document.getElementById('receiverCallsign').addEventListener('input', updateList
       // Build the info field starting with "CMD:" + cmdID + " " followed by the command text.
       let infoStr = "CMD:" + cmdID + " " + commandText;
       // Ensure the info field is exactly 64 characters.
-      if (infoStr.length > 64) {
-        infoStr = infoStr.substring(0, 64);
+      if (infoStr.length > 128) {
+        infoStr = infoStr.substring(0, 128);
       } else {
-        infoStr = infoStr.padEnd(64, ' ');
+        infoStr = infoStr.padEnd(128, ' ');
       }
       const encoder = new TextEncoder();
       const infoBytes = encoder.encode(infoStr); // Should yield 64 bytes (assuming ASCII)
@@ -2100,7 +2100,6 @@ function sendCmdWithRetry(commandText, maxRetries = 3) {
     }
     
     
-    
 function processListFile(csvText) {
   // Cache the CSV text so that we can reuse it on subsequent modal openings.
   cachedListCSV = csvText;
@@ -2131,7 +2130,11 @@ function processListFile(csvText) {
     });
     // Use the file name from the first column (without quotes).
     const fileName = cols[0].replace(/"/g, '');
-    tableHtml += '<td><button class="btn btn-primary btn-sm" onclick="getFile(\'' + fileName + '\')">Get</button></td>';
+    tableHtml += '<td>';
+    tableHtml += '<button class="btn btn-primary btn-sm" onclick="getFile(\'' + fileName + '\')">Get</button> ';
+    tableHtml += '<button class="btn btn-warning btn-sm me-2" onclick="renameFile(\'' + fileName + '\')">Rename</button> ';
+    tableHtml += '<button class="btn btn-danger btn-sm" onclick="deleteFile(\'' + fileName + '\')">Delete</button> ';
+    tableHtml += '</td>';
     tableHtml += '</tr>';
   }
   tableHtml += '</tbody></table></div>';
@@ -2149,7 +2152,8 @@ function processListFile(csvText) {
       let rowText = tr[i].textContent || tr[i].innerText;
       tr[i].style.display = rowText.toUpperCase().indexOf(filter) > -1 ? "" : "none";
     }
-  });
+  });    
+
 
   // Main table-sorting function that uses localeCompare for all columns.
   function sortTableByColumn(table, columnIndex, asc = true) {
@@ -2383,6 +2387,70 @@ function processListFile(csvText) {
       sendPacket(1);
       headerAckTimer = setTimeout(waitForHeaderAck, defaultHeaderTimeout);
     }
+
+
+function deleteFile(fileName) {
+  const refreshBtn = document.getElementById('refreshListBtn');
+  if (refreshBtn) {
+    refreshBtn.style.display = 'none';
+  }
+  if (confirm("Are you sure you want to delete " + fileName + "?")) {
+    // Update the modal's command display.
+    document.getElementById('cmdSentList').innerText = "CMD: DEL " + fileName;
+    // Clear previous response and table.
+    document.getElementById('rspResponseList').innerText = "";
+    document.getElementById('listTable').innerHTML = "";
+    
+    // Send the DEL command.
+    sendCmd("DEL " + fileName)
+      .then(rsp => {
+        const statusText = (rsp.status === 1) ? "Success" : (rsp.status === 0 ? "Failed" : "Unknown");
+        document.getElementById('rspResponseList').innerText = "RSP: " + statusText + " - " + rsp.message;
+        // Optionally, refresh the file list after a delay.
+        if (rsp.status === 1) {
+          setTimeout(() => {
+            fetchListFiles();
+          }, 1000);
+        }
+      })
+      .catch(err => {
+        document.getElementById('rspResponseList').innerText = "Error: " + err;
+      });
+  }
+}
+
+function renameFile(fileName) {
+  const refreshBtn = document.getElementById('refreshListBtn');
+  if (refreshBtn) {
+    refreshBtn.style.display = 'none';
+  }
+  const newName = prompt("Enter new filename for " + fileName + ":", fileName);
+  if (newName && newName.trim() !== "" && newName !== fileName) {
+    // Update the modal's command display.
+    document.getElementById('cmdSentList').innerText = "CMD: REN " + fileName + "|" + newName;
+    // Clear previous response and table.
+    document.getElementById('rspResponseList').innerText = "";
+    document.getElementById('listTable').innerHTML = "";
+    
+    // Send the REN command.
+    sendCmd("REN " + fileName + "|" + newName)
+      .then(rsp => {
+        const statusText = (rsp.status === 1) ? "Success" : (rsp.status === 0 ? "Failed" : "Unknown");
+        document.getElementById('rspResponseList').innerText = "RSP: " + statusText + " - " + rsp.message;
+        // Optionally, refresh the file list after a delay.
+        if (rsp.status === 1) {
+          setTimeout(() => {
+            fetchListFiles();
+          }, 1000);
+        }
+      })
+      .catch(err => {
+        document.getElementById('rspResponseList').innerText = "Error: " + err;
+      });
+  } else {
+    alert("Invalid new filename.");
+  }
+}
 
 
 function updateListFilesButtonStatus() {

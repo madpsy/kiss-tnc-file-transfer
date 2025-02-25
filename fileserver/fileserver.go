@@ -49,6 +49,10 @@ var adminAllowedCallsigns []string
 // Maximum allowed file name length.
 const maxFileNameLen = 58
 
+// Absolute paths for directories.
+var absServeDir string
+var absSaveDir string
+
 // Command-line arguments structure.
 type Arguments struct {
 	MyCallsign     string // your own callsign
@@ -725,29 +729,35 @@ func invokeReceiverBinary(args *Arguments, senderCallsign, fileName, cmdID strin
 			log.Printf("Receiver binary exited with error: %v", err)
 			return
 		}
-		// Write the output to the specified file in the save directory.
-		savePath := filepath.Join(args.SaveDirectory, fileName)
+		// Compute the intended save path and ensure it is within the save directory.
+		savePath := filepath.Join(absSaveDir, fileName)
+		cleanSavePath := filepath.Clean(savePath)
+		if !strings.HasPrefix(cleanSavePath, absSaveDir) {
+			log.Printf("PUT command: attempted directory traversal in file name '%s'", fileName)
+			return
+		}
 		// If the file exists, append _1, _2, etc. before the extension.
-		if _, err := os.Stat(savePath); err == nil {
+		if _, err := os.Stat(cleanSavePath); err == nil {
 			baseName := strings.TrimSuffix(fileName, filepath.Ext(fileName))
 			ext := filepath.Ext(fileName)
 			counter := 1
 			for {
 				newFileName := fmt.Sprintf("%s_%d%s", baseName, counter, ext)
-				newPath := filepath.Join(args.SaveDirectory, newFileName)
+				newPath := filepath.Join(absSaveDir, newFileName)
+				newPath = filepath.Clean(newPath)
 				if _, err := os.Stat(newPath); os.IsNotExist(err) {
-					savePath = newPath
+					cleanSavePath = newPath
 					break
 				}
 				counter++
 			}
 		}
-		err = ioutil.WriteFile(savePath, output, 0644)
+		err = ioutil.WriteFile(cleanSavePath, output, 0644)
 		if err != nil {
-			log.Printf("Error writing received file to %s: %v", savePath, err)
+			log.Printf("Error writing received file to %s: %v", cleanSavePath, err)
 			return
 		}
-		log.Printf("Received file saved to %s", savePath)
+		log.Printf("Received file saved to %s", cleanSavePath)
 	}()
 	return nil
 }
@@ -756,7 +766,19 @@ func main() {
 	args := parseArguments()
 	globalArgs = args
 	serverCallsign = strings.ToUpper(args.MyCallsign)
-	log.Printf("Serving files from directory: %s", args.ServeDirectory)
+
+	// Resolve absolute paths for the serve and save directories.
+	var err error
+	absServeDir, err = filepath.Abs(args.ServeDirectory)
+	if err != nil {
+		log.Fatalf("Error resolving serve directory: %v", err)
+	}
+	absSaveDir, err = filepath.Abs(args.SaveDirectory)
+	if err != nil {
+		log.Fatalf("Error resolving save directory: %v", err)
+	}
+	log.Printf("Serving files from directory: %s", absServeDir)
+	log.Printf("Received files will be saved to: %s", absSaveDir)
 	log.Printf("Sender binary set to: %s", args.SenderBinary)
 	log.Printf("Receiver binary set to: %s", args.ReceiverBinary)
 
@@ -801,7 +823,6 @@ func main() {
 
 	// Establish the underlying KISS connection.
 	var conn KISSConnection
-	var err error
 	if strings.ToLower(args.Connection) == "tcp" {
 		conn, err = newTCPKISSConnection(args.Host, args.Port)
 		if err != nil {
@@ -858,24 +879,30 @@ func main() {
 					sendResponseWithDetails(conn, sender, cmdID, command, 0, "FILE NAME TOO LONG")
 					continue
 				}
-				fullPath := filepath.Join(args.ServeDirectory, fileName)
-				content, err := ioutil.ReadFile(fullPath)
+				requestedPath := filepath.Join(absServeDir, fileName)
+				cleanPath := filepath.Clean(requestedPath)
+				if !strings.HasPrefix(cleanPath, absServeDir) {
+					log.Printf("GET command: attempted directory traversal in '%s'", fileName)
+					sendResponseWithDetails(conn, sender, cmdID, command, 0, "INVALID FILE PATH")
+					continue
+				}
+				content, err := ioutil.ReadFile(cleanPath)
 				if err != nil {
-					log.Printf("Requested file '%s' does not exist in directory %s", fileName, args.ServeDirectory)
+					log.Printf("Requested file '%s' does not exist in directory %s", fileName, absServeDir)
 					sendResponseWithDetails(conn, sender, cmdID, command, 0, "CANNOT FIND/READ FILE")
 					continue
 				}
 				// Double-check file read.
-				_, err = ioutil.ReadFile(fullPath)
+				_, err = ioutil.ReadFile(cleanPath)
 				if err != nil {
-					log.Printf("Error reading file '%s': %v", fullPath, err)
+					log.Printf("Error reading file '%s': %v", cleanPath, err)
 					sendResponseWithDetails(conn, sender, cmdID, command, 0, "GET FAILED")
 					continue
 				}
 				sendResponseWithDetails(conn, sender, cmdID, command, 1, "GET OK")
 				go invokeSenderBinary(args, sender, fileName, string(content), cmdID)
 			} else if strings.HasPrefix(upperCmd, "LIST") {
-				listing, err := listFiles(args.ServeDirectory)
+				listing, err := listFiles(absServeDir)
 				if err != nil {
 					log.Printf("Error listing files: %v", err)
 					sendResponseWithDetails(conn, sender, cmdID, command, 0, "LIST CANNOT READ")
@@ -896,6 +923,14 @@ func main() {
 					sendResponseWithDetails(conn, sender, cmdID, command, 0, "FILE NAME TOO LONG")
 					continue
 				}
+				// For PUT, we validate the file name when writing to the save directory.
+				savePath := filepath.Join(absSaveDir, fileName)
+				cleanSavePath := filepath.Clean(savePath)
+				if !strings.HasPrefix(cleanSavePath, absSaveDir) {
+					log.Printf("PUT command: attempted directory traversal in '%s'", fileName)
+					sendResponseWithDetails(conn, sender, cmdID, command, 0, "INVALID FILE PATH")
+					continue
+				}
 				err := invokeReceiverBinary(args, sender, fileName, cmdID)
 				if err != nil {
 					log.Printf("Receiver binary error: %v", err)
@@ -904,33 +939,39 @@ func main() {
 					sendResponseWithDetails(conn, sender, cmdID, command, 1, "PUT OK - WAITING FOR FILE")
 				}
 			} else if strings.HasPrefix(upperCmd, "DEL ") {
-    			// Check if the sender is allowed to perform admin commands.
-			if !callsignAllowedForAdmin(sender) {
-        			log.Printf("Admin command DEL from sender %s not allowed.", sender)
-			        sendResponseWithDetails(conn, sender, cmdID, command, 0, "CALLSIGN NOT ALLOWED")
-			        continue
-		        }
-			    fileName := strings.TrimSpace(command[4:])
-			    if len(fileName) > maxFileNameLen {
-			        log.Printf("DEL command: file name '%s' too long", fileName)
-			        sendResponseWithDetails(conn, sender, cmdID, command, 0, "FILE NAME TOO LONG")
-			        continue
-			    }
-			    fullPath := filepath.Join(args.ServeDirectory, fileName)
-			    if _, err := os.Stat(fullPath); os.IsNotExist(err) {
-			        log.Printf("DEL command: file '%s' does not exist", fileName)
-			        sendResponseWithDetails(conn, sender, cmdID, command, 0, "FILE DOES NOT EXIST")
-			        continue
-			    }
-			    err := os.Remove(fullPath)
-			    if err != nil {
-			        log.Printf("DEL command: error deleting file '%s': %v", fileName, err)
-			        sendResponseWithDetails(conn, sender, cmdID, command, 0, "DEL FAILED")
-			    } else {
-			        log.Printf("DEL command: file '%s' deleted successfully", fileName)
-			        sendResponseWithDetails(conn, sender, cmdID, command, 1, "DEL OK")
-			    }
-			}  else if strings.HasPrefix(upperCmd, "REN ") {
+				// Check if the sender is allowed to perform admin commands.
+				if !callsignAllowedForAdmin(sender) {
+					log.Printf("Admin command DEL from sender %s not allowed.", sender)
+					sendResponseWithDetails(conn, sender, cmdID, command, 0, "CALLSIGN NOT ALLOWED")
+					continue
+				}
+				fileName := strings.TrimSpace(command[4:])
+				if len(fileName) > maxFileNameLen {
+					log.Printf("DEL command: file name '%s' too long", fileName)
+					sendResponseWithDetails(conn, sender, cmdID, command, 0, "FILE NAME TOO LONG")
+					continue
+				}
+				fullPath := filepath.Join(absServeDir, fileName)
+				cleanPath := filepath.Clean(fullPath)
+				if !strings.HasPrefix(cleanPath, absServeDir) {
+					log.Printf("DEL command: attempted directory traversal in '%s'", fileName)
+					sendResponseWithDetails(conn, sender, cmdID, command, 0, "INVALID FILE PATH")
+					continue
+				}
+				if _, err := os.Stat(cleanPath); os.IsNotExist(err) {
+					log.Printf("DEL command: file '%s' does not exist", fileName)
+					sendResponseWithDetails(conn, sender, cmdID, command, 0, "FILE DOES NOT EXIST")
+					continue
+				}
+				err := os.Remove(cleanPath)
+				if err != nil {
+					log.Printf("DEL command: error deleting file '%s': %v", fileName, err)
+					sendResponseWithDetails(conn, sender, cmdID, command, 0, "DEL FAILED")
+				} else {
+					log.Printf("DEL command: file '%s' deleted successfully", fileName)
+					sendResponseWithDetails(conn, sender, cmdID, command, 1, "DEL OK")
+				}
+			} else if strings.HasPrefix(upperCmd, "REN ") {
 				// Process REN admin command.
 				if !callsignAllowedForAdmin(sender) {
 					log.Printf("Admin command REN from sender %s not allowed.", sender)
@@ -951,20 +992,27 @@ func main() {
 					sendResponseWithDetails(conn, sender, cmdID, command, 0, "FILE NAME TOO LONG")
 					continue
 				}
-				currentPath := filepath.Join(args.ServeDirectory, currentFile)
-				newPath := filepath.Join(args.ServeDirectory, newFile)
-				if _, err := os.Stat(currentPath); os.IsNotExist(err) {
+				currentPath := filepath.Join(absServeDir, currentFile)
+				newPath := filepath.Join(absServeDir, newFile)
+				cleanCurrent := filepath.Clean(currentPath)
+				cleanNew := filepath.Clean(newPath)
+				if !strings.HasPrefix(cleanCurrent, absServeDir) || !strings.HasPrefix(cleanNew, absServeDir) {
+					log.Printf("REN command: attempted directory traversal with filenames '%s' or '%s'", currentFile, newFile)
+					sendResponseWithDetails(conn, sender, cmdID, command, 0, "INVALID FILE PATH")
+					continue
+				}
+				if _, err := os.Stat(cleanCurrent); os.IsNotExist(err) {
 					log.Printf("REN command: current file '%s' does not exist", currentFile)
 					sendResponseWithDetails(conn, sender, cmdID, command, 0, "CURRENT FILE DOES NOT EXIST")
 					continue
 				}
 				// Check if new filename already exists
-				if _, err := os.Stat(newPath); err == nil {
+				if _, err := os.Stat(cleanNew); err == nil {
 					log.Printf("REN command: new file '%s' already exists", newFile)
 					sendResponseWithDetails(conn, sender, cmdID, command, 0, "NEW FILE ALREADY EXISTS")
 					continue
 				}
-				err := os.Rename(currentPath, newPath)
+				err := os.Rename(cleanCurrent, cleanNew)
 				if err != nil {
 					log.Printf("REN command: error renaming file from '%s' to '%s': %v", currentFile, newFile, err)
 					sendResponseWithDetails(conn, sender, cmdID, command, 0, "REN FAILED")
