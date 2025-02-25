@@ -2339,7 +2339,7 @@ function processListFile(csvText) {
       const receiver = document.getElementById('receiverCallsign').value.trim();
       const fileInput = document.getElementById('fileInput');
       if (!sender || !receiver || !fileInput.files.length) {
-        alert("Please enter your callsign, receiver callsign, and select a file.");
+        alert("Ensure your callsign, remote callsign and a file has been selected.");
         return null;
       }
       return { sender, receiver, file: fileInput.files[0] };
