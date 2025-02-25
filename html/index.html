@@ -207,6 +207,7 @@
             let receiver = "";
             let fileId = "";
             let cachedListCSV = null;
+            let expectedFileId = null;
             
             // Dynamic burst mode settings (allowed sizes: 1,2,4,6,8,10)
             const dynamicBurstSizes = [1, 2, 4, 6, 8, 10];
@@ -1142,6 +1143,20 @@
          
         // --- Header Branch: When seq === 1, start a new transfer ---
         if (seq === 1 && !activeTransfers[transferKeyFinal]) {
+
+  let headerFileId = packetFileId; // obtained from the packet header
+  
+  // If file server mode is enabled and we have an expected fileId from GET,
+  // ensure that they match.
+  if (document.getElementById('isFileServer').checked && expectedFileId) {
+    if (headerFileId !== expectedFileId) {
+      console.error("Incoming file ID does not match expected cmdID:", headerFileId, expectedFileId);
+      // Optionally, ignore this transfer:
+      return;
+    }
+  }
+
+
           console.log("Starting new transfer from sender", senderStr, "with file ID", packetFileId);
           // Decode the header payload to get the transfer parameters
           let headerPayloadText = new TextDecoder().decode(payloadChunk);
@@ -2275,6 +2290,8 @@ function processListFile(csvText) {
           
           // If the response indicates success, delay 1 second, then close the modal and scroll to the bottom.
           if (rsp.status === 1) {
+	    expectedFileId = rsp.cmdID;
+	    console.log("Expected file ID set to:", expectedFileId);
             setTimeout(() => {
               const modalEl = document.getElementById('listFiles');
               const modalInstance = bootstrap.Modal.getInstance(modalEl);
@@ -2296,7 +2313,10 @@ function processListFile(csvText) {
         .then(rsp => {
           const statusText = (rsp.status === 1) ? "Success" : (rsp.status === 0 ? "Failed" : "Unknown");
           document.getElementById('rspResponseList').innerText = "RSP: " + statusText + " - " + rsp.message;
-          // (Assuming that once LIST.txt is received via the data path, processListFile() will be called.)
+	  if (rsp.status === 1) {
+		expectedFileId = rsp.cmdID;
+		console.log("Expected file ID for LIST set to:", expectedFileId);
+	  }
         })
         .catch(err => {
           document.getElementById('rspResponseList').innerText = "Error: " + err;
