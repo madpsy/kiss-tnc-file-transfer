@@ -17,9 +17,9 @@
   <h1>File Server Documentation</h1>
   <p>
     The File Server program is designed to serve files and respond to remote file transfer commands over a KISS‑framed connection.
-    Using AX.25 headers, it accepts commands such as <code>GET</code>, <code>LIST</code>, and <code>PUT</code> from remote clients.
-    The server reads commands from an underlying connection (either TCP or serial), processes them, and sends back responses
-    as RSP packets. File content or directory listings are transferred by invoking external sender or receiver binaries.
+    Using AX.25 headers, it accepts commands such as <code>GET</code>, <code>LIST</code>, <code>PUT</code>, <code>DEL</code>, and <code>REN</code> from remote clients.
+    The server reads commands from an underlying connection (either TCP or serial), processes them, and sends back responses as RSP packets.
+    File content or directory listings are transferred by invoking external sender or receiver binaries.
   </p>
 
   <h2>Table of Contents</h2>
@@ -28,6 +28,7 @@
     <li><a href="#installation">Installation &amp; Build</a></li>
     <li><a href="#options">Command‑Line Options</a></li>
     <li><a href="#usage">Usage &amp; Examples</a></li>
+    <li><a href="#commands">Commands</a></li>
     <li><a href="#notes">Additional Notes</a></li>
     <li><a href="#support">Contact &amp; Support</a></li>
   </ul>
@@ -52,6 +53,14 @@
     <li>
       <strong>PUT Command:</strong> For a <code>PUT [FILE]</code> command, the server verifies the sender’s callsign (if filtering is enabled)
       and spawns the receiver binary to accept the incoming file. The file is then saved to the designated save directory.
+    </li>
+    <li>
+      <strong>DEL Command:</strong> The <code>DEL [FILE]</code> command deletes a specified file from the serve directory.
+      This is an administrative command and requires the sender to be authorized via the <code>--admin-callsigns</code> flag.
+    </li>
+    <li>
+      <strong>REN Command:</strong> The <code>REN [CURRENT FILE]|[NEW FILE]</code> command renames a file in the serve directory.
+      Like the DEL command, this is restricted to senders whose callsigns match the patterns specified by <code>--admin-callsigns</code>.
     </li>
     <li>
       <strong>Transparent Passthrough:</strong> A dedicated TCP listener (on the port specified by <code>--sender-port</code>) allows for a transparent data relay between
@@ -139,6 +148,14 @@ go build -o fileserver fileserver.go
       <td><em>none</em></td>
     </tr>
     <tr>
+      <td><code>--admin-callsigns</code></td>
+      <td>
+        Comma‑delimited list of allowed sender callsign patterns for administrative commands (such as <code>DEL</code> and <code>REN</code>). If not specified,
+        admin commands are denied.
+      </td>
+      <td><em>none</em></td>
+    </tr>
+    <tr>
       <td><code>--serve-directory</code></td>
       <td>
         Directory from which files are served (mandatory).
@@ -189,8 +206,32 @@ go build -o fileserver fileserver.go
 ./fileserver --my-callsign=SERVER1 --connection=serial --serial-port=/dev/ttyUSB0 --baud=115200 --serve-directory=files --sender-binary=/path/to/sender
   </pre>
   <p>
-    Optionally, you can restrict which remote callsigns may issue GET or PUT commands by using the <code>--get-callsigns</code> and <code>--put-callsigns</code> flags.
+    Optionally, you can restrict which remote callsigns may issue GET, PUT, or admin commands by using the <code>--get-callsigns</code>, <code>--put-callsigns</code>,
+    and <code>--admin-callsigns</code> flags.
   </p>
+
+  <h2 id="commands">Commands</h2>
+  <p>
+    The server supports the following commands:
+  </p>
+  <ul>
+    <li>
+      <strong>GET [FILE]</strong>: Reads the specified file from the serve directory, responds with a “GET OK” message, and transfers the file using the sender binary.
+    </li>
+    <li>
+      <strong>LIST</strong>: Generates a CSV file listing of all files in the serve directory (named <code>LIST.txt</code>) and transfers it using the sender binary.
+    </li>
+    <li>
+      <strong>PUT [FILE]</strong>: Initiates a file upload. The server verifies the sender’s callsign (if filtering is enabled) and spawns the receiver binary to save the incoming file in the save directory.
+    </li>
+    <li>
+      <strong>DEL [FILE]</strong>: Deletes the specified file from the serve directory. This command is restricted to senders authorized via <code>--admin-callsigns</code>.
+    </li>
+    <li>
+      <strong>REN [CURRENT FILE]|[NEW FILE]</strong>: Renames a file in the serve directory from the current filename to the new filename.
+      This administrative command is also restricted to senders matching the <code>--admin-callsigns</code> patterns.
+    </li>
+  </ul>
 
   <h2 id="notes">Additional Notes</h2>
   <ul>
@@ -198,21 +239,16 @@ go build -o fileserver fileserver.go
       The server uses KISS framing and AX.25 headers to encapsulate command and response packets.
     </li>
     <li>
-      Commands supported include:
-      <ul>
-        <li><strong>GET [FILE]</strong>: Sends the requested file from the serve directory using the sender binary.</li>
-        <li><strong>LIST</strong>: Sends a CSV file listing of all files in the serve directory as <code>LIST.txt</code>.</li>
-        <li><strong>PUT [FILE]</strong>: Initiates a file upload by invoking the receiver binary; the received file is saved in the save directory.</li>
-      </ul>
+      Filtering of allowed sender callsigns for GET, PUT, and administrative commands can be enabled via the <code>--get-callsigns</code>, <code>--put-callsigns</code>, and <code>--admin-callsigns</code> flags.
+    </li>
+    <li>
+      Administrative commands (<code>DEL</code> and <code>REN</code>) will only be executed if the sender’s callsign matches one of the allowed patterns provided with <code>--admin-callsigns</code>.
     </li>
     <li>
       A transparent TCP listener (on the port specified by <code>--sender-port</code>) relays data between the underlying KISS connection and remote clients.
     </li>
     <li>
       The server monitors for inactivity on the connection and will automatically attempt to reconnect if no data is received within 600 seconds.
-    </li>
-    <li>
-      Filtering of allowed sender callsigns for GET and PUT commands can be enabled via the <code>--get-callsigns</code> and <code>--put-callsigns</code> flags.
     </li>
     <li>
       External binaries (sender and receiver) are invoked to handle file transfers. Ensure they are correctly specified and accessible.
