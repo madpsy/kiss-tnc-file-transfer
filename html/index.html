@@ -1904,17 +1904,17 @@ if (serialReader) {
               document.getElementById('status').innerText = msg;
               console.log(msg);
             }
-            window.downloadReceivedFile = function(index) {
-              const file = persistentReceivedFiles[index];
-              if (!file) return;
-              const a = document.createElement('a');
-              a.href = file.dataUrl;
-              a.download = file.fileName;
-              document.body.appendChild(a);
-              a.click();
-              document.body.removeChild(a);
-            };
-            
+		window.downloadReceivedFile = function(fileId) {
+		  const file = persistentReceivedFiles.find(f => f.fileId === fileId);
+		  if (!file) return;
+		  const a = document.createElement('a');
+		  a.href = file.dataUrl;
+		  a.download = file.fileName;
+		  document.body.appendChild(a);
+		  a.click();
+		  document.body.removeChild(a);
+		};
+
             window.clearSentFile = function(index) {
               persistentSentFiles.splice(index, 1);
               saveSentFilesToLocalStorage(persistentSentFiles);
