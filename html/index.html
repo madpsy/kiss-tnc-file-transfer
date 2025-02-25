@@ -75,10 +75,10 @@
             <label for="receiverCallsign" class="form-label">Remote Callsign</label> <input type="text" id="receiverCallsign" class="form-control" placeholder="Enter remote callsign">
         </div>
         <div class="mb-3">
-    	    <div class="form-check">
-	      <input type="checkbox" class="form-check-input" id="restrictCallsign">
-	      <label class="form-check-label" for="restrictCallsign">Only accept files from this callsign?</label>
-	    </div>
+            <div class="form-check">
+                <input type="checkbox" class="form-check-input" id="restrictCallsign">
+                <label class="form-check-label" for="restrictCallsign">Only accept files from this callsign?</label>
+            </div>
             <div class="form-check">
                 <input type="checkbox" class="form-check-input" id="isFileServer">
                 <label class="form-check-label" for="isFileServer">Is a file server?</label>
@@ -182,7 +182,7 @@
             let activeTransfers = {};
             let completedTransfers = {};
             let socket = null;
-            let serialPort = null, serialWriter = null;
+            let serialPort = null, serialWriter = null, serialReader = null, stopReading = false;
             let serialConnected = false;
             let kissBuffer = new Uint8Array(0);
             
@@ -1595,32 +1595,42 @@
         
             
             async function readSerial() {
-              while (serialPort && serialPort.readable) {
-                const reader = serialPort.readable.getReader();
-                try {
-                  while (true) {
-                    const { value, done } = await reader.read();
-                    if (done) break;
-                    if (value) {
-                      kissBuffer = concatUint8Arrays(kissBuffer, value);
-                      let startIndex = kissBuffer.indexOf(0xC0);
-                      while (startIndex !== -1) {
-                        let endIndex = kissBuffer.indexOf(0xC0, startIndex + 1);
-                        if (endIndex === -1) break;
-                        const frame = kissBuffer.slice(startIndex, endIndex + 1);
-                        processRawPacket(frame);
-                        kissBuffer = kissBuffer.slice(endIndex + 1);
-                        startIndex = kissBuffer.indexOf(0xC0);
-                      }
-                    }
-                  }
-                } catch (error) {
-                  console.error("Error reading serial port:", error);
-                } finally {
-                  reader.releaseLock();
-                }
-              }
-            }
+  // Continue reading as long as the serial port is open and has a readable stream.
+  while (serialPort && serialPort.readable && !stopReading) {
+    // Use the global serialReader variable.
+    serialReader = serialPort.readable.getReader();
+    try {
+      while (true) {
+        // Check the flag inside the inner loop, too.
+        if (stopReading) break;
+
+        const { value, done } = await serialReader.read();
+        if (done) break;
+        if (value) {
+          // Append new data to the buffer.
+          kissBuffer = concatUint8Arrays(kissBuffer, value);
+          // Process complete frames from the buffer.
+          let startIndex = kissBuffer.indexOf(0xC0);
+          while (startIndex !== -1) {
+            let endIndex = kissBuffer.indexOf(0xC0, startIndex + 1);
+            if (endIndex === -1) break;
+            const frame = kissBuffer.slice(startIndex, endIndex + 1);
+            processRawPacket(frame);
+            kissBuffer = kissBuffer.slice(endIndex + 1);
+            startIndex = kissBuffer.indexOf(0xC0);
+          }
+        }
+      }
+    } catch (error) {
+      console.error("Error reading serial port:", error);
+    } finally {
+  if (serialReader && typeof serialReader.releaseLock === 'function') {
+    serialReader.releaseLock();
+    serialReader = null;
+  }
+}
+  }
+}
             
             document.addEventListener("DOMContentLoaded", function() {
               const storedSenderCallsign = localStorage.getItem('senderCallsign');
@@ -1732,6 +1742,38 @@ document.getElementById('receiverCallsign').addEventListener('input', updateList
                   updateConnectionIndicator();
                 }
               });
+	document.getElementById('serialDisconnectBtn').addEventListener('click', async () => {
+  if (serialPort) {
+    try {
+      // Signal the read loop to stop.
+      stopReading = true;
+if (serialReader) {
+  await serialReader.cancel().catch(err => console.warn("Cancel error:", err));
+  if (serialReader && typeof serialReader.releaseLock === 'function') {
+    serialReader.releaseLock();
+  }
+  serialReader = null;
+}
+
+      if (serialWriter) {
+        serialWriter.releaseLock();
+        serialWriter = null;
+      }
+      await serialPort.close();
+      console.log("Serial port closed.");
+      serialPort = null;
+      serialConnected = false;
+      updateConnectionIndicator();
+      document.getElementById('serialConnectBtn').style.display = 'inline-block';
+      document.getElementById('serialDisconnectBtn').style.display = 'none';
+      // Reset the flag for future connections.
+      stopReading = false;
+    } catch (err) {
+      console.error("Error closing serial port:", err);
+    }
+  }
+});
+
     document.getElementById('sendFileBtn').addEventListener('click', () => {
       // Reset burst counters.
       currentDynamicBurstIndex = 2;
