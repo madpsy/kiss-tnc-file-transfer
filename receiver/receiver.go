@@ -1091,6 +1091,10 @@ func receiverMain(args *Arguments) {
 					} else {
 						log.Printf("Giving up on transfer %s after %d ACK retries due to inactivity.", fid, transfer.TimeoutRetries)
 						delete(transfers, fid)
+						if args.OneFile {
+					            log.Printf("Exiting receiver in one-file mode due to transfer timeout.")
+					            os.Exit(1)
+					        }
 					}
 				}
 			}

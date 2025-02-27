@@ -684,14 +684,10 @@ func invokeSenderBinary(args *Arguments, receiverCallsign, fileName, inputData, 
 // --- Invoking the Receiver Binary ---
 // Modified: the function now accepts an extra parameter "baseDir" which is the directory under which to save the file.
 func invokeReceiverBinary(args *Arguments, senderCallsign, fileName, cmdID, baseDir string) error {
-
 	if _, alreadyRunning := runningReceiver.LoadOrStore(senderCallsign, true); alreadyRunning {
 		log.Printf("A receiver binary is already running for callsign %s, skipping.", senderCallsign)
 		return fmt.Errorf("receiver binary already running for callsign %s", senderCallsign)
 	}
-
-	// Ensure we remove the entry when done.
-	defer runningReceiver.Delete(senderCallsign)
 
 	var cmdArgs []string
 	cmdArgs = append(cmdArgs, "-connection=tcp", "-host=localhost", fmt.Sprintf("-port=%d", args.PassthroughPort))
@@ -705,44 +701,55 @@ func invokeReceiverBinary(args *Arguments, senderCallsign, fileName, cmdID, base
 	cmd := exec.Command(args.ReceiverBinary, cmdArgs...)
 	stdoutPipe, err := cmd.StdoutPipe()
 	if err != nil {
+		runningReceiver.Delete(senderCallsign)
 		return fmt.Errorf("Error obtaining stdout pipe: %v", err)
 	}
 	stderrPipe, err := cmd.StderrPipe()
+if err != nil {
+    runningReceiver.Delete(senderCallsign)
+    return fmt.Errorf("Error obtaining stderr pipe: %v", err)
+}
+go func() {
+    scanner := bufio.NewScanner(stderrPipe)
+    for scanner.Scan() {
+        log.Printf("[receiver stderr] %s", scanner.Text())
+    }
+    if err := scanner.Err(); err != nil {
+        log.Printf("Error reading receiver stderr: %v", err)
+    }
+}()
+
 	if err != nil {
+		runningReceiver.Delete(senderCallsign)
 		return fmt.Errorf("Error obtaining stderr pipe: %v", err)
 	}
 	if err := cmd.Start(); err != nil {
+		runningReceiver.Delete(senderCallsign)
 		return fmt.Errorf("Error starting receiver binary: %v", err)
 	}
 
-	go func() {
-		scanner := bufio.NewScanner(stderrPipe)
-		for scanner.Scan() {
-			log.Printf("[receiver stderr] %s", scanner.Text())
-		}
-		if err := scanner.Err(); err != nil {
-			log.Printf("Error reading receiver stderr: %v", err)
-		}
-	}()
+	// Handle stderr in a goroutine.
+go func() {
+	output, err := io.ReadAll(stdoutPipe)
+	if err != nil {
+		log.Printf("Error reading receiver stdout: %v", err)
+	}
+	waitErr := cmd.Wait()
+	if waitErr != nil {
+		log.Printf("Receiver binary exited with error: %v", waitErr)
+		// Optionally, do not write the file if the receiver failed.
+		runningReceiver.Delete(senderCallsign)
+		return
+	} else {
+		log.Printf("Receiver binary completed successfully.")
+	}
 
-	go func() {
-		output, err := io.ReadAll(stdoutPipe)
-		if err != nil {
-			log.Printf("Error reading receiver stdout: %v", err)
-			return
-		}
-		if err := cmd.Wait(); err != nil {
-			log.Printf("Receiver binary exited with error: %v", err)
-			return
-		}
-		// Compute the intended save path using the provided baseDir.
-		savePath := filepath.Join(baseDir, fileName)
-		cleanSavePath := filepath.Clean(savePath)
-		if !strings.HasPrefix(cleanSavePath, baseDir) {
-			log.Printf("PUT command: attempted directory traversal in file name '%s'", fileName)
-			return
-		}
-		// If the file exists, append _1, _2, etc. before the extension.
+	// Compute and write the received file only if no error occurred.
+	savePath := filepath.Join(baseDir, fileName)
+	cleanSavePath := filepath.Clean(savePath)
+	if !strings.HasPrefix(cleanSavePath, baseDir) {
+		log.Printf("PUT command: attempted directory traversal in file name '%s'", fileName)
+	} else {
 		if _, err := os.Stat(cleanSavePath); err == nil {
 			baseName := strings.TrimSuffix(fileName, filepath.Ext(fileName))
 			ext := filepath.Ext(fileName)
@@ -761,10 +768,14 @@ func invokeReceiverBinary(args *Arguments, senderCallsign, fileName, cmdID, base
 		err = ioutil.WriteFile(cleanSavePath, output, 0644)
 		if err != nil {
 			log.Printf("Error writing received file to %s: %v", cleanSavePath, err)
-			return
+		} else {
+			log.Printf("Received file saved to %s", cleanSavePath)
 		}
-		log.Printf("Received file saved to %s", cleanSavePath)
-	}()
+	}
+	// Now remove the running flag.
+	runningReceiver.Delete(senderCallsign)
+}()
+
 	return nil
 }
 
