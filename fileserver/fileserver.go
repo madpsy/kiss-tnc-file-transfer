@@ -53,6 +53,10 @@ const maxFileNameLen = 58
 var absServeDir string
 var absSaveDir string
 
+// Global map to track running processes per sender callsign.
+var runningSender sync.Map
+var runningReceiver sync.Map
+
 // Command-line arguments structure.
 type Arguments struct {
 	MyCallsign     string // your own callsign
@@ -68,7 +72,7 @@ type Arguments struct {
 	SaveDirectory  string // where received files should be saved (default current directory; not used in per-callsign mode)
 	SenderBinary   string // path to the binary used to send files (mandatory)
 	ReceiverBinary string // path to the binary used to receive files (default "receiver")
-	SenderPort     int    // TCP port for transparent passthrough (default 5011)
+	PassthroughPort     int    // TCP port for transparent passthrough (default 5011)
 	IdPeriod       int    // Minutes between sending an ID packet (0 means never)
 	PerCallsignDir string // New: base directory for per-callsign subdirectories (mutually exclusive with serve-directory, save-directory, get-callsigns, put-callsigns, and admin-callsigns)
 }
@@ -86,9 +90,9 @@ func parseArguments() *Arguments {
 	flag.StringVar(&args.AdminCallsigns, "admin-callsigns", "", "Comma delimited list of allowed sender callsign patterns for ADMIN commands (supports wildcards)")
 	flag.StringVar(&args.ServeDirectory, "serve-directory", "", "Directory to serve files from (mandatory unless -per-callsign is used)")
 	flag.StringVar(&args.SaveDirectory, "save-directory", ".", "Directory where received files should be saved (default current directory; not used in per-callsign mode)")
-	flag.StringVar(&args.SenderBinary, "sender-binary", "", "Path to the binary used to send files (mandatory)")
+	flag.StringVar(&args.SenderBinary, "sender-binary", "sender", "Path to the binary used to send files (default 'sender')")
 	flag.StringVar(&args.ReceiverBinary, "receiver-binary", "receiver", "Path to the binary used to receive files (default 'receiver')")
-	flag.IntVar(&args.SenderPort, "sender-port", 5011, "TCP port for transparent passthrough (default 5011)")
+	flag.IntVar(&args.PassthroughPort, "passthrough-port", 5011, "TCP port for transparent passthrough (default 5011)")
 	flag.IntVar(&args.IdPeriod, "id-period", 30, "Minutes between sending an ID packet (0 means never)")
 	flag.StringVar(&args.PerCallsignDir, "per-callsign", "", "Base directory for per-callsign subdirectories (mutually exclusive with serve-directory, save-directory, get-callsigns, put-callsigns, and admin-callsigns)")
 	flag.Parse()
@@ -107,9 +111,6 @@ func parseArguments() *Arguments {
 	}
 	if args.Connection == "serial" && args.SerialPort == "" {
 		log.Fatalf("--serial-port is required for serial connection.")
-	}
-	if args.SenderBinary == "" {
-		log.Fatalf("--sender-binary is required.")
 	}
 	return args
 }
@@ -618,8 +619,16 @@ func startTransparentListener(port int, b *Broadcaster, conn KISSConnection) {
 
 // --- Invoking the Sender Binary ---
 func invokeSenderBinary(args *Arguments, receiverCallsign, fileName, inputData, cmdID string) {
+	// Check if a sender binary is already running for this callsign.
+	if _, alreadyRunning := runningSender.LoadOrStore(receiverCallsign, true); alreadyRunning {
+		log.Printf("A sender binary is already running for callsign %s, skipping.", receiverCallsign)
+		return
+	}
+	// Ensure we remove the entry when done.
+	defer runningSender.Delete(receiverCallsign)
+
 	var cmdArgs []string
-	cmdArgs = append(cmdArgs, "-connection=tcp", "-host=localhost", fmt.Sprintf("-port=%d", args.SenderPort))
+	cmdArgs = append(cmdArgs, "-connection=tcp", "-host=localhost", fmt.Sprintf("-port=%d", args.PassthroughPort))
 	cmdArgs = append(cmdArgs, fmt.Sprintf("-my-callsign=%s", args.MyCallsign))
 	cmdArgs = append(cmdArgs, fmt.Sprintf("-receiver-callsign=%s", receiverCallsign))
 	cmdArgs = append(cmdArgs, "-stdin", "-file-name="+fileName)
@@ -675,8 +684,17 @@ func invokeSenderBinary(args *Arguments, receiverCallsign, fileName, inputData, 
 // --- Invoking the Receiver Binary ---
 // Modified: the function now accepts an extra parameter "baseDir" which is the directory under which to save the file.
 func invokeReceiverBinary(args *Arguments, senderCallsign, fileName, cmdID, baseDir string) error {
+
+	if _, alreadyRunning := runningReceiver.LoadOrStore(senderCallsign, true); alreadyRunning {
+		log.Printf("A receiver binary is already running for callsign %s, skipping.", senderCallsign)
+		return fmt.Errorf("receiver binary already running for callsign %s", senderCallsign)
+	}
+
+	// Ensure we remove the entry when done.
+	defer runningReceiver.Delete(senderCallsign)
+
 	var cmdArgs []string
-	cmdArgs = append(cmdArgs, "-connection=tcp", "-host=localhost", fmt.Sprintf("-port=%d", args.SenderPort))
+	cmdArgs = append(cmdArgs, "-connection=tcp", "-host=localhost", fmt.Sprintf("-port=%d", args.PassthroughPort))
 	cmdArgs = append(cmdArgs, fmt.Sprintf("-my-callsign=%s", args.MyCallsign))
 	cmdArgs = append(cmdArgs, fmt.Sprintf("-callsigns=%s", senderCallsign))
 	cmdArgs = append(cmdArgs, fmt.Sprintf("-fileid=%s", cmdID))
@@ -882,7 +900,7 @@ func main() {
 	lastDataTime = time.Now()
 	go startKISSReader(globalConn, broadcaster)
 	go monitorInactivity(600 * time.Second)
-	go startTransparentListener(args.SenderPort, broadcaster, conn)
+	go startTransparentListener(args.PassthroughPort, broadcaster, conn)
 
 	// Command processing: subscribe to the broadcaster.
 	cmdSub := broadcaster.Subscribe()
@@ -941,6 +959,11 @@ func main() {
 					sendResponseWithDetails(conn, sender, cmdID, command, 0, "CANNOT FIND/READ FILE")
 					continue
 				}
+				if _, alreadyRunning := runningSender.Load(sender); alreadyRunning {
+     					log.Printf("A sender binary is already running for callsign %s", sender)
+				        sendResponseWithDetails(conn, sender, cmdID, command, 0, "REQUEST ALREADY IN PROGRESS")
+			        	continue
+    				}
 				sendResponseWithDetails(conn, sender, cmdID, command, 1, "GET OK")
 				go invokeSenderBinary(args, sender, fileName, string(content), cmdID)
 			} else if strings.HasPrefix(upperCmd, "LIST") {
@@ -955,6 +978,11 @@ func main() {
 					log.Printf("Error listing files: %v", err)
 					sendResponseWithDetails(conn, sender, cmdID, command, 0, "LIST CANNOT READ")
 					continue
+				}
+				if _, alreadyRunning := runningSender.Load(sender); alreadyRunning {
+				        log.Printf("A sender binary is already running for callsign %s", sender)
+				        sendResponseWithDetails(conn, sender, cmdID, command, 0, "REQUEST ALREADY IN PROGRESS")
+				        continue
 				}
 				sendResponseWithDetails(conn, sender, cmdID, command, 1, "LIST OK")
 				go invokeSenderBinary(args, sender, "LIST.txt", listing, cmdID)
@@ -984,6 +1012,11 @@ func main() {
 					continue
 				}
 				// Pass the correct base directory (dir) to invokeReceiverBinary.
+				if _, alreadyRunning := runningReceiver.Load(sender); alreadyRunning {
+     					log.Printf("A reciever binary is already running for callsign %s", sender)
+				        sendResponseWithDetails(conn, sender, cmdID, command, 0, "REQUEST ALREADY IN PROGRESS")
+			        	continue
+    				}
 				err := invokeReceiverBinary(args, sender, fileName, cmdID, dir)
 				if err != nil {
 					log.Printf("Receiver binary error: %v", err)

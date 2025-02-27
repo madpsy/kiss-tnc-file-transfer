@@ -11,6 +11,7 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"path/filepath"
 	"sync"
 	"syscall"
 	"time"
@@ -211,6 +212,8 @@ func main() {
 	listenPort := flag.Int("listen-port", 5000, "Port to bind the HTTP server (default 5000)")
 	// New flag: only used for TCP TNC inactivity (in seconds)
 	tcpReadDeadline := flag.Int("tcp-read-deadline", 600, "Time (in seconds) without data before triggering reconnect (only for TCP TNC)")
+	// New flag: specify the web root for static files
+	webRoot := flag.String("web-root", ".", "Root directory for web files (default: current directory)")
 	debug := flag.Bool("debug", false, "Enable verbose debug logging")
 	flag.Parse()
 
@@ -435,11 +438,13 @@ func main() {
 	mux := http.NewServeMux()
 	mux.Handle("/socket.io/", engineServer)
 	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
+		// Serve index.html for the root path.
 		if r.URL.Path == "/" {
-			http.ServeFile(w, r, "index.html")
+			http.ServeFile(w, r, filepath.Join(*webRoot, "index.html"))
 			return
 		}
-		http.FileServer(http.Dir(".")).ServeHTTP(w, r)
+		// Serve files relative to the specified web root.
+		http.FileServer(http.Dir(*webRoot)).ServeHTTP(w, r)
 	})
 
 	bindAddr := fmt.Sprintf("%s:%d", *listenIP, *listenPort)

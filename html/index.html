@@ -1098,7 +1098,7 @@ function deleteReceivedFileById(fileId) {
 	if (document.getElementById('restrictCallsign').checked) {
 	  const allowedCallsign = document.getElementById('receiverCallsign').value.trim().toUpperCase();
 	  if (senderStr !== allowedCallsign) {
-	    console.log(`Rejecting file from ${senderStr} as it does not match remote callsign ${allowedCallsign}.`);
+	    console.log(`Ignoring packet from ${senderStr} as it does not match remote callsign ${allowedCallsign}.`);
 	    return;
 	  }
 	}
