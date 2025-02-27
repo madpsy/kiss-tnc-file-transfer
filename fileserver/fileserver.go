@@ -752,10 +752,10 @@ func invokeReceiverBinary(args *Arguments, senderCallsign, fileName, cmdID, base
 
 // --- Periodic ID Packet Functions ---
 func createIDPacket() []byte {
-	dest := encodeAX25Address("ID", false)
+	dest := encodeAX25Address("BEACON", false)
 	src := encodeAX25Address(serverCallsign, true)
 	header := append(append(dest, src...), 0x03, 0xF0)
-	info := "KISS File Server https://github.com/madpsy/kiss-tnc-file-transfer"
+	info := ">KISS File Server https://github.com/madpsy/kiss-tnc-file-transfer"
 	if len(info) > 128 {
 		info = info[:128]
 	} else {
