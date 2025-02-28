@@ -20,6 +20,10 @@ import (
 	"time"
 )
 
+var disallowedFilenames = []string{
+    "LIST.txt", // used internally for file lists
+}
+
 // Global constants for KISS framing.
 const (
 	KISS_FLAG     = 0xC0
@@ -60,6 +64,15 @@ var runningSender sync.Map
 var runningReceiver sync.Map
 
 // --- Thread-safe connection accessor functions ---
+
+func isFilenameDisallowed(fileName string) bool {
+    for _, disallowed := range disallowedFilenames {
+        if strings.EqualFold(fileName, disallowed) {
+            return true
+        }
+    }
+    return false
+}
 
 func getConn() KISSConnection {
 	connLock.RLock()
@@ -979,6 +992,11 @@ func main() {
 					sendResponseWithDetails(sender, cmdID, command, 0, "FILE NAME TOO LONG")
 					continue
 				}
+				if isFilenameDisallowed(fileName) {
+				    log.Printf("GET command: access to file '%s' is forbidden", fileName)
+				    sendResponseWithDetails(sender, cmdID, command, 0, "FILE NAME NOT ALLOWED")
+				    continue
+				}
 				var dir string
 				if globalArgs.PerCallsignDir != "" {
 					dir = baseDir
@@ -1037,6 +1055,11 @@ func main() {
 					sendResponseWithDetails(sender, cmdID, command, 0, "FILE NAME TOO LONG")
 					continue
 				}
+				if isFilenameDisallowed(fileName) {
+				    log.Printf("PUT command: access to file '%s' is forbidden", fileName)
+				    sendResponseWithDetails(sender, cmdID, command, 0, "FILE NAME NOT ALLOWED")
+				    continue
+				}
 				var dir string
 				if globalArgs.PerCallsignDir != "" {
 					dir = baseDir
@@ -1073,6 +1096,11 @@ func main() {
 					log.Printf("DEL command: file name '%s' too long", fileName)
 					sendResponseWithDetails(sender, cmdID, command, 0, "FILE NAME TOO LONG")
 					continue
+				}
+				if isFilenameDisallowed(fileName) {
+				    log.Printf("DEL command: access to file '%s' is forbidden", fileName)
+				    sendResponseWithDetails(sender, cmdID, command, 0, "FILE NAME NOT ALLOWED")
+				    continue
 				}
 				var dir string
 				if globalArgs.PerCallsignDir != "" {
@@ -1119,6 +1147,11 @@ func main() {
 					log.Printf("REN command: one or both filenames ('%s', '%s') are too long", currentFile, newFile)
 					sendResponseWithDetails(sender, cmdID, command, 0, "FILE NAME TOO LONG")
 					continue
+				}
+				if isFilenameDisallowed(currentFile) || isFilenameDisallowed(newFile) {
+				    log.Printf("REN command: renaming of file '%s' or '%s' is forbidden", currentFile, newFile)
+				    sendResponseWithDetails(sender, cmdID, command, 0, "FILE NAME NOT ALLOWED")
+				    continue
 				}
 				var dir string
 				if globalArgs.PerCallsignDir != "" {
