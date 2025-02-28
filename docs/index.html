@@ -55,7 +55,7 @@
         <div class="mb-3">
             <label for="connectionType" class="form-label">Connection Type</label> <select id="connectionType" class="form-select">
         <option value="websockets" selected>
-          Websockets
+          Websockets (requires Websockets Server)
         </option>
         <option value="serial">
           Serial
@@ -1784,7 +1784,7 @@ document.getElementById('receiverCallsign').addEventListener('input', updateList
                     updateConnectionIndicator();
                   }
                 } else {
-                  alert("Web Serial API not supported in this browser.");
+                  alert("Web Serial API not supported in this browser. Try using Google Chrome");
                   serialConnected = false;
                   updateConnectionIndicator();
                 }
