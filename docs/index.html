@@ -2265,16 +2265,19 @@ function processListFile(csvText) {
   document.getElementById('listTable').innerHTML = searchBoxHtml + tableHtml;
 
   // Add search functionality.
-  document.getElementById('listSearchBox').addEventListener('keyup', function () {
-    const filter = this.value.toUpperCase();
-    const table = document.getElementById('listFilesTable');
-    const tr = table.getElementsByTagName('tr');
-    // Skip the header row (assumed to be the first row).
-    for (let i = 1; i < tr.length; i++) {
-      let rowText = tr[i].textContent || tr[i].innerText;
-      tr[i].style.display = rowText.toUpperCase().indexOf(filter) > -1 ? "" : "none";
+document.getElementById('listSearchBox').addEventListener('keyup', function () {
+  const filter = this.value.toUpperCase();
+  const table = document.getElementById('listFilesTable');
+  const tr = table.getElementsByTagName('tr');
+  // Skip the header row.
+  for (let i = 1; i < tr.length; i++) {
+    const firstCell = tr[i].getElementsByTagName('td')[0];
+    if (firstCell) {
+      let cellText = firstCell.textContent || firstCell.innerText;
+      tr[i].style.display = cellText.toUpperCase().indexOf(filter) > -1 ? "" : "none";
     }
-  });    
+  }
+});  
 
 
   // Main table-sorting function that uses localeCompare for all columns.
