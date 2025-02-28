@@ -34,6 +34,24 @@
 <body>
     <div class="container">
         <h1>KISS File Transfer <span id="connectionStatusDot"></span></h1>
+	<div class="dropdown" style="position: fixed; top: 20px; right: 20px; z-index: 1000;">
+	  <button class="btn btn-secondary dropdown-toggle" type="button" id="helpMenuButton" data-bs-toggle="dropdown" aria-expanded="false">
+	    Help
+	  </button>
+	  <ul class="dropdown-menu dropdown-menu-end" aria-labelledby="helpMenuButton">
+	    <li><a class="dropdown-item" href="https://github.com/madpsy/kiss-tnc-file-transfer/" target="_blank">Github Repo</a></li>
+	    <li><a class="dropdown-item" href="help/readme-protocol.html" target="_blank">Protocol Spec</a></li>
+	    <li><a class="dropdown-item" href="help/readme-fileserver.html" target="_blank">File Server</a></li>
+	    <li><a class="dropdown-item" href="help/readme-fileserverclient.html" target="_blank">File Server Client</a></li>
+	    <li><a class="dropdown-item" href="help/readme-websockets.html" target="_blank">Websockets Server</a></li>
+	    <li><a class="dropdown-item" href="help/readme-sender.html" target="_blank">Sender App</a></li>
+	    <li><a class="dropdown-item" href="help/readme-receiver.html" target="_blank">Receiver App</a></li>
+	    <li><a class="dropdown-item" href="help/readme-repeater.html" target="_blank">Repeater</a></li>
+	    <li><a class="dropdown-item" href="help/readme-bridge.html" target="_blank">Bridge</a></li>
+   	    <li><a class="dropdown-item" href="help/readme-passthrough.html" target="_blank">TNC Passthrough</a></li>
+	    <li><a class="dropdown-item" href="help/readme-monitor.html" target="_blank">Monitor App</a></li>
+	  </ul>
+	</div>
         <div class="mb-3">
             <label for="connectionType" class="form-label">Connection Type</label> <select id="connectionType" class="form-select">
         <option value="websockets" selected>
