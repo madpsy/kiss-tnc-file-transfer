@@ -666,6 +666,8 @@ func invokeSenderBinary(args *Arguments, receiverCallsign, fileName, inputData, 
 	cmdArgs = append(cmdArgs, fmt.Sprintf("-receiver-callsign=%s", receiverCallsign))
 	cmdArgs = append(cmdArgs, "-stdin", "-file-name="+fileName)
 	cmdArgs = append(cmdArgs, fmt.Sprintf("-fileid=%s", cmdID))
+	cmdArgs = append(cmdArgs, "-timeout-seconds=5")
+	cmdArgs = append(cmdArgs, "-timeout-retries=3")
 	fullCmd := fmt.Sprintf("%s %s", args.SenderBinary, strings.Join(cmdArgs, " "))
 	log.Printf("Invoking sender binary: %s", fullCmd)
 
