@@ -728,7 +728,7 @@ func invokeReceiverBinary(args *Arguments, senderCallsign, fileName, cmdID, base
 	cmdArgs = append(cmdArgs, fmt.Sprintf("-my-callsign=%s", args.MyCallsign))
 	cmdArgs = append(cmdArgs, fmt.Sprintf("-callsigns=%s", senderCallsign))
 	cmdArgs = append(cmdArgs, fmt.Sprintf("-fileid=%s", cmdID))
-	cmdArgs = append(cmdArgs, "-one-file", "-stdout")
+	cmdArgs = append(cmdArgs, "-one-file", "-one-file-header-timeout=10", "-stdout")
 	fullCmd := fmt.Sprintf("%s %s", args.ReceiverBinary, strings.Join(cmdArgs, " "))
 	log.Printf("Invoking receiver binary: %s", fullCmd)
 

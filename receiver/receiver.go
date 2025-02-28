@@ -625,7 +625,8 @@ type Arguments struct {
 	Port             int     // TCP port
 	SerialPort       string  // Serial port (e.g. COM3 or /dev/ttyUSB0)
 	Baud             int     // Baud rate for serial
-	OneFile          bool    // Exit after successfully receiving one file
+	OneFile       	 bool    // Exit after successfully receiving one file
+	OneFileHeaderTimeout int // Exit if no header seen within this period
 	Execute          string  // If received file's name matches this, execute it with bash instead of saving.
 	Replace          bool    // Overwrite existing files if a new file is received with the same name.
 	OnlyFrom         string  // Only accept files from the specified callsign.
@@ -646,6 +647,7 @@ func parseArguments() *Arguments {
 	flag.StringVar(&args.SerialPort, "serial-port", "", "Serial port (e.g. COM3 or /dev/ttyUSB0)")
 	flag.IntVar(&args.Baud, "baud", 115200, "Baud rate for serial")
 	flag.BoolVar(&args.OneFile, "one-file", false, "Exit after successfully receiving one file")
+	flag.IntVar(&args.OneFileHeaderTimeout, "one-file-header-timeout", 0, "Timeout in seconds to wait for a header packet in one-file mode (0 means never timeout)")
 	flag.StringVar(&args.Execute, "execute", "", "If received file's name matches this, execute it with bash instead of saving")
 	flag.BoolVar(&args.Replace, "replace", false, "Overwrite existing files if a new file is received with the same name")
 	flag.Float64Var(&args.ExecuteTimeout, "execute-timeout", 0, "Maximum seconds to allow executed file to run (0 means unlimited)")
@@ -694,6 +696,7 @@ func receiverMain(args *Arguments) {
 	}
 	var conn KISSConnection
 	var err error
+	headerStartTime := time.Now()
 	if args.Connection == "tcp" {
 		conn, err = newTCPKISSConnection(args.Host, args.Port, false)
 		if err != nil {
@@ -1073,6 +1076,12 @@ func receiverMain(args *Arguments) {
 				}
 			}
 		case <-time.After(500 * time.Millisecond):
+    			if args.OneFile && args.OneFileHeaderTimeout > 0 && len(transfers) == 0 {
+			        if time.Since(headerStartTime) >= time.Duration(args.OneFileHeaderTimeout)*time.Second {
+        			        log.Printf("Header packet timeout: no header received within %d seconds. Exiting.", args.OneFileHeaderTimeout)
+	        		        os.Exit(1)
+        			}
+    			}
 			now := time.Now()
 			for fid, transfer := range transfers {
 				lastEvent := transfer.LastReceived
