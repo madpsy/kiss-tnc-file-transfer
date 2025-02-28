@@ -143,16 +143,23 @@ go build -o ax25ws websockets.go
       </td>
       <td><code>600</code></td>
     </tr>
+    <tr>
+      <td><code>-web-root</code></td>
+      <td>
+        Path to the HTML files which will be served from the built in web server. Usually you would want to point to where the web based application lives. Defaults to current working directory.
+      </td>
+      <td><code>.</code></td>
+    </tr>
   </table>
 
   <h2 id="examples">Examples</h2>
   <h3>Example 1: Using a Serial Connection</h3>
   <p>
     This command opens a serial connection to the device on <code>/dev/ttyUSB0</code> with a baud rate of 115200,
-    and starts the HTTP server on port 5000 (with raw TCP on port 5001).
+    and starts the HTTP server on port 5000 (with raw TCP on port 5001). Specifies /home/web/html as the web root.
   </p>
   <pre>
-go run websockets.go -connection=serial -serial-port=/dev/ttyUSB0 -baud=115200
+go run websockets.go -connection=serial -serial-port=/dev/ttyUSB0 -baud=115200 -web-root /home/web/html
   </pre>
 
   <h3>Example 2: Using a TCP Connection with Default Read Deadline</h3>

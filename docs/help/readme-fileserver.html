@@ -64,7 +64,7 @@
       from the current filename to the new filename. Like the DEL command, this is restricted to senders whose callsigns match the patterns specified by <code>--admin-callsigns</code>.
     </li>
     <li>
-      <strong>Transparent Passthrough:</strong> A dedicated TCP listener (on the port specified by <code>--sender-port</code>) allows for a transparent data relay between
+      <strong>Transparent Passthrough:</strong> A dedicated TCP listener (on the port specified by <code>--passthrough-port</code>) allows for a transparent data relay between
       the underlying KISS connection and remote clients.
     </li>
     <li>
@@ -198,7 +198,7 @@ go build -o fileserver fileserver.go
       <td><code>receiver</code></td>
     </tr>
     <tr>
-      <td><code>--sender-port</code></td>
+      <td><code>--passthrough-port</code></td>
       <td>
         TCP port for transparent passthrough (used for file transfers). Remote clients connect here to receive file data.
       </td>
@@ -287,7 +287,7 @@ go build -o fileserver fileserver.go
       In per‑callsign mode, all senders have full access to their own subdirectory.
     </li>
     <li>
-      A transparent TCP listener (on the port specified by <code>--sender-port</code>) relays data between the underlying KISS connection and remote clients.
+      A transparent TCP listener (on the port specified by <code>--passthrough-port</code>) relays data between the underlying KISS connection and remote clients.
     </li>
     <li>
       The server monitors for inactivity on the connection and will automatically attempt to reconnect if no data is received within 600 seconds.
