@@ -196,4 +196,13 @@ else
   echo "All builds succeeded."
 fi
 
+# Zip up the docs directory if it exists.
+if [ -d "docs" ]; then
+  echo "Zipping the docs directory into build/docs.zip..."
+  zip -r build/docs.zip docs
+else
+  echo "No docs directory found. Skipping docs.zip creation."
+fi
+
 exit $exit_status
+
