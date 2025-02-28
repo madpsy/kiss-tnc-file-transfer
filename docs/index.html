@@ -948,25 +948,27 @@ function deleteReceivedFileById(fileId) {
              * FIN-ACK Functions (Sender & Receiver) – UPDATED WITH RETRY LOOP
              ***********************/
         function sendFinalFinAck(fileId) {
-          if (waitingForFinAckMap[fileId]) {
-            const finalInfo = padCallsign(sender) + '>' + padCallsign(receiver) + ':' + fileId + ':' + "ACK:FIN-ACK";
-            const encoder = new TextEncoder();
-            const infoBytes = encoder.encode(finalInfo);
-            const ax25Header = buildAX25Header(sender, receiver);
-            const packetBytes = new Uint8Array(ax25Header.length + infoBytes.length);
-            packetBytes.set(ax25Header, 0);
-            packetBytes.set(infoBytes, ax25Header.length);
-            const finalFrame = buildKissFrame(packetBytes);
-            console.log(`Sender: Sending FIN-ACK for file ${fileId}.`);
-            if (document.getElementById('connectionType').value === 'websockets') {
-              if (socket) socket.emit('raw_kiss_frame', finalFrame);
-            } else if (document.getElementById('connectionType').value === 'serial' && serialWriter) {
-              serialWriter.write(finalFrame).catch(err => console.error("Error sending FIN-ACK:", err));
-            }
-          } else {
-            console.log(`Sender: No such fileId waiting for FIN-ACK ${fileId}.`);
-          }
-        }
+  if (waitingForFinAckMap[fileId]) {
+    // Construct the info payload like a normal ACK.
+    const finalInfo = fileId + ':' + "ACK" + ':' + "FIN-ACK";
+    const encoder = new TextEncoder();
+    const infoBytes = encoder.encode(finalInfo);
+    const ax25Header = buildAX25Header(sender, receiver);
+    const packetBytes = new Uint8Array(ax25Header.length + infoBytes.length);
+    packetBytes.set(ax25Header, 0);
+    packetBytes.set(infoBytes, ax25Header.length);
+    const finalFrame = buildKissFrame(packetBytes);
+    console.log(`Sender: Sending FIN-ACK for file ${fileId}.`);
+    if (document.getElementById('connectionType').value === 'websockets') {
+      if (socket) socket.emit('raw_kiss_frame', finalFrame);
+    } else if (document.getElementById('connectionType').value === 'serial' && serialWriter) {
+      serialWriter.write(finalFrame).catch(err => console.error("Error sending FIN-ACK:", err));
+    }
+  } else {
+    console.log(`Sender: No such fileId waiting for FIN-ACK ${fileId}.`);
+  }
+}
+
         
         
             
