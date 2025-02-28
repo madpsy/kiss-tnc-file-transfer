@@ -14,10 +14,10 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"sort"
 	"strings"
 	"sync"
 	"time"
-	"sort"
 )
 
 // Global constants for KISS framing.
@@ -36,8 +36,10 @@ var (
 	lastDataTime   time.Time
 	reconnectMutex sync.Mutex
 	reconnecting   bool
-	globalConn     KISSConnection // Your current connection.
-	broadcaster    *Broadcaster   // Already used for broadcasting.
+	// globalConn is now protected by connLock and should be accessed via getConn() and setConn().
+	globalConn   KISSConnection
+	broadcaster  *Broadcaster // Already used for broadcasting.
+	connLock     sync.RWMutex // Protects access to globalConn.
 )
 
 // Global slices for allowed sender callsigns.
@@ -57,6 +59,24 @@ var absSaveDir string
 var runningSender sync.Map
 var runningReceiver sync.Map
 
+// --- Thread-safe connection accessor functions ---
+
+func getConn() KISSConnection {
+	connLock.RLock()
+	defer connLock.RUnlock()
+	return globalConn
+}
+
+func setConn(newConn KISSConnection) {
+	connLock.Lock()
+	// If there’s an existing connection, close it.
+	if globalConn != nil {
+		globalConn.Close()
+	}
+	globalConn = newConn
+	connLock.Unlock()
+}
+
 // Command-line arguments structure.
 type Arguments struct {
 	MyCallsign     string // your own callsign
@@ -72,7 +92,7 @@ type Arguments struct {
 	SaveDirectory  string // where received files should be saved (default current directory; not used in per-callsign mode)
 	SenderBinary   string // path to the binary used to send files (mandatory)
 	ReceiverBinary string // path to the binary used to receive files (default "receiver")
-	PassthroughPort     int    // TCP port for transparent passthrough (default 5011)
+	PassthroughPort int    // TCP port for transparent passthrough (default 5011)
 	IdPeriod       int    // Minutes between sending an ID packet (0 means never)
 	PerCallsignDir string // New: base directory for per-callsign subdirectories (mutually exclusive with serve-directory, save-directory, get-callsigns, put-callsigns, and admin-callsigns)
 }
@@ -155,9 +175,9 @@ func (t *TCPKISSConnection) RecvData(timeout time.Duration) ([]byte, error) {
 }
 
 func (t *TCPKISSConnection) Write(b []byte) (int, error) {
-    t.lock.Lock()
-    defer t.lock.Unlock()
-    return t.conn.Write(b)
+	t.lock.Lock()
+	defer t.lock.Unlock()
+	return t.conn.Write(b)
 }
 
 func (t *TCPKISSConnection) Close() error {
@@ -166,48 +186,48 @@ func (t *TCPKISSConnection) Close() error {
 
 // SerialKISSConnection implements KISSConnection over serial.
 type SerialKISSConnection struct {
-    ser  serial.Port
-    lock sync.Mutex
+	ser  serial.Port
+	lock sync.Mutex
 }
 
 func newSerialKISSConnection(portName string, baud int) (*SerialKISSConnection, error) {
-    mode := &serial.Mode{
-        BaudRate: baud,
-        DataBits: 8,
-        Parity:   serial.NoParity,
-        StopBits: serial.OneStopBit,
-    }
-    ser, err := serial.Open(portName, mode)
-    if err != nil {
-        return nil, err
-    }
-    if err := ser.SetReadTimeout(100 * time.Millisecond); err != nil {
-        return nil, err
-    }
-    log.Printf("[Serial] Opened %s at %d baud", portName, baud)
-    return &SerialKISSConnection{ser: ser}, nil
+	mode := &serial.Mode{
+		BaudRate: baud,
+		DataBits: 8,
+		Parity:   serial.NoParity,
+		StopBits: serial.OneStopBit,
+	}
+	ser, err := serial.Open(portName, mode)
+	if err != nil {
+		return nil, err
+	}
+	if err := ser.SetReadTimeout(100 * time.Millisecond); err != nil {
+		return nil, err
+	}
+	log.Printf("[Serial] Opened %s at %d baud", portName, baud)
+	return &SerialKISSConnection{ser: ser}, nil
 }
 
 func (s *SerialKISSConnection) RecvData(timeout time.Duration) ([]byte, error) {
-    buf := make([]byte, 1024)
-    n, err := s.ser.Read(buf)
-    if err != nil {
-        if err == io.EOF {
-            return nil, err
-        }
-        return nil, err
-    }
-    return buf[:n], nil
+	buf := make([]byte, 1024)
+	n, err := s.ser.Read(buf)
+	if err != nil {
+		if err == io.EOF {
+			return nil, err
+		}
+		return nil, err
+	}
+	return buf[:n], nil
 }
 
 func (s *SerialKISSConnection) Write(b []byte) (int, error) {
-    s.lock.Lock()
-    defer s.lock.Unlock()
-    return s.ser.Write(b)
+	s.lock.Lock()
+	defer s.lock.Unlock()
+	return s.ser.Write(b)
 }
 
 func (s *SerialKISSConnection) Close() error {
-    return s.ser.Close()
+	return s.ser.Close()
 }
 
 // createRSPPacket builds the RSP packet with an AX.25 header.
@@ -275,7 +295,8 @@ func escapeData(data []byte) []byte {
 }
 
 // sendResponse wraps the payload in a KISS frame and writes it directly to the connection.
-func sendResponse(conn KISSConnection, responsePayload []byte) error {
+func sendResponse(responsePayload []byte) error {
+	conn := getConn()
 	escaped := escapeData(responsePayload)
 	frame := []byte{KISS_FLAG, KISS_CMD_DATA}
 	frame = append(frame, escaped...)
@@ -285,9 +306,8 @@ func sendResponse(conn KISSConnection, responsePayload []byte) error {
 }
 
 // sendResponseWithDetails builds the response packet, logs the details, and sends it.
-// Modified sendResponseWithDetails now accepts the sender's callsign.
-func sendResponseWithDetails(conn KISSConnection, sender, cmdID, command string, status int, msg string) error {
-	// Build the full RSP packet with an AX.25 header.
+func sendResponseWithDetails(sender, cmdID, command string, status int, msg string) error {
+	conn := getConn() // always use the current connection
 	rspPacket := createRSPPacket(sender, serverCallsign, cmdID, status, msg)
 	escaped := escapeData(rspPacket)
 	frame := []byte{KISS_FLAG, KISS_CMD_DATA}
@@ -555,26 +575,24 @@ func doReconnect() {
 
 	log.Println("Triggering reconnect...")
 
-	if globalConn != nil {
-		globalConn.Close()
-	}
-
 	for {
 		log.Println("Attempting to reconnect in 5 seconds...")
 		time.Sleep(5 * time.Second)
 		var err error
+		var newConn KISSConnection
 		if strings.ToLower(globalArgs.Connection) == "tcp" {
-			globalConn, err = newTCPKISSConnection(globalArgs.Host, globalArgs.Port)
+			newConn, err = newTCPKISSConnection(globalArgs.Host, globalArgs.Port)
 		} else {
-			globalConn, err = newSerialKISSConnection(globalArgs.SerialPort, globalArgs.Baud)
+			newConn, err = newSerialKISSConnection(globalArgs.SerialPort, globalArgs.Baud)
 		}
 		if err != nil {
 			log.Printf("Reconnect failed: %v", err)
 			continue
 		}
+		setConn(newConn)
 		lastDataTime = time.Now()
 		log.Println("Reconnected successfully to the underlying device")
-		go startKISSReader(globalConn, broadcaster)
+		go startKISSReader(newConn, broadcaster)
 		go monitorInactivity(600 * time.Second)
 		break
 	}
@@ -585,13 +603,23 @@ func doReconnect() {
 }
 
 // --- Transparent Passthrough Handler ---
-func handleTransparentConnection(remoteConn net.Conn, b *Broadcaster, conn KISSConnection) {
+func handleTransparentConnection(remoteConn net.Conn, b *Broadcaster) {
 	defer remoteConn.Close()
 	log.Printf("Accepted transparent connection from %s", remoteConn.RemoteAddr())
 	go func() {
-		_, err := io.Copy(conn, remoteConn)
-		if err != nil && !strings.Contains(err.Error(), "use of closed network connection") {
-			log.Printf("Error copying from transparent client to underlying: %v", err)
+		// Continuously write to the current connection.
+		for {
+			currentConn := getConn()
+			if currentConn == nil {
+				return
+			}
+			_, err := io.Copy(currentConn, remoteConn)
+			if err != nil {
+				if !strings.Contains(err.Error(), "use of closed network connection") {
+					log.Printf("Error copying from transparent client to underlying: %v", err)
+				}
+				return
+			}
 		}
 	}()
 	sub := b.Subscribe()
@@ -604,7 +632,7 @@ func handleTransparentConnection(remoteConn net.Conn, b *Broadcaster, conn KISSC
 	}
 }
 
-func startTransparentListener(port int, b *Broadcaster, conn KISSConnection) {
+func startTransparentListener(port int, b *Broadcaster) {
 	addr := fmt.Sprintf(":%d", port)
 	listener, err := net.Listen("tcp", addr)
 	if err != nil {
@@ -618,7 +646,7 @@ func startTransparentListener(port int, b *Broadcaster, conn KISSConnection) {
 			log.Printf("Error accepting transparent connection: %v", err)
 			continue
 		}
-		go handleTransparentConnection(remoteConn, b, conn)
+		go handleTransparentConnection(remoteConn, b)
 	}
 }
 
@@ -687,7 +715,6 @@ func invokeSenderBinary(args *Arguments, receiverCallsign, fileName, inputData, 
 }
 
 // --- Invoking the Receiver Binary ---
-// Modified: the function now accepts an extra parameter "baseDir" which is the directory under which to save the file.
 func invokeReceiverBinary(args *Arguments, senderCallsign, fileName, cmdID, baseDir string) error {
 	if _, alreadyRunning := runningReceiver.LoadOrStore(senderCallsign, true); alreadyRunning {
 		log.Printf("A receiver binary is already running for callsign %s, skipping.", senderCallsign)
@@ -710,76 +737,69 @@ func invokeReceiverBinary(args *Arguments, senderCallsign, fileName, cmdID, base
 		return fmt.Errorf("Error obtaining stdout pipe: %v", err)
 	}
 	stderrPipe, err := cmd.StderrPipe()
-if err != nil {
-    runningReceiver.Delete(senderCallsign)
-    return fmt.Errorf("Error obtaining stderr pipe: %v", err)
-}
-go func() {
-    scanner := bufio.NewScanner(stderrPipe)
-    for scanner.Scan() {
-        log.Printf("[receiver stderr] %s", scanner.Text())
-    }
-    if err := scanner.Err(); err != nil {
-        log.Printf("Error reading receiver stderr: %v", err)
-    }
-}()
-
 	if err != nil {
 		runningReceiver.Delete(senderCallsign)
 		return fmt.Errorf("Error obtaining stderr pipe: %v", err)
 	}
+	go func() {
+		scanner := bufio.NewScanner(stderrPipe)
+		for scanner.Scan() {
+			log.Printf("[receiver stderr] %s", scanner.Text())
+		}
+		if err := scanner.Err(); err != nil {
+			log.Printf("Error reading receiver stderr: %v", err)
+		}
+	}()
+
 	if err := cmd.Start(); err != nil {
 		runningReceiver.Delete(senderCallsign)
 		return fmt.Errorf("Error starting receiver binary: %v", err)
 	}
 
-	// Handle stderr in a goroutine.
-go func() {
-	output, err := io.ReadAll(stdoutPipe)
-	if err != nil {
-		log.Printf("Error reading receiver stdout: %v", err)
-	}
-	waitErr := cmd.Wait()
-	if waitErr != nil {
-		log.Printf("Receiver binary exited with error: %v", waitErr)
-		// Optionally, do not write the file if the receiver failed.
-		runningReceiver.Delete(senderCallsign)
-		return
-	} else {
-		log.Printf("Receiver binary completed successfully.")
-	}
+	go func() {
+		output, err := io.ReadAll(stdoutPipe)
+		if err != nil {
+			log.Printf("Error reading receiver stdout: %v", err)
+		}
+		waitErr := cmd.Wait()
+		if waitErr != nil {
+			log.Printf("Receiver binary exited with error: %v", waitErr)
+			runningReceiver.Delete(senderCallsign)
+			return
+		} else {
+			log.Printf("Receiver binary completed successfully.")
+		}
 
-	// Compute and write the received file only if no error occurred.
-	savePath := filepath.Join(baseDir, fileName)
-	cleanSavePath := filepath.Clean(savePath)
-	if !strings.HasPrefix(cleanSavePath, baseDir) {
-		log.Printf("PUT command: attempted directory traversal in file name '%s'", fileName)
-	} else {
-		if _, err := os.Stat(cleanSavePath); err == nil {
-			baseName := strings.TrimSuffix(fileName, filepath.Ext(fileName))
-			ext := filepath.Ext(fileName)
-			counter := 1
-			for {
-				newFileName := fmt.Sprintf("%s_%d%s", baseName, counter, ext)
-				newPath := filepath.Join(baseDir, newFileName)
-				newPath = filepath.Clean(newPath)
-				if _, err := os.Stat(newPath); os.IsNotExist(err) {
-					cleanSavePath = newPath
-					break
+		// Compute and write the received file only if no error occurred.
+		savePath := filepath.Join(baseDir, fileName)
+		cleanSavePath := filepath.Clean(savePath)
+		if !strings.HasPrefix(cleanSavePath, baseDir) {
+			log.Printf("PUT command: attempted directory traversal in file name '%s'", fileName)
+		} else {
+			if _, err := os.Stat(cleanSavePath); err == nil {
+				baseName := strings.TrimSuffix(fileName, filepath.Ext(fileName))
+				ext := filepath.Ext(fileName)
+				counter := 1
+				for {
+					newFileName := fmt.Sprintf("%s_%d%s", baseName, counter, ext)
+					newPath := filepath.Join(baseDir, newFileName)
+					newPath = filepath.Clean(newPath)
+					if _, err := os.Stat(newPath); os.IsNotExist(err) {
+						cleanSavePath = newPath
+						break
+					}
+					counter++
 				}
-				counter++
+			}
+			err = ioutil.WriteFile(cleanSavePath, output, 0644)
+			if err != nil {
+				log.Printf("Error writing received file to %s: %v", cleanSavePath, err)
+			} else {
+				log.Printf("Received file saved to %s", cleanSavePath)
 			}
 		}
-		err = ioutil.WriteFile(cleanSavePath, output, 0644)
-		if err != nil {
-			log.Printf("Error writing received file to %s: %v", cleanSavePath, err)
-		} else {
-			log.Printf("Received file saved to %s", cleanSavePath)
-		}
-	}
-	// Now remove the running flag.
-	runningReceiver.Delete(senderCallsign)
-}()
+		runningReceiver.Delete(senderCallsign)
+	}()
 
 	return nil
 }
@@ -798,7 +818,8 @@ func createIDPacket() []byte {
 	return append(header, []byte(info)...)
 }
 
-func sendIDPacket(conn KISSConnection) {
+func sendIDPacket() {
+	conn := getConn()
 	packet := createIDPacket()
 	escaped := escapeData(packet)
 	frame := []byte{KISS_FLAG, KISS_CMD_DATA}
@@ -894,7 +915,7 @@ func main() {
 			log.Fatalf("Serial connection error: %v", err)
 		}
 	}
-	globalConn = conn
+	setConn(conn)
 	defer conn.Close()
 
 	log.Printf("File Server started. My callsign: %s", serverCallsign)
@@ -904,9 +925,9 @@ func main() {
 		go func() {
 			ticker := time.NewTicker(time.Duration(args.IdPeriod) * time.Minute)
 			defer ticker.Stop()
-			sendIDPacket(globalConn)
+			sendIDPacket()
 			for range ticker.C {
-				sendIDPacket(globalConn)
+				sendIDPacket()
 			}
 		}()
 	}
@@ -914,9 +935,9 @@ func main() {
 	// Create a broadcaster to distribute data read from the underlying connection.
 	broadcaster = NewBroadcaster()
 	lastDataTime = time.Now()
-	go startKISSReader(globalConn, broadcaster)
+	go startKISSReader(getConn(), broadcaster)
 	go monitorInactivity(600 * time.Second)
-	go startTransparentListener(args.PassthroughPort, broadcaster, conn)
+	go startTransparentListener(args.PassthroughPort, broadcaster)
 
 	// Command processing: subscribe to the broadcaster.
 	cmdSub := broadcaster.Subscribe()
@@ -947,13 +968,13 @@ func main() {
 			if strings.HasPrefix(upperCmd, "GET ") {
 				if globalArgs.PerCallsignDir == "" && !callsignAllowedForGet(sender) {
 					log.Printf("Dropping GET command from sender %s: not allowed.", sender)
-					sendResponseWithDetails(conn, sender, cmdID, command, 0, "CALLSIGN NOT ALLOWED")
+					sendResponseWithDetails(sender, cmdID, command, 0, "CALLSIGN NOT ALLOWED")
 					continue
 				}
 				fileName := strings.TrimSpace(command[4:])
 				if len(fileName) > maxFileNameLen {
 					log.Printf("GET command: file name '%s' too long", fileName)
-					sendResponseWithDetails(conn, sender, cmdID, command, 0, "FILE NAME TOO LONG")
+					sendResponseWithDetails(sender, cmdID, command, 0, "FILE NAME TOO LONG")
 					continue
 				}
 				var dir string
@@ -966,21 +987,21 @@ func main() {
 				cleanPath := filepath.Clean(requestedPath)
 				if !strings.HasPrefix(cleanPath, dir) {
 					log.Printf("GET command: attempted directory traversal in '%s'", fileName)
-					sendResponseWithDetails(conn, sender, cmdID, command, 0, "INVALID FILE PATH")
+					sendResponseWithDetails(sender, cmdID, command, 0, "INVALID FILE PATH")
 					continue
 				}
 				content, err := ioutil.ReadFile(cleanPath)
 				if err != nil {
 					log.Printf("Requested file '%s' does not exist in directory %s", fileName, dir)
-					sendResponseWithDetails(conn, sender, cmdID, command, 0, "CANNOT FIND/READ FILE")
+					sendResponseWithDetails(sender, cmdID, command, 0, "CANNOT FIND/READ FILE")
 					continue
 				}
 				if _, alreadyRunning := runningSender.Load(sender); alreadyRunning {
-     					log.Printf("A sender binary is already running for callsign %s", sender)
-				        sendResponseWithDetails(conn, sender, cmdID, command, 0, "REQUEST ALREADY IN PROGRESS")
-			        	continue
-    				}
-				sendResponseWithDetails(conn, sender, cmdID, command, 1, "GET OK")
+					log.Printf("A sender binary is already running for callsign %s", sender)
+					sendResponseWithDetails(sender, cmdID, command, 0, "REQUEST ALREADY IN PROGRESS")
+					continue
+				}
+				sendResponseWithDetails(sender, cmdID, command, 1, "GET OK")
 				go invokeSenderBinary(args, sender, fileName, string(content), cmdID)
 			} else if strings.HasPrefix(upperCmd, "LIST") {
 				var dir string
@@ -992,26 +1013,26 @@ func main() {
 				listing, err := listFiles(dir)
 				if err != nil {
 					log.Printf("Error listing files: %v", err)
-					sendResponseWithDetails(conn, sender, cmdID, command, 0, "LIST CANNOT READ")
+					sendResponseWithDetails(sender, cmdID, command, 0, "LIST CANNOT READ")
 					continue
 				}
 				if _, alreadyRunning := runningSender.Load(sender); alreadyRunning {
-				        log.Printf("A sender binary is already running for callsign %s", sender)
-				        sendResponseWithDetails(conn, sender, cmdID, command, 0, "REQUEST ALREADY IN PROGRESS")
-				        continue
+					log.Printf("A sender binary is already running for callsign %s", sender)
+					sendResponseWithDetails(sender, cmdID, command, 0, "REQUEST ALREADY IN PROGRESS")
+					continue
 				}
-				sendResponseWithDetails(conn, sender, cmdID, command, 1, "LIST OK")
+				sendResponseWithDetails(sender, cmdID, command, 1, "LIST OK")
 				go invokeSenderBinary(args, sender, "LIST.txt", listing, cmdID)
 			} else if strings.HasPrefix(upperCmd, "PUT ") {
 				if globalArgs.PerCallsignDir == "" && !callsignAllowedForPut(sender) {
 					log.Printf("PUT command from sender %s not allowed.", sender)
-					sendResponseWithDetails(conn, sender, cmdID, command, 0, "CALLSIGN NOT ALLOWED")
+					sendResponseWithDetails(sender, cmdID, command, 0, "CALLSIGN NOT ALLOWED")
 					continue
 				}
 				fileName := strings.TrimSpace(command[4:])
 				if len(fileName) > maxFileNameLen {
 					log.Printf("PUT command: file name '%s' too long", fileName)
-					sendResponseWithDetails(conn, sender, cmdID, command, 0, "FILE NAME TOO LONG")
+					sendResponseWithDetails(sender, cmdID, command, 0, "FILE NAME TOO LONG")
 					continue
 				}
 				var dir string
@@ -1024,32 +1045,31 @@ func main() {
 				cleanSavePath := filepath.Clean(savePath)
 				if !strings.HasPrefix(cleanSavePath, dir) {
 					log.Printf("PUT command: attempted directory traversal in '%s'", fileName)
-					sendResponseWithDetails(conn, sender, cmdID, command, 0, "INVALID FILE PATH")
+					sendResponseWithDetails(sender, cmdID, command, 0, "INVALID FILE PATH")
 					continue
 				}
-				// Pass the correct base directory (dir) to invokeReceiverBinary.
 				if _, alreadyRunning := runningReceiver.Load(sender); alreadyRunning {
-     					log.Printf("A reciever binary is already running for callsign %s", sender)
-				        sendResponseWithDetails(conn, sender, cmdID, command, 0, "REQUEST ALREADY IN PROGRESS")
-			        	continue
-    				}
+					log.Printf("A receiver binary is already running for callsign %s", sender)
+					sendResponseWithDetails(sender, cmdID, command, 0, "REQUEST ALREADY IN PROGRESS")
+					continue
+				}
 				err := invokeReceiverBinary(args, sender, fileName, cmdID, dir)
 				if err != nil {
 					log.Printf("Receiver binary error: %v", err)
-					sendResponseWithDetails(conn, sender, cmdID, command, 0, "PUT FAILED: CANNOT START RECEIVER")
+					sendResponseWithDetails(sender, cmdID, command, 0, "PUT FAILED: CANNOT START RECEIVER")
 				} else {
-					sendResponseWithDetails(conn, sender, cmdID, command, 1, "PUT OK - WAITING FOR FILE")
+					sendResponseWithDetails(sender, cmdID, command, 1, "PUT OK - WAITING FOR FILE")
 				}
 			} else if strings.HasPrefix(upperCmd, "DEL ") {
 				if globalArgs.PerCallsignDir == "" && !callsignAllowedForAdmin(sender) {
 					log.Printf("Admin command DEL from sender %s not allowed.", sender)
-					sendResponseWithDetails(conn, sender, cmdID, command, 0, "CALLSIGN NOT ALLOWED")
+					sendResponseWithDetails(sender, cmdID, command, 0, "CALLSIGN NOT ALLOWED")
 					continue
 				}
 				fileName := strings.TrimSpace(command[4:])
 				if len(fileName) > maxFileNameLen {
 					log.Printf("DEL command: file name '%s' too long", fileName)
-					sendResponseWithDetails(conn, sender, cmdID, command, 0, "FILE NAME TOO LONG")
+					sendResponseWithDetails(sender, cmdID, command, 0, "FILE NAME TOO LONG")
 					continue
 				}
 				var dir string
@@ -1062,40 +1082,40 @@ func main() {
 				cleanPath := filepath.Clean(fullPath)
 				if !strings.HasPrefix(cleanPath, dir) {
 					log.Printf("DEL command: attempted directory traversal in '%s'", fileName)
-					sendResponseWithDetails(conn, sender, cmdID, command, 0, "INVALID FILE PATH")
+					sendResponseWithDetails(sender, cmdID, command, 0, "INVALID FILE PATH")
 					continue
 				}
 				if _, err := os.Stat(cleanPath); os.IsNotExist(err) {
 					log.Printf("DEL command: file '%s' does not exist", fileName)
-					sendResponseWithDetails(conn, sender, cmdID, command, 0, "FILE DOES NOT EXIST")
+					sendResponseWithDetails(sender, cmdID, command, 0, "FILE DOES NOT EXIST")
 					continue
 				}
 				err := os.Remove(cleanPath)
 				if err != nil {
 					log.Printf("DEL command: error deleting file '%s': %v", fileName, err)
-					sendResponseWithDetails(conn, sender, cmdID, command, 0, "DEL FAILED")
+					sendResponseWithDetails(sender, cmdID, command, 0, "DEL FAILED")
 				} else {
 					log.Printf("DEL command: file '%s' deleted successfully", fileName)
-					sendResponseWithDetails(conn, sender, cmdID, command, 1, "DEL OK")
+					sendResponseWithDetails(sender, cmdID, command, 1, "DEL OK")
 				}
 			} else if strings.HasPrefix(upperCmd, "REN ") {
 				if globalArgs.PerCallsignDir == "" && !callsignAllowedForAdmin(sender) {
 					log.Printf("Admin command REN from sender %s not allowed.", sender)
-					sendResponseWithDetails(conn, sender, cmdID, command, 0, "CALLSIGN NOT ALLOWED")
+					sendResponseWithDetails(sender, cmdID, command, 0, "CALLSIGN NOT ALLOWED")
 					continue
 				}
 				params := strings.TrimSpace(command[4:])
 				parts := strings.SplitN(params, "|", 2)
 				if len(parts) != 2 || strings.TrimSpace(parts[1]) == "" {
 					log.Printf("REN command: new filename not specified in '%s'", params)
-					sendResponseWithDetails(conn, sender, cmdID, command, 0, "NEW FILENAME NOT SPECIFIED")
+					sendResponseWithDetails(sender, cmdID, command, 0, "NEW FILENAME NOT SPECIFIED")
 					continue
 				}
 				currentFile := strings.TrimSpace(parts[0])
 				newFile := strings.TrimSpace(parts[1])
 				if len(currentFile) > maxFileNameLen || len(newFile) > maxFileNameLen {
 					log.Printf("REN command: one or both filenames ('%s', '%s') are too long", currentFile, newFile)
-					sendResponseWithDetails(conn, sender, cmdID, command, 0, "FILE NAME TOO LONG")
+					sendResponseWithDetails(sender, cmdID, command, 0, "FILE NAME TOO LONG")
 					continue
 				}
 				var dir string
@@ -1110,30 +1130,30 @@ func main() {
 				cleanNew := filepath.Clean(newPath)
 				if !strings.HasPrefix(cleanCurrent, dir) || !strings.HasPrefix(cleanNew, dir) {
 					log.Printf("REN command: attempted directory traversal with filenames '%s' or '%s'", currentFile, newFile)
-					sendResponseWithDetails(conn, sender, cmdID, command, 0, "INVALID FILE PATH")
+					sendResponseWithDetails(sender, cmdID, command, 0, "INVALID FILE PATH")
 					continue
 				}
 				if _, err := os.Stat(cleanCurrent); os.IsNotExist(err) {
 					log.Printf("REN command: current file '%s' does not exist", currentFile)
-					sendResponseWithDetails(conn, sender, cmdID, command, 0, "CURRENT FILE DOES NOT EXIST")
+					sendResponseWithDetails(sender, cmdID, command, 0, "CURRENT FILE DOES NOT EXIST")
 					continue
 				}
 				if _, err := os.Stat(cleanNew); err == nil {
 					log.Printf("REN command: new file '%s' already exists", newFile)
-					sendResponseWithDetails(conn, sender, cmdID, command, 0, "NEW FILE ALREADY EXISTS")
+					sendResponseWithDetails(sender, cmdID, command, 0, "NEW FILE ALREADY EXISTS")
 					continue
 				}
 				err := os.Rename(cleanCurrent, cleanNew)
 				if err != nil {
 					log.Printf("REN command: error renaming file from '%s' to '%s': %v", currentFile, newFile, err)
-					sendResponseWithDetails(conn, sender, cmdID, command, 0, "REN FAILED")
+					sendResponseWithDetails(sender, cmdID, command, 0, "REN FAILED")
 				} else {
 					log.Printf("REN command: file renamed from '%s' to '%s' successfully", currentFile, newFile)
-					sendResponseWithDetails(conn, sender, cmdID, command, 1, "REN OK")
+					sendResponseWithDetails(sender, cmdID, command, 1, "REN OK")
 				}
 			} else {
 				log.Printf("Unrecognized command: %s", command)
-				sendResponseWithDetails(conn, sender, cmdID, command, 0, "AVAILABLE: LIST, GET [FILE], PUT [FILE], DEL [FILE], REN [CUR]|[NEW]")
+				sendResponseWithDetails(sender, cmdID, command, 0, "AVAILABLE: LIST, GET [FILE], PUT [FILE], DEL [FILE], REN [CUR]|[NEW]")
 			}
 		}
 	}
