@@ -155,7 +155,9 @@ func (t *TCPKISSConnection) RecvData(timeout time.Duration) ([]byte, error) {
 }
 
 func (t *TCPKISSConnection) Write(b []byte) (int, error) {
-	return t.conn.Write(b)
+    t.lock.Lock()
+    defer t.lock.Unlock()
+    return t.conn.Write(b)
 }
 
 func (t *TCPKISSConnection) Close() error {
@@ -164,45 +166,48 @@ func (t *TCPKISSConnection) Close() error {
 
 // SerialKISSConnection implements KISSConnection over serial.
 type SerialKISSConnection struct {
-	ser serial.Port
+    ser  serial.Port
+    lock sync.Mutex
 }
 
 func newSerialKISSConnection(portName string, baud int) (*SerialKISSConnection, error) {
-	mode := &serial.Mode{
-		BaudRate: baud,
-		DataBits: 8,
-		Parity:   serial.NoParity,
-		StopBits: serial.OneStopBit,
-	}
-	ser, err := serial.Open(portName, mode)
-	if err != nil {
-		return nil, err
-	}
-	if err := ser.SetReadTimeout(100 * time.Millisecond); err != nil {
-		return nil, err
-	}
-	log.Printf("[Serial] Opened %s at %d baud", portName, baud)
-	return &SerialKISSConnection{ser: ser}, nil
+    mode := &serial.Mode{
+        BaudRate: baud,
+        DataBits: 8,
+        Parity:   serial.NoParity,
+        StopBits: serial.OneStopBit,
+    }
+    ser, err := serial.Open(portName, mode)
+    if err != nil {
+        return nil, err
+    }
+    if err := ser.SetReadTimeout(100 * time.Millisecond); err != nil {
+        return nil, err
+    }
+    log.Printf("[Serial] Opened %s at %d baud", portName, baud)
+    return &SerialKISSConnection{ser: ser}, nil
 }
 
 func (s *SerialKISSConnection) RecvData(timeout time.Duration) ([]byte, error) {
-	buf := make([]byte, 1024)
-	n, err := s.ser.Read(buf)
-	if err != nil {
-		if err == io.EOF {
-			return nil, err
-		}
-		return nil, err
-	}
-	return buf[:n], nil
+    buf := make([]byte, 1024)
+    n, err := s.ser.Read(buf)
+    if err != nil {
+        if err == io.EOF {
+            return nil, err
+        }
+        return nil, err
+    }
+    return buf[:n], nil
 }
 
 func (s *SerialKISSConnection) Write(b []byte) (int, error) {
-	return s.ser.Write(b)
+    s.lock.Lock()
+    defer s.lock.Unlock()
+    return s.ser.Write(b)
 }
 
 func (s *SerialKISSConnection) Close() error {
-	return s.ser.Close()
+    return s.ser.Close()
 }
 
 // createRSPPacket builds the RSP packet with an AX.25 header.
