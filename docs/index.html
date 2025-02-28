@@ -1706,6 +1706,7 @@ function deleteReceivedFileById(fileId) {
       listBtn.addEventListener('click', openListFilesModal);
       listButtonContainer.appendChild(listBtn);
     }
+    updateListFilesButtonStatus();
     
     document.getElementById('senderCallsign').addEventListener('input', updateListFilesButtonStatus);
 document.getElementById('receiverCallsign').addEventListener('input', updateListFilesButtonStatus);
