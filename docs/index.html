@@ -1599,6 +1599,7 @@ function deleteReceivedFileById(fileId) {
               else
                 dot.style.backgroundColor = serialConnected ? 'green' : 'red';
               updateSendButtonStatus();
+	      updateListFilesButtonStatus();
             }
             
             function updateSendButtonStatus() {
@@ -2560,9 +2561,17 @@ function updateListFilesButtonStatus() {
   const sender = document.getElementById('senderCallsign').value.trim();
   const receiver = document.getElementById('receiverCallsign').value.trim();
   const listBtn = document.getElementById('listFilesBtn');
+  let connectionIsActive = false;
+  
+  if (document.getElementById('connectionType').value === 'websockets') {
+    connectionIsActive = (socket && socket.connected);
+  } else {
+    connectionIsActive = serialConnected;
+  }
+  
+  // Disable if callsigns are missing or if there's no active connection.
   if (listBtn) {
-    // Disable the button if either field is empty.
-    listBtn.disabled = !(sender && receiver);
+    listBtn.disabled = !(sender && receiver && connectionIsActive);
   }
 }
 
