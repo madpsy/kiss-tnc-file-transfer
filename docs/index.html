@@ -34,24 +34,24 @@
 <body>
     <div class="container">
         <h1>KISS File Transfer <span id="connectionStatusDot"></span></h1>
-	<div class="dropdown" style="position: absolute; top: 20px; right: 20px; z-index: 1000;">
-	  <button class="btn btn-secondary dropdown-toggle" type="button" id="helpMenuButton" data-bs-toggle="dropdown" aria-expanded="false">
+        <div class="dropdown" style="position: absolute; top: 20px; right: 20px; z-index: 1000;">
+            <button class="btn btn-secondary dropdown-toggle" type="button" id="helpMenuButton" data-bs-toggle="dropdown" aria-expanded="false">
 	    Help
 	  </button>
-	  <ul class="dropdown-menu dropdown-menu-end" aria-labelledby="helpMenuButton">
-	    <li><a class="dropdown-item" href="https://github.com/madpsy/kiss-tnc-file-transfer/" target="_blank">Github Repo</a></li>
-	    <li><a class="dropdown-item" href="help/readme-protocol.html" target="_blank">Protocol Spec</a></li>
-	    <li><a class="dropdown-item" href="help/readme-fileserver.html" target="_blank">File Server</a></li>
-	    <li><a class="dropdown-item" href="help/readme-fileserverclient.html" target="_blank">File Server Client</a></li>
-	    <li><a class="dropdown-item" href="help/readme-websockets.html" target="_blank">Websockets Server</a></li>
-	    <li><a class="dropdown-item" href="help/readme-sender.html" target="_blank">Sender</a></li>
-	    <li><a class="dropdown-item" href="help/readme-receiver.html" target="_blank">Receiver</a></li>
-	    <li><a class="dropdown-item" href="help/readme-repeater.html" target="_blank">Repeater</a></li>
-	    <li><a class="dropdown-item" href="help/readme-bridge.html" target="_blank">Bridge</a></li>
-   	    <li><a class="dropdown-item" href="help/readme-passthrough.html" target="_blank">TNC Passthrough</a></li>
-	    <li><a class="dropdown-item" href="help/readme-monitor.html" target="_blank">Monitor Utility</a></li>
-	  </ul>
-	</div>
+            <ul class="dropdown-menu dropdown-menu-end" aria-labelledby="helpMenuButton">
+                <li><a class="dropdown-item" href="https://github.com/madpsy/kiss-tnc-file-transfer/" target="_blank">Github Repo</a></li>
+                <li><a class="dropdown-item" href="help/readme-protocol.html" target="_blank">Protocol Spec</a></li>
+                <li><a class="dropdown-item" href="help/readme-fileserver.html" target="_blank">File Server</a></li>
+                <li><a class="dropdown-item" href="help/readme-fileserverclient.html" target="_blank">File Server Client</a></li>
+                <li><a class="dropdown-item" href="help/readme-websockets.html" target="_blank">Websockets Server</a></li>
+                <li><a class="dropdown-item" href="help/readme-sender.html" target="_blank">Sender</a></li>
+                <li><a class="dropdown-item" href="help/readme-receiver.html" target="_blank">Receiver</a></li>
+                <li><a class="dropdown-item" href="help/readme-repeater.html" target="_blank">Repeater</a></li>
+                <li><a class="dropdown-item" href="help/readme-bridge.html" target="_blank">Bridge</a></li>
+                <li><a class="dropdown-item" href="help/readme-passthrough.html" target="_blank">TNC Passthrough</a></li>
+                <li><a class="dropdown-item" href="help/readme-monitor.html" target="_blank">Monitor Utility</a></li>
+            </ul>
+        </div>
         <div class="mb-3">
             <label for="connectionType" class="form-label">Connection Type</label> <select id="connectionType" class="form-select">
         <option value="websockets" selected>
@@ -2120,29 +2120,52 @@ if (serialReader) {
       });
     }
 
-function sendCmdWithRetry(commandText, maxRetries = 3) {
+function sendCmdWithRetry(commandText, maxRetries) {
+  // If maxRetries isn't provided, read it from the "Timeout Retries" input box.
+  maxRetries = maxRetries !== undefined ? maxRetries : (parseInt(document.getElementById('timeoutRetries').value, 10) || 3);
+
   return new Promise((resolve, reject) => {
     let attempts = 0;
+    const myCallsign = document.getElementById('senderCallsign').value.trim();
+    const fileServerCallsign = document.getElementById('receiverCallsign').value.trim();
+    const { packet, cmdID } = buildCmdPacket(myCallsign, fileServerCallsign, commandText);
 
-    const attemptSend = () => {
+    const sendCmdPacket = () => {
       attempts++;
       console.log(`Sending CMD attempt ${attempts}: ${commandText}`);
-      sendCmd(commandText)
-        .then(resolve)
-        .catch((err) => {
+      // Store the promise resolvers under the fixed cmdID.
+      pendingCmdResponses[cmdID] = { resolve, reject, timestamp: Date.now() };
+      const kissFrame = buildKissFrame(packet);
+      if (document.getElementById('connectionType').value === 'websockets') {
+        if (socket) socket.emit('raw_kiss_frame', kissFrame);
+        else reject("No websocket connection available.");
+      } else if (document.getElementById('connectionType').value === 'serial' && serialWriter) {
+        serialWriter.write(kissFrame).catch(err => reject(err));
+      } else {
+        reject("No valid connection available.");
+      }
+    };
+
+    const attemptSend = () => {
+      sendCmdPacket();
+      // Get timeout from the UI (in seconds) and convert to milliseconds.
+      const timeoutMS = (parseFloat(document.getElementById('timeoutSeconds').value) * 1000) || 10000;
+      setTimeout(() => {
+        if (pendingCmdResponses[cmdID]) {
           if (attempts < maxRetries) {
-            console.log(`No RSP within 5 seconds. Retrying CMD "${commandText}" (attempt ${attempts + 1}/${maxRetries})`);
+            console.log(`No RSP within timeout. Retrying CMD "${commandText}" (attempt ${attempts + 1}/${maxRetries})`);
             attemptSend();
           } else {
-            reject(`No RSP after ${attempts} attempts: ${err}`);
+            delete pendingCmdResponses[cmdID];
+            reject(`No RSP after ${attempts} attempts.`);
           }
-        });
+        }
+      }, timeoutMS);
     };
 
     attemptSend();
   });
 }
-
 
     function openListFilesModal() {
       // Clear previous command, response text, and CSV table.
@@ -2580,10 +2603,10 @@ function generateTwoCharID() {
   return chars.charAt(Math.floor(Math.random() * chars.length)) +
          chars.charAt(Math.floor(Math.random() * chars.length));
 }
-</script>
-<footer style="text-align: center; margin-top: 20px;">
-  <a href="https://github.com/madpsy/kiss-tnc-file-transfer" target="_blank">Github Repo</a>
-</footer>
+        </script>
+        <footer style="text-align: center; margin-top: 20px;">
+            <a href="https://github.com/madpsy/kiss-tnc-file-transfer" target="_blank">Github Repo</a>
+        </footer>
 
 </body>
 
