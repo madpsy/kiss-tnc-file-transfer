@@ -213,6 +213,13 @@ go build -o fileserver fileserver.go
       <td><code>30</code></td>
     </tr>
     <tr>
+      <td><code>--overwrite-existing</code></td>
+      <td>
+        When set, an uploaded file with the same name as an existing file will be overwritten rather than the filename automatically incremented.
+      </td>
+      <td><code>false</code></td>
+    </tr>
+    <tr>
       <td><code>--per-callsign</code></td>
       <td>
         Base directory for per‑callsign subdirectories. When specified, the server creates a subdirectory for each sender (named after the sender’s callsign).
