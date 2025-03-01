@@ -232,26 +232,25 @@
                     </div>
                 </div>
             </div>
-<div class="modal fade" id="fileViewModal" tabindex="-1" aria-labelledby="fileViewModalLabel" aria-hidden="true">
-    <div class="modal-dialog modal-lg">
-        <div class="modal-content">
-            <div class="modal-header">
-                <h5 class="modal-title" id="fileViewModalLabel">View File</h5>
-                <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
-            </div>
-            <div class="modal-body">
-                <div class="mb-3">
-                    <pre id="fileViewContent" class="form-control" style="white-space: pre-wrap; height: 300px; overflow: auto; resize: vertical;"></pre>
+            <div class="modal fade" id="fileViewModal" tabindex="-1" aria-labelledby="fileViewModalLabel" aria-hidden="true">
+                <div class="modal-dialog modal-lg">
+                    <div class="modal-content">
+                        <div class="modal-header">
+                            <h5 class="modal-title" id="fileViewModalLabel">View File</h5>
+                            <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
+                        </div>
+                        <div class="modal-body">
+                            <div class="mb-3">
+                                <pre id="fileViewContent" class="form-control" style="white-space: pre-wrap; height: 300px; overflow: auto; resize: vertical;"></pre>
+                            </div>
+                        </div>
+                        <div class="modal-footer">
+                            <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Close</button>
+                            <button id="editFileBtn" type="button" class="btn btn-primary">Edit</button>
+                        </div>
+                    </div>
                 </div>
             </div>
-            <div class="modal-footer">
-                <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Close</button>
-                <button id="editFileBtn" type="button" class="btn btn-primary">Edit</button>
-            </div>
-        </div>
-    </div>
-</div>
-
 
             <div class="modal fade" id="createTextFileModal" tabindex="-1" aria-labelledby="createTextFileModalLabel" aria-hidden="true">
                 <div class="modal-dialog">
@@ -2871,7 +2870,6 @@ document.getElementById('editFileBtn').addEventListener('click', function() {
   const createModal = new bootstrap.Modal(document.getElementById('createTextFileModal'));
   createModal.show();
 });
-
             </script>
             <footer style="text-align: center; margin-top: 20px;">
                 <a href="https://github.com/madpsy/kiss-tnc-file-transfer" target="_blank">Github Repo</a>
