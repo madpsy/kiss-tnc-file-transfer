@@ -1074,9 +1074,11 @@ func main() {
 				baseDir = filepath.Join(absPerCallsignDir, sender)
 				os.MkdirAll(baseDir, 0755)
 				readmePath := filepath.Join(baseDir, "README.txt")
-				readmeContent := fmt.Sprintf("Welcome %s to your personal file store!\n\nYou have full permissions to all files here and can use it to store any files you wish.\n\nHave fun!", sender)
-				if err := ioutil.WriteFile(readmePath, []byte(readmeContent), 0644); err != nil {
-					log.Printf("Error creating README.txt: %v", err)
+				if _, err := os.Stat(readmePath); os.IsNotExist(err) {
+					readmeContent := fmt.Sprintf("Welcome %s to your personal file store!\n\nYou have full permissions to all files here and can use it to store any files you wish.\n\nHave fun!", sender)
+					if err := ioutil.WriteFile(readmePath, []byte(readmeContent), 0644); err != nil {
+						log.Printf("Error creating README.txt: %v", err)
+					}
 				}
 			}
 			if strings.HasPrefix(upperCmd, "GET ") {
