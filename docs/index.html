@@ -28,6 +28,12 @@
   width: auto;
   max-width: none;
 }
+
+#createTextFileModal .modal-dialog {
+  display: block; /* or remove this line if not needed */
+  max-width: 800px; /* Adjust width as needed */
+  margin: 30px auto; /* Center the modal */
+}
     </style>
 </head>
 
@@ -159,7 +165,11 @@
         </div>
 
         <div class="mb-3">
-            <button id="sendFileBtn" class="btn btn-primary">Send File</button>
+            <div class="mb-3">
+                <button id="sendFileBtn" class="btn btn-primary">Send File</button>
+                <button id="createTextFileBtn" class="btn btn-secondary">Create Text File</button>
+                <div id="status"></div>
+            </div>
             <div id="status"></div>
             <hr>
             <h2>Sender Progress</h2>
@@ -227,6 +237,32 @@
                         <div class="modal-body">
                             <!-- Use a <pre> element for preserving whitespace -->
                             <pre id="fileViewContent" style="white-space: pre-wrap;"></pre>
+                        </div>
+                    </div>
+                </div>
+            </div>
+            <div class="modal fade" id="createTextFileModal" tabindex="-1" aria-labelledby="createTextFileModalLabel" aria-hidden="true">
+                <div class="modal-dialog">
+                    <div class="modal-content">
+                        <div class="modal-header">
+                            <h5 class="modal-title" id="createTextFileModalLabel">Create Text File</h5>
+                            <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
+                        </div>
+                        <div class="modal-body">
+                            <div class="mb-3">
+                                <label for="textFileName" class="form-label">Filename</label>
+                                <div class="input-group">
+                                    <input type="text" id="textFileName" class="form-control" placeholder="Enter filename">
+                                    <span class="input-group-text">.txt</span>
+                                </div>
+                            </div>
+                            <div class="mb-3">
+                                <label for="textFileContent" class="form-label">Content</label>
+                                <textarea id="textFileContent" class="form-control" rows="10" placeholder="Type your text here..."></textarea>
+                            </div>
+                        </div>
+                        <div class="modal-footer">
+                            <button id="modalSendFileBtn" type="button" class="btn btn-primary">Send File</button>
                         </div>
                     </div>
                 </div>
@@ -2684,6 +2720,106 @@ window.viewReceivedFile = function(fileId) {
       console.error("Error loading file content:", err);
     });
 };
+// Open the modal when the Create Text File button is clicked.
+document.getElementById('createTextFileBtn').addEventListener('click', function() {
+    const modal = new bootstrap.Modal(document.getElementById('createTextFileModal'));
+    modal.show();
+});
+
+// When the modal's Send File button is clicked, create a text file and send it.
+document.getElementById('modalSendFileBtn').addEventListener('click', function() {
+    const senderInput = document.getElementById('senderCallsign').value.trim();
+    const receiverInput = document.getElementById('receiverCallsign').value.trim();
+    const fileNameInput = document.getElementById('textFileName').value.trim();
+    const fileContent = document.getElementById('textFileContent').value;
+    
+    if (!senderInput || !receiverInput || !fileNameInput || !fileContent) {
+        alert("Please provide sender, receiver, filename, and content.");
+        return;
+    }
+    
+    // Append .txt if not already present.
+    let finalFileName = fileNameInput;
+    if (!finalFileName.toLowerCase().endsWith('.txt')) {
+       finalFileName += '.txt';
+    }
+    
+    // Create a File object from the content.
+    const file = new File([fileContent], finalFileName, { type: 'text/plain' });
+    
+    if (fileTransferInProgress) {
+        alert("A file transfer is already in progress.");
+        return;
+    }
+    
+    // Disable the main Send File button.
+    document.getElementById('sendFileBtn').disabled = true;
+    
+    // Set global sender and receiver.
+    sender = senderInput;
+    receiver = receiverInput;
+    
+    // Get options from UI.
+    const compress = document.getElementById('compressCheckbox').checked;
+    const encodingMethod = document.getElementById('encodingMethod').value;
+    
+    // Configure burst settings (reuse your existing function).
+    configureBurstSettings();
+    
+    // Branch based on whether File Server mode is enabled.
+    if (document.getElementById('isFileServer').checked) {
+        const cmdModal = openCmdRspModal();
+        document.getElementById('cmdSentCmdRsp').innerText = "CMD: PUT " + finalFileName;
+        document.getElementById('rspResponseCmdRsp').innerText = "";
+        
+        sendCmdWithRetry("PUT " + finalFileName)
+          .then(rsp => {
+             document.getElementById('rspResponseCmdRsp').innerText =
+                "RSP: " + (rsp.status === 1 ? "Success" : "Failure") + " - " + rsp.message;
+             if (rsp.status === 1) {
+                 fileId = rsp.cmdID;
+                 setTimeout(() => {
+                     closeCmdRspModal();
+                     window.scrollTo({ top: document.body.scrollHeight, behavior: 'smooth' });
+                     startTransfer(fileId);
+                     prepareFileTransferData(file, compress, encodingMethod, fileId)
+                       .then(data => {
+                           initiateFileTransfer(data, file, sender, receiver, fileId);
+                       })
+                       .catch(err => {
+                           updateStatus("Error reading file: " + err);
+                           document.getElementById('sendFileBtn').disabled = false;
+                       });
+                 }, 1000);
+             } else {
+                 document.getElementById('sendFileBtn').disabled = false;
+             }
+          })
+          .catch(err => {
+             document.getElementById('rspResponseCmdRsp').innerText = "Error: " + err;
+             document.getElementById('sendFileBtn').disabled = false;
+          });
+    } else {
+        // Normal file transfer branch.
+        fileId = generateTwoCharID();
+        startTransfer(fileId);
+        prepareFileTransferData(file, compress, encodingMethod, fileId)
+          .then(data => {
+              initiateFileTransfer(data, file, sender, receiver, fileId);
+          })
+          .catch(err => {
+              updateStatus("Error reading file: " + err);
+              document.getElementById('sendFileBtn').disabled = false;
+          });
+    }
+    
+    // Hide the modal once the file transfer is initiated.
+    const modalEl = document.getElementById('createTextFileModal');
+    const modalInstance = bootstrap.Modal.getInstance(modalEl);
+    if (modalInstance) {
+        modalInstance.hide();
+    }
+});
             </script>
             <footer style="text-align: center; margin-top: 20px;">
                 <a href="https://github.com/madpsy/kiss-tnc-file-transfer" target="_blank">Github Repo</a>
