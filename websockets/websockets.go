@@ -11,7 +11,6 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
-	"path/filepath"
 	"sync"
 	"syscall"
 	"time"
@@ -438,15 +437,12 @@ func main() {
 	mux := http.NewServeMux()
 	mux.Handle("/socket.io/", engineServer)
 	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
-		// Serve index.html for the root path.
-		if r.URL.Path == "/" {
-			http.ServeFile(w, r, filepath.Join(*webRoot, "index.html"))
-			return
-		}
-		// Serve files relative to the specified web root.
-		http.FileServer(http.Dir(*webRoot)).ServeHTTP(w, r)
+        if r.URL.Path == "/" && r.URL.Query().Get("connection") == "" {
+    	    http.Redirect(w, r, "/?connection=websockets", http.StatusFound)
+    	    return
+    	}
+    		http.FileServer(http.Dir(*webRoot)).ServeHTTP(w, r)
 	})
-
 	bindAddr := fmt.Sprintf("%s:%d", *listenIP, *listenPort)
 	httpServer := &http.Server{
 		Addr:    bindAddr,

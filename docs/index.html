@@ -1780,6 +1780,14 @@ html += `<tr>
                 
                 document.addEventListener("DOMContentLoaded", function() {
 
+		  const params = new URLSearchParams(window.location.search);
+		  const connectionParam = params.get('connection');
+
+		  if (connectionParam === 'serial' || connectionParam === 'websockets') {
+		    const connectionSelect = document.getElementById('connectionType');
+		    connectionSelect.value = connectionParam;
+		  }
+
                   const storedSenderCallsign = localStorage.getItem('senderCallsign');
                   if (storedSenderCallsign) {
                     document.getElementById('senderCallsign').value = storedSenderCallsign;
