@@ -246,11 +246,11 @@ go build -o fileserver fileserver.go
   <p>
     To run in per‑callsign mode, specify the <code>--per-callsign</code> flag with a base directory.
     In this mode, the server ignores the global <code>serve-directory</code>, <code>save-directory</code>, and callsign filtering options.
-    Instead, it automatically creates a subdirectory (named after each sender’s callsign) under the provided base directory.
+    Instead, it automatically creates a subdirectory (named after each sender’s callsign) under the provided base directory and generates a README.txt welcome file. You can set --overwrite-existing if you want files with the same name to be overwritten.
     For example:
   </p>
   <pre>
-./fileserver --my-callsign=SERVER1 --per-callsign=/path/to/base --sender-binary=/path/to/sender
+./fileserver --my-callsign=SERVER1 --per-callsign=/path/to/base --sender-binary=/path/to/sender --overwrite-existing
   </pre>
 
   <h2 id="commands">Commands</h2>
