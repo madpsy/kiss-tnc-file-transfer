@@ -1703,6 +1703,7 @@
     }
                 
                 document.addEventListener("DOMContentLoaded", function() {
+
                   const storedSenderCallsign = localStorage.getItem('senderCallsign');
                   if (storedSenderCallsign) {
                     document.getElementById('senderCallsign').value = storedSenderCallsign;
@@ -1724,7 +1725,10 @@
         
                 const fileServerCheckbox = document.getElementById('isFileServer');
                 const listButtonContainer = document.getElementById('listButtonContainer');
-        
+	if (document.getElementById('connectionType').value === 'serial') {
+	   document.getElementById('serialSettings').style.display = 'block';
+	}        
+
         if (fileServerCheckbox.checked) {
           const listBtn = document.createElement('button');
           listBtn.id = "listFilesBtn";
