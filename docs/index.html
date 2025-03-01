@@ -232,21 +232,26 @@
                     </div>
                 </div>
             </div>
-            <div class="modal fade" id="fileViewModal" tabindex="-1" aria-labelledby="fileViewModalLabel" aria-hidden="true">
-                <div class="modal-dialog modal-lg">
-                    <div class="modal-content">
-                        <div class="modal-header">
-                            <h5 class="modal-title" id="fileViewModalLabel">View File</h5>
-                            <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
-                        </div>
-                        <div class="modal-body">
-                            <div class="mb-3">
-                                <pre id="fileViewContent" class="form-control" style="white-space: pre-wrap; height: 300px; overflow: auto; resize: vertical;"></pre>
-                            </div>
-                        </div>
-                    </div>
+<div class="modal fade" id="fileViewModal" tabindex="-1" aria-labelledby="fileViewModalLabel" aria-hidden="true">
+    <div class="modal-dialog modal-lg">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h5 class="modal-title" id="fileViewModalLabel">View File</h5>
+                <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
+            </div>
+            <div class="modal-body">
+                <div class="mb-3">
+                    <pre id="fileViewContent" class="form-control" style="white-space: pre-wrap; height: 300px; overflow: auto; resize: vertical;"></pre>
                 </div>
             </div>
+            <div class="modal-footer">
+                <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Close</button>
+                <button id="editFileBtn" type="button" class="btn btn-primary">Edit</button>
+            </div>
+        </div>
+    </div>
+</div>
+
 
             <div class="modal fade" id="createTextFileModal" tabindex="-1" aria-labelledby="createTextFileModalLabel" aria-hidden="true">
                 <div class="modal-dialog">
@@ -340,6 +345,8 @@
                 // Sender state display variables
                 let senderState = "Sending";
                 let senderStateTimestamp = 0;
+
+		let currentViewedFile = null;
                 
                 // Track highest packet sequence number sent so far
                 let highestPacketSentSoFar = 0;  
@@ -2706,17 +2713,21 @@ html += `<tr>
       return chars.charAt(Math.floor(Math.random() * chars.length)) +
              chars.charAt(Math.floor(Math.random() * chars.length));
     }
+
 window.viewReceivedFile = function(fileId) {
   const file = persistentReceivedFiles.find(f => f.fileId === fileId);
   if (!file) return;
   
-  // Check if the file is a text file (this should be true by design)
+  // Ensure it's a text file.
   if (!file.fileName.toLowerCase().endsWith('.txt')) {
     alert("The selected file is not a text file.");
     return;
   }
   
-  // Fetch the text content from the dataUrl
+  // Store the file for later editing.
+  currentViewedFile = file;
+  
+  // Fetch the text content from the dataUrl.
   fetch(file.dataUrl)
     .then(response => response.text())
     .then(text => {
@@ -2728,6 +2739,7 @@ window.viewReceivedFile = function(fileId) {
       console.error("Error loading file content:", err);
     });
 };
+
 // Open the modal when the Create Text File button is clicked.
 document.getElementById('createTextFileBtn').addEventListener('click', function() {
     const modal = new bootstrap.Modal(document.getElementById('createTextFileModal'));
@@ -2742,7 +2754,7 @@ document.getElementById('modalSendFileBtn').addEventListener('click', function()
     const fileContent = document.getElementById('textFileContent').value;
     
     if (!senderInput || !receiverInput || !fileNameInput || !fileContent) {
-        alert("Please provide sender, receiver, filename, and content.");
+        alert("Provide filename and content.");
         return;
     }
     
@@ -2833,6 +2845,33 @@ document.getElementById('clearTextFileBtn').addEventListener('click', function()
   document.getElementById('textFileName').value = '';
   document.getElementById('textFileContent').value = '';
 });
+
+document.getElementById('editFileBtn').addEventListener('click', function() {
+  // Get the current text content.
+  const fileContent = document.getElementById('fileViewContent').innerText;
+  
+  if (!currentViewedFile) {
+    alert("No file loaded to edit.");
+    return;
+  }
+  
+  // Pre-populate the create text file modal fields.
+  let fileName = currentViewedFile.fileName.replace(/\.txt$/i, '');
+  document.getElementById('textFileName').value = fileName;
+  document.getElementById('textFileContent').value = fileContent;
+  
+  // Close the current (view) modal.
+  const viewModalEl = document.getElementById('fileViewModal');
+  const viewModalInstance = bootstrap.Modal.getInstance(viewModalEl);
+  if (viewModalInstance) {
+    viewModalInstance.hide();
+  }
+  
+  // Open the create text file modal.
+  const createModal = new bootstrap.Modal(document.getElementById('createTextFileModal'));
+  createModal.show();
+});
+
             </script>
             <footer style="text-align: center; margin-top: 20px;">
                 <a href="https://github.com/madpsy/kiss-tnc-file-transfer" target="_blank">Github Repo</a>
