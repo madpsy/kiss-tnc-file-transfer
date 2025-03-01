@@ -262,6 +262,7 @@
                             </div>
                         </div>
                         <div class="modal-footer">
+                            <button id="clearTextFileBtn" type="button" class="btn btn-warning">Clear</button>
                             <button id="modalSendFileBtn" type="button" class="btn btn-primary">Send File</button>
                         </div>
                     </div>
@@ -2819,6 +2820,11 @@ document.getElementById('modalSendFileBtn').addEventListener('click', function()
     if (modalInstance) {
         modalInstance.hide();
     }
+});
+
+document.getElementById('clearTextFileBtn').addEventListener('click', function() {
+  document.getElementById('textFileName').value = '';
+  document.getElementById('textFileContent').value = '';
 });
             </script>
             <footer style="text-align: center; margin-top: 20px;">
