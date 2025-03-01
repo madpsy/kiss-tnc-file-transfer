@@ -34,6 +34,11 @@
   max-width: 800px; /* Adjust width as needed */
   margin: 30px auto; /* Center the modal */
 }
+#fileViewModal .modal-dialog {
+  display: block; /* or remove this line if not needed */
+  max-width: 800px; /* Adjust width as needed */
+  margin: 30px auto; /* Center the modal */
+}
     </style>
 </head>
 
@@ -235,12 +240,14 @@
                             <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
                         </div>
                         <div class="modal-body">
-                            <!-- Use a <pre> element for preserving whitespace -->
-                            <pre id="fileViewContent" style="white-space: pre-wrap;"></pre>
+                            <div class="mb-3">
+                                <pre id="fileViewContent" class="form-control" style="white-space: pre-wrap; height: 300px; overflow: auto; resize: vertical;"></pre>
+                            </div>
                         </div>
                     </div>
                 </div>
             </div>
+
             <div class="modal fade" id="createTextFileModal" tabindex="-1" aria-labelledby="createTextFileModalLabel" aria-hidden="true">
                 <div class="modal-dialog">
                     <div class="modal-content">
