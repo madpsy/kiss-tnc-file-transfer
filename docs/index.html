@@ -217,6 +217,21 @@
                     </div>
                 </div>
             </div>
+            <div class="modal fade" id="fileViewModal" tabindex="-1" aria-labelledby="fileViewModalLabel" aria-hidden="true">
+                <div class="modal-dialog modal-lg">
+                    <div class="modal-content">
+                        <div class="modal-header">
+                            <h5 class="modal-title" id="fileViewModalLabel">View File</h5>
+                            <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
+                        </div>
+                        <div class="modal-body">
+                            <!-- Use a <pre> element for preserving whitespace -->
+                            <pre id="fileViewContent" style="white-space: pre-wrap;"></pre>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
             <script>
                 /***********************
                  * Global Variables
@@ -354,39 +369,50 @@
             <th>Sender</th>
             <th>File Name</th>
             <th>ID</th>
-            <th>Original Size</th>
-            <th>Compressed Size</th>
-            <th>Elapsed Time (s)</th>
-            <th>Speed (Bytes/s)</th>
+            <th>Original</th>
+            <th>Compressed</th>
+            <th>Time (s)</th>
+            <th>Speed (B/s)</th>
             <th>Duplicates</th>
             <th>Checksum</th>
-            <th>Download</th>
-            <th>Delete</th>
+            <th></th>
+            <th></th>
           </tr>
         </thead>
         <tbody>`;
-      filteredFiles.forEach((file) => {
-        let checksumIcon = file.checksumMatch
-          ? '<span style="color:green;">&#10004;</span>'
-          : '<span style="color:red;">&#10008;</span>';
-        let elapsedSec = file.elapsed / 1000;
-        let speed = elapsedSec > 0 ? Math.floor((file.bytesReceived || file.size) / elapsedSec) : 0;
-        let dupPercent = file.totalPackets ? Math.round((file.duplicates / file.totalPackets) * 100) : "0";
-        html += `<tr>
-          <td>${new Date(file.timestamp).toLocaleString()}</td>
-          <td>${file.sender}</td>
-          <td>${file.fileName}</td>
-          <td>${file.fileId}</td>
-          <td>${file.originalSize} bytes</td>
-          <td>${file.compressedSize} bytes</td>
-          <td>${elapsedSec.toFixed(2)}</td>
-          <td>${speed}</td>
-          <td>${file.duplicates} (${dupPercent}%)</td>
-          <td>${checksumIcon}</td>
-          <td><button class="btn btn-success btn-sm" onclick="downloadReceivedFile('${file.fileId}')">Download</button></td>
-          <td><button class="btn btn-danger btn-sm" onclick="deleteReceivedFileById('${file.fileId}')">Delete</button></td>
-        </tr>`;
-      });
+filteredFiles.forEach((file) => {
+  let checksumIcon = file.checksumMatch
+    ? '<span style="color:green;">&#10004;</span>'
+    : '<span style="color:red;">&#10008;</span>';
+  let elapsedSec = file.elapsed / 1000;
+  let speed = elapsedSec > 0 ? Math.floor((file.bytesReceived || file.size) / elapsedSec) : 0;
+  let dupPercent = file.totalPackets ? Math.round((file.duplicates / file.totalPackets) * 100) : "0";
+  
+  // Only add a "View" button if the file extension is ".txt"
+  // Choose a single action button: for .txt files use "View" and call viewReceivedFile; for others use "Download".
+let actionButton;
+if (file.fileName.toLowerCase().endsWith('.txt')) {
+  actionButton = `<button class="btn btn-success btn-sm" onclick="viewReceivedFile('${file.fileId}')">View</button>`;
+} else {
+  actionButton = `<button class="btn btn-success btn-sm" onclick="downloadReceivedFile('${file.fileId}')">Download</button>`;
+}
+
+html += `<tr>
+  <td>${new Date(file.timestamp).toLocaleString()}</td>
+  <td>${file.sender}</td>
+  <td>${file.fileName}</td>
+  <td>${file.fileId}</td>
+  <td>${file.originalSize} bytes</td>
+  <td>${file.compressedSize} bytes</td>
+  <td>${elapsedSec.toFixed(2)}</td>
+  <td>${speed}</td>
+  <td>${file.duplicates} (${dupPercent}%)</td>
+  <td>${checksumIcon}</td>
+  <td>${actionButton}</td>
+  <td><button class="btn btn-danger btn-sm" onclick="deleteReceivedFileById('${file.fileId}')">Delete</button></td>
+</tr>`;
+});
+
       html += `</tbody></table>`;
       container.innerHTML = html;
     }
@@ -2636,6 +2662,28 @@
       return chars.charAt(Math.floor(Math.random() * chars.length)) +
              chars.charAt(Math.floor(Math.random() * chars.length));
     }
+window.viewReceivedFile = function(fileId) {
+  const file = persistentReceivedFiles.find(f => f.fileId === fileId);
+  if (!file) return;
+  
+  // Check if the file is a text file (this should be true by design)
+  if (!file.fileName.toLowerCase().endsWith('.txt')) {
+    alert("The selected file is not a text file.");
+    return;
+  }
+  
+  // Fetch the text content from the dataUrl
+  fetch(file.dataUrl)
+    .then(response => response.text())
+    .then(text => {
+      document.getElementById('fileViewContent').innerText = text;
+      const modal = new bootstrap.Modal(document.getElementById('fileViewModal'));
+      modal.show();
+    })
+    .catch(err => {
+      console.error("Error loading file content:", err);
+    });
+};
             </script>
             <footer style="text-align: center; margin-top: 20px;">
                 <a href="https://github.com/madpsy/kiss-tnc-file-transfer" target="_blank">Github Repo</a>
