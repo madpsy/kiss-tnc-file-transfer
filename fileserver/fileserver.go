@@ -142,6 +142,7 @@ type Arguments struct {
 	PassthroughPort int    // TCP port for transparent passthrough (default 5011)
 	IdPeriod        int    // Minutes between sending an ID packet (0 means never)
 	PerCallsignDir  string // New: base directory for per-callsign subdirectories (mutually exclusive with serve-directory, save-directory, get-callsigns, put-callsigns, and admin-callsigns)
+	OverwriteExisting bool // New: if true, overwrite existing files instead of appending _x
 }
 
 func parseArguments() *Arguments {
@@ -162,6 +163,7 @@ func parseArguments() *Arguments {
 	flag.IntVar(&args.PassthroughPort, "passthrough-port", 5011, "TCP port for transparent passthrough (default 5011)")
 	flag.IntVar(&args.IdPeriod, "id-period", 30, "Minutes between sending an ID packet (0 means never)")
 	flag.StringVar(&args.PerCallsignDir, "per-callsign", "", "Base directory for per-callsign subdirectories (mutually exclusive with serve-directory, save-directory, get-callsigns, put-callsigns, and admin-callsigns)")
+	flag.BoolVar(&args.OverwriteExisting, "overwrite-existing", false, "Overwrite existing files instead of appending _x to file names")
 	flag.Parse()
 
 	if args.PerCallsignDir != "" {
@@ -775,7 +777,7 @@ func invokeSenderBinary(args *Arguments, receiverCallsign, fileName, inputData, 
 // --- Invoking the Receiver Binary ---
 func invokeReceiverBinary(args *Arguments, senderCallsign, fileName, cmdID, baseDir string) error {
 	if _, alreadyRunning := runningReceiver.LoadOrStore(senderCallsign, true); alreadyRunning {
-		log.Printf("A receiver binary is already running for callsign %s, skipping.", senderCallsign)
+		log.Printf("A receiver binary is already running for callsign %s", senderCallsign)
 		return fmt.Errorf("receiver binary already running for callsign %s", senderCallsign)
 	}
 
@@ -834,19 +836,22 @@ func invokeReceiverBinary(args *Arguments, senderCallsign, fileName, cmdID, base
 		if !strings.HasPrefix(cleanSavePath, baseDir) {
 			log.Printf("PUT command: attempted directory traversal in file name '%s'", fileName)
 		} else {
-			if _, err := os.Stat(cleanSavePath); err == nil {
-				baseName := strings.TrimSuffix(fileName, filepath.Ext(fileName))
-				ext := filepath.Ext(fileName)
-				counter := 1
-				for {
-					newFileName := fmt.Sprintf("%s_%d%s", baseName, counter, ext)
-					newPath := filepath.Join(baseDir, newFileName)
-					newPath = filepath.Clean(newPath)
-					if _, err := os.Stat(newPath); os.IsNotExist(err) {
-						cleanSavePath = newPath
-						break
+			// If the overwrite flag is NOT set, append a counter if the file exists.
+			if !globalArgs.OverwriteExisting {
+				if _, err := os.Stat(cleanSavePath); err == nil {
+					baseName := strings.TrimSuffix(fileName, filepath.Ext(fileName))
+					ext := filepath.Ext(fileName)
+					counter := 1
+					for {
+						newFileName := fmt.Sprintf("%s_%d%s", baseName, counter, ext)
+						newPath := filepath.Join(baseDir, newFileName)
+						newPath = filepath.Clean(newPath)
+						if _, err := os.Stat(newPath); os.IsNotExist(err) {
+							cleanSavePath = newPath
+							break
+						}
+						counter++
 					}
-					counter++
 				}
 			}
 			err = ioutil.WriteFile(cleanSavePath, output, 0644)
@@ -861,6 +866,7 @@ func invokeReceiverBinary(args *Arguments, senderCallsign, fileName, cmdID, base
 
 	return nil
 }
+
 
 // --- Periodic ID Packet Functions ---
 func createIDPacket() []byte {

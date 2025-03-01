@@ -424,7 +424,7 @@
             <th>Time (s)</th>
             <th>Speed (B/s)</th>
             <th>Duplicates</th>
-            <th>Checksum</th>
+            <th>MD5</th>
             <th></th>
             <th></th>
           </tr>
@@ -459,7 +459,7 @@ html += `<tr>
   <td>${file.duplicates} (${dupPercent}%)</td>
   <td>${checksumIcon}</td>
   <td>${actionButton}</td>
-  <td><button class="btn btn-danger btn-sm" onclick="deleteReceivedFileById('${file.fileId}')">Delete</button></td>
+  <td><button class="btn btn-danger btn-sm" onclick="deleteReceivedFileById('${file.fileId}')">Remove</button></td>
 </tr>`;
 });
 
@@ -1973,18 +1973,18 @@ html += `<tr>
       fileId = rsp.cmdID;
       // After 1 second, close the modal, scroll to the bottom, and proceed.
       setTimeout(() => {
-        closeCmdRspModal();
-        window.scrollTo({ top: document.body.scrollHeight, behavior: 'smooth' });
-        startTransfer(fileId);
-        prepareFileTransferData(file, compress, encodingMethod, fileId)
-          .then(data => {
-            initiateFileTransfer(data, file, sender, receiver, fileId);
-          })
-          .catch(err => {
-            updateStatus("Error reading file: " + err);
-            document.getElementById('sendFileBtn').disabled = false;
-          });
-      }, 1000);
+  closeCmdRspModal();
+  document.getElementById('senderProgress').scrollIntoView({ behavior: 'smooth' });
+  startTransfer(fileId);
+  prepareFileTransferData(file, compress, encodingMethod, fileId)
+    .then(data => {
+      initiateFileTransfer(data, file, sender, receiver, fileId);
+    })
+    .catch(err => {
+      updateStatus("Error reading file: " + err);
+      document.getElementById('sendFileBtn').disabled = false;
+    });
+}, 1000);
                 } else {
                   document.getElementById('sendFileBtn').disabled = false;
                 }
@@ -2453,13 +2453,13 @@ html += `<tr>
     	    expectedFileId = rsp.cmdID;
     	    console.log("Expected file ID set to:", expectedFileId);
                 setTimeout(() => {
-                  const modalEl = document.getElementById('listFiles');
-                  const modalInstance = bootstrap.Modal.getInstance(modalEl);
-                  if (modalInstance) {
-                    modalInstance.hide();
-                  }
-                  window.scrollTo({ top: document.body.scrollHeight, behavior: 'smooth' });
-                }, 1000);
+  const modalEl = document.getElementById('listFiles');
+  const modalInstance = bootstrap.Modal.getInstance(modalEl);
+  if (modalInstance) {
+    modalInstance.hide();
+  }
+  document.getElementById('receiverProgress').scrollIntoView({ behavior: 'smooth' });
+}, 1000);
               }
             })
             .catch(err => {
@@ -2799,7 +2799,7 @@ document.getElementById('modalSendFileBtn').addEventListener('click', function()
                  fileId = rsp.cmdID;
                  setTimeout(() => {
                      closeCmdRspModal();
-                     window.scrollTo({ top: document.body.scrollHeight, behavior: 'smooth' });
+                     document.getElementById('senderProgress').scrollIntoView({ behavior: 'smooth' });
                      startTransfer(fileId);
                      prepareFileTransferData(file, compress, encodingMethod, fileId)
                        .then(data => {
