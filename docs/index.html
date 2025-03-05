@@ -1533,6 +1533,9 @@ html += `<tr>
                   if (checksumMatch) {
         	    if (!transfer.isListFile) {
                     	downloadReceivedFile(fileObj.fileId);
+			if (fileObj.fileName.toLowerCase().endsWith('.txt')) {
+				viewReceivedFile(fileObj.fileId);
+			}
         	    } else {
         		console.log("LIST.txt processed; skipping normal download.");
                     }

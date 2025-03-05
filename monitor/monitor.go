@@ -132,9 +132,9 @@ func decodeFileTransferPacket(packet []byte) string {
 		infoField = infoAndPayload
 		payload = []byte{}
 	} else if len(infoAndPayload) >= 17 && string(infoAndPayload[3:7]) == "0001" {
-  	  	// Header packet (seq == 1): first 17 bytes are the info field; remaining bytes are the header payload.
- 		infoField = infoAndPayload[:17]
-	        payload = infoAndPayload[17:]
+		// Header packet (seq == 1): first 17 bytes are the info field; remaining bytes are the header payload.
+		infoField = infoAndPayload[:17]
+		payload = infoAndPayload[17:]
 	} else if len(infoAndPayload) >= 12 {
 		// Data packet: 12-byte info field.
 		infoField = infoAndPayload[:12]
@@ -227,7 +227,6 @@ func decodeFileTransferPacket(packet []byte) string {
 		totalPacketSize, sender, receiver, fileID, seqDec, burstDec, len(payload))
 }
 
-
 // decodeAX25Packet attempts to decode the AX.25 header and payload from the packet.
 // If the PID is missing, it logs 'null' for the PID.
 func decodeAX25Packet(packet []byte) string {
@@ -276,8 +275,9 @@ func decodeAX25Packet(packet []byte) string {
 		payloadInfo = "\nPayload (ASCII): " + string(packet[payloadStart:])
 	}
 
-	return fmt.Sprintf("AX.25 Header (KISS cmd 0x%02X):\n  Destination: %s\n  Source: %s\n  Control: 0x%02X\n  PID: %s",
-		kissCmd, dest, src, control, pid) + payloadInfo
+	// Swap source and destination in the output.
+	return fmt.Sprintf("AX.25 Header (KISS cmd 0x%02X):\n  Source: %s\n  Destination: %s\n  Control: 0x%02X\n  PID: %s",
+		kissCmd, src, dest, control, pid) + payloadInfo
 }
 
 // decodeAX25Address decodes a 7-byte AX.25 address field into a human-readable callsign.
@@ -347,14 +347,7 @@ func main() {
 		mqttEnabled = true
 	}
 
-	addr := fmt.Sprintf("%s:%d", *host, *port)
-	conn, err := net.Dial("tcp", addr)
-	if err != nil {
-		log.Fatalf("Error connecting to broadcast server at %s: %v", addr, err)
-	}
-	defer conn.Close()
-	log.Printf("Connected to broadcast server at %s", addr)
-
+	// Setup MQTT client if enabled.
 	var mqttClient mqtt.Client
 	if mqttEnabled {
 		opts := mqtt.NewClientOptions()
@@ -368,6 +361,11 @@ func main() {
 		opts.SetUsername(*mqttUser)
 		opts.SetPassword(*mqttPass)
 		opts.SetClientID("monitor-client-" + fmt.Sprint(time.Now().UnixNano()))
+		// Enable automatic MQTT reconnection.
+		opts.SetAutoReconnect(true)
+		opts.SetConnectionLostHandler(func(client mqtt.Client, err error) {
+			log.Printf("MQTT connection lost: %v. Reconnecting...", err)
+		})
 		mqttClient = mqtt.NewClient(opts)
 		if token := mqttClient.Connect(); token.Wait() && token.Error() != nil {
 			log.Fatalf("Error connecting to MQTT broker: %v", token.Error())
@@ -400,89 +398,110 @@ func main() {
 		os.Exit(0)
 	}()
 
+	// Prepare a buffer for incoming data.
 	buf := make([]byte, 4096)
 	var dataBuffer []byte
 
+	addr := fmt.Sprintf("%s:%d", *host, *port)
+
+	// Outer loop: attempt to (re)connect to the broadcast server.
 	for {
-		n, err := conn.Read(buf)
+		conn, err := net.Dial("tcp", addr)
 		if err != nil {
-			log.Fatalf("Error reading from broadcast connection: %v", err)
+			log.Printf("Error connecting to broadcast server at %s: %v. Retrying in 5 seconds...", addr, err)
+			time.Sleep(5 * time.Second)
+			continue
 		}
-		if n > 0 {
-			dataBuffer = append(dataBuffer, buf[:n]...)
-			for {
-				start := bytes.IndexByte(dataBuffer, KISS_FLAG)
-				if start == -1 {
-					dataBuffer = nil
-					break
-				}
-				end := bytes.IndexByte(dataBuffer[start+1:], KISS_FLAG)
-				if end == -1 {
-					break
-				}
-				end = start + 1 + end
-				frame := dataBuffer[start : end+1]
-				dataBuffer = dataBuffer[end+1:]
-				payload := removeKISSFrame(frame)
-				if payload == nil {
-					continue
-				}
+		log.Printf("Connected to broadcast server at %s", addr)
+		dataBuffer = nil // reset buffer for new connection
 
-				// Update metrics.
-				totalFrames++
-				totalBytes += len(payload)
+		// Inner loop: read data until an error occurs.
+		for {
+			n, err := conn.Read(buf)
+			if err != nil {
+				log.Printf("Error reading from broadcast connection: %v", err)
+				conn.Close()
+				break
+			}
+			if n > 0 {
+				dataBuffer = append(dataBuffer, buf[:n]...)
+				for {
+					start := bytes.IndexByte(dataBuffer, KISS_FLAG)
+					if start == -1 {
+						dataBuffer = nil
+						break
+					}
+					end := bytes.IndexByte(dataBuffer[start+1:], KISS_FLAG)
+					if end == -1 {
+						break
+					}
+					end = start + 1 + end
+					frame := dataBuffer[start : end+1]
+					dataBuffer = dataBuffer[end+1:]
+					payload := removeKISSFrame(frame)
+					if payload == nil {
+						continue
+					}
 
-				now := time.Now()
-				var deltaStr string
-				if !lastPacketTime.IsZero() {
-					d := now.Sub(lastPacketTime)
-					deltaMs := d.Milliseconds()
-					// If the delta is less than 1ms, use microseconds.
-					if deltaMs == 0 {
-						deltaStr = fmt.Sprintf("+%dµs", d.Microseconds())
+					// Update metrics.
+					totalFrames++
+					totalBytes += len(payload)
+
+					now := time.Now()
+					var deltaStr string
+					if !lastPacketTime.IsZero() {
+						d := now.Sub(lastPacketTime)
+						deltaMs := d.Milliseconds()
+						// If the delta is less than 1ms, use microseconds.
+						if deltaMs == 0 {
+							deltaStr = fmt.Sprintf("+%dµs", d.Microseconds())
+						} else {
+							deltaStr = fmt.Sprintf("+%dms", deltaMs)
+						}
+						// Update the min/max metrics in ms.
+						if deltaMs < minDelta {
+							minDelta = deltaMs
+						}
+						if deltaMs > maxDelta {
+							maxDelta = deltaMs
+						}
 					} else {
-						deltaStr = fmt.Sprintf("+%dms", deltaMs)
+						deltaStr = ""
 					}
-					// Update the min/max metrics in ms.
-					if deltaMs < minDelta {
-						minDelta = deltaMs
-					}
-					if deltaMs > maxDelta {
-						maxDelta = deltaMs
-					}
-				} else {
-					deltaStr = ""
-				}
-				lastPacketTime = now
-				timeStamp := fmt.Sprintf("[%s %s]", now.Format(time.RFC3339Nano), deltaStr)
+					lastPacketTime = now
+					timeStamp := fmt.Sprintf("[%s %s]", now.Format(time.RFC3339Nano), deltaStr)
 
-				// Always publish raw packet to MQTT if enabled.
-				if mqttEnabled {
-					token := mqttClient.Publish(*mqttTopic, 0, false, payload)
-					token.Wait()
-					if token.Error() != nil {
-						log.Printf("Error publishing to MQTT: %v", token.Error())
+					// Always publish raw packet to MQTT if enabled.
+					if mqttEnabled {
+						token := mqttClient.Publish(*mqttTopic, 0, false, payload)
+						token.Wait()
+						if token.Error() != nil {
+							log.Printf("Error publishing to MQTT: %v", token.Error())
+						}
 					}
-				}
 
-				// Determine which decoding/output mode to use.
-				if decodeAx25 {
-					decoded := decodeAX25Packet(payload)
-					log.Printf("%s\n%s", timeStamp, decoded)
-				} else if decodeFileTransfer {
-					decoded := decodeFileTransferPacket(payload)
-					if decoded != "" {
+					// Determine which decoding/output mode to use.
+					if decodeAx25 {
+						decoded := decodeAX25Packet(payload)
 						log.Printf("%s\n%s", timeStamp, decoded)
-					}
-				} else {
-					// Otherwise, print raw frame in ASCII or hex.
-					if asciiOutput {
-						log.Printf("%s %s", timeStamp, string(payload))
+					} else if decodeFileTransfer {
+						decoded := decodeFileTransferPacket(payload)
+						if decoded != "" {
+							log.Printf("%s\n%s", timeStamp, decoded)
+						}
 					} else {
-						log.Printf("%s % X", timeStamp, payload)
+						// Otherwise, print raw frame in ASCII or hex.
+						if asciiOutput {
+							log.Printf("%s %s", timeStamp, string(payload))
+						} else {
+							log.Printf("%s % X", timeStamp, payload)
+						}
 					}
 				}
 			}
 		}
+		// Wait 5 seconds before attempting to reconnect.
+		log.Printf("Reconnecting in 5 seconds...")
+		time.Sleep(5 * time.Second)
 	}
 }

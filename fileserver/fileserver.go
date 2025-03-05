@@ -1015,7 +1015,10 @@ func main() {
 		frames, remaining := extractKISSFrames(buffer)
 		buffer = remaining
 		for _, frame := range frames {
-			if len(frame) < 2 || frame[0] != KISS_FLAG || frame[len(frame)-1] != KISS_FLAG {
+			if len(frame) < 3 {
+				continue
+			}
+			if frame[0] != KISS_FLAG || frame[len(frame)-1] != KISS_FLAG {
 				continue
 			}
 			inner := frame[2 : len(frame)-1]
