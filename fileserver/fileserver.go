@@ -141,7 +141,7 @@ type Arguments struct {
 	Baud              int    // used with serial
 	GetCallsigns      string // comma-delimited list for filtering GET sender callsigns (supports wildcards)
 	PutCallsigns      string // comma-delimited list for filtering PUT sender callsigns (supports wildcards)
-	AdminCallsigns    string // comma-delimited list for filtering ADMIN sender callsigns (supports wildcards)
+	AdminCallsigns    string // comma-delimited list of allowed sender callsigns for ADMIN commands (supports wildcards)
 	ServeDirectory    string // directory to serve files from (mandatory unless -per-callsign is used)
 	SaveDirectory     string // where received files should be saved (default current directory; not used in per-callsign mode)
 	SenderBinary      string // path to the binary used to send files (mandatory)
@@ -163,7 +163,7 @@ func parseArguments() *Arguments {
 	flag.StringVar(&args.SerialPort, "serial-port", "", "Serial port (e.g., COM3 or /dev/ttyUSB0)")
 	flag.IntVar(&args.Baud, "baud", 115200, "Baud rate for serial connection")
 	flag.StringVar(&args.GetCallsigns, "get-callsigns", "", "Comma delimited list of allowed sender callsign patterns for GET command (supports wildcards)")
-	flag.StringVar(&args.PutCallsigns, "put-callsigns", "", "Comma delimited list for allowed sender callsign patterns for PUT command (supports wildcards)")
+	flag.StringVar(&args.PutCallsigns, "put-callsigns", "", "Comma delimited list of allowed sender callsign patterns for PUT command (supports wildcards)")
 	flag.StringVar(&args.AdminCallsigns, "admin-callsigns", "", "Comma delimited list of allowed sender callsign patterns for ADMIN commands (supports wildcards)")
 	flag.StringVar(&args.ServeDirectory, "serve-directory", "", "Directory to serve files from (mandatory unless -per-callsign is used)")
 	flag.StringVar(&args.SaveDirectory, "save-directory", ".", "Directory where received files should be saved (default current directory; not used in per-callsign mode)")
@@ -371,7 +371,8 @@ func sendResponseWithDetails(sender, cmdID, command string, status int, msg stri
 	if status == 1 {
 		statusText = "SUCCESS"
 	}
-	log.Printf("Sending RSP packet for command '%s' (ID: %s): %s - %s", command, cmdID, statusText, msg)
+	// Now include the sender's callsign in the log.
+	log.Printf("Sending RSP packet to sender %s for command '%s' (ID: %s): %s - %s", sender, command, cmdID, statusText, msg)
 	_, err := conn.Write(frame)
 	// Cache the response
 	cacheKey := sender + ":" + cmdID
@@ -1115,6 +1116,10 @@ func main() {
 				activeTransfersLock.Lock()
 				// If this sender isn’t already active and we have reached max concurrency, reject.
 				if _, exists := activeTransfers[sender]; !exists && len(activeTransfers) >= globalArgs.MaxConcurrency {
+					// Log which transfers are currently active.
+					for cs, lockedCmdID := range activeTransfers {
+						log.Printf("Active transfer in progress: sender %s, cmdID %s", cs, lockedCmdID)
+					}
 					activeTransfersLock.Unlock()
 					sendResponseWithDetails(sender, cmdID, command, 0, "TRANSFER ALREADY IN PROGRESS. PLEASE WAIT.")
 					continue // Skip processing this command.
@@ -1143,12 +1148,12 @@ func main() {
 				}
 				fileName := strings.TrimSpace(command[4:])
 				if len(fileName) > maxFileNameLen {
-					log.Printf("GET command: file name '%s' too long", fileName)
+					log.Printf("GET command from sender %s: file name '%s' too long", sender, fileName)
 					_, _ = sendResponseWithDetails(sender, cmdID, command, 0, "FILE NAME TOO LONG")
 					continue
 				}
 				if isFilenameDisallowed(fileName) {
-					log.Printf("GET command: access to file '%s' is forbidden", fileName)
+					log.Printf("GET command from sender %s: access to file '%s' is forbidden", sender, fileName)
 					_, _ = sendResponseWithDetails(sender, cmdID, command, 0, "FILE NAME NOT ALLOWED")
 					continue
 				}
@@ -1161,13 +1166,13 @@ func main() {
 				requestedPath := filepath.Join(dir, fileName)
 				cleanPath := filepath.Clean(requestedPath)
 				if !strings.HasPrefix(cleanPath, dir) {
-					log.Printf("GET command: attempted directory traversal in '%s'", fileName)
+					log.Printf("GET command from sender %s: attempted directory traversal in '%s'", sender, fileName)
 					_, _ = sendResponseWithDetails(sender, cmdID, command, 0, "INVALID FILE PATH")
 					continue
 				}
 				content, err := ioutil.ReadFile(cleanPath)
 				if err != nil {
-					log.Printf("Requested file '%s' does not exist in directory %s", fileName, dir)
+					log.Printf("GET command from sender %s: requested file '%s' does not exist in directory %s", sender, fileName, dir)
 					_, _ = sendResponseWithDetails(sender, cmdID, command, 0, "CANNOT FIND/READ FILE")
 					continue
 				}
@@ -1183,7 +1188,7 @@ func main() {
 				}
 				listing, err := listFiles(dir)
 				if err != nil {
-					log.Printf("Error listing files: %v", err)
+					log.Printf("LIST command from sender %s: error listing files: %v", sender, err)
 					_, _ = sendResponseWithDetails(sender, cmdID, command, 0, "LIST CANNOT READ")
 					continue
 				}
@@ -1198,12 +1203,12 @@ func main() {
 				}
 				fileName := strings.TrimSpace(command[4:])
 				if len(fileName) > maxFileNameLen {
-					log.Printf("PUT command: file name '%s' too long", fileName)
+					log.Printf("PUT command from sender %s: file name '%s' too long", sender, fileName)
 					_, _ = sendResponseWithDetails(sender, cmdID, command, 0, "FILE NAME TOO LONG")
 					continue
 				}
 				if isFilenameDisallowed(fileName) {
-					log.Printf("PUT command: access to file '%s' is forbidden", fileName)
+					log.Printf("PUT command from sender %s: access to file '%s' is forbidden", sender, fileName)
 					_, _ = sendResponseWithDetails(sender, cmdID, command, 0, "FILE NAME NOT ALLOWED")
 					continue
 				}
@@ -1216,14 +1221,14 @@ func main() {
 				savePath := filepath.Join(dir, fileName)
 				cleanSavePath := filepath.Clean(savePath)
 				if !strings.HasPrefix(cleanSavePath, dir) {
-					log.Printf("PUT command: attempted directory traversal in '%s'", fileName)
+					log.Printf("PUT command from sender %s: attempted directory traversal in '%s'", sender, fileName)
 					_, _ = sendResponseWithDetails(sender, cmdID, command, 0, "INVALID FILE PATH")
 					continue
 				}
 				// Invoke receiver binary (if one is already running for this callsign, it will be killed)
 				err := invokeReceiverBinary(args, sender, fileName, cmdID, dir)
 				if err != nil {
-					log.Printf("Receiver binary error: %v", err)
+					log.Printf("PUT command from sender %s: receiver binary error: %v", sender, err)
 					_, _ = sendResponseWithDetails(sender, cmdID, command, 0, "PUT FAILED: CANNOT START RECEIVER")
 				} else {
 					_, _ = sendResponseWithDetails(sender, cmdID, command, 1, "PUT OK - WAITING FOR FILE")
@@ -1236,12 +1241,12 @@ func main() {
 				}
 				fileName := strings.TrimSpace(command[4:])
 				if len(fileName) > maxFileNameLen {
-					log.Printf("DEL command: file name '%s' too long", fileName)
+					log.Printf("DEL command from sender %s: file name '%s' too long", sender, fileName)
 					_, _ = sendResponseWithDetails(sender, cmdID, command, 0, "FILE NAME TOO LONG")
 					continue
 				}
 				if isFilenameDisallowed(fileName) {
-					log.Printf("DEL command: access to file '%s' is forbidden", fileName)
+					log.Printf("DEL command from sender %s: access to file '%s' is forbidden", sender, fileName)
 					_, _ = sendResponseWithDetails(sender, cmdID, command, 0, "FILE NAME NOT ALLOWED")
 					continue
 				}
@@ -1254,21 +1259,21 @@ func main() {
 				fullPath := filepath.Join(dir, fileName)
 				cleanPath := filepath.Clean(fullPath)
 				if !strings.HasPrefix(cleanPath, dir) {
-					log.Printf("DEL command: attempted directory traversal in '%s'", fileName)
+					log.Printf("DEL command from sender %s: attempted directory traversal in '%s'", sender, fileName)
 					_, _ = sendResponseWithDetails(sender, cmdID, command, 0, "INVALID FILE PATH")
 					continue
 				}
 				if _, err := os.Stat(cleanPath); os.IsNotExist(err) {
-					log.Printf("DEL command: file '%s' does not exist", fileName)
+					log.Printf("DEL command from sender %s: file '%s' does not exist", sender, fileName)
 					_, _ = sendResponseWithDetails(sender, cmdID, command, 0, "FILE DOES NOT EXIST")
 					continue
 				}
 				err := os.Remove(cleanPath)
 				if err != nil {
-					log.Printf("DEL command: error deleting file '%s': %v", fileName, err)
+					log.Printf("DEL command from sender %s: error deleting file '%s': %v", sender, fileName, err)
 					_, _ = sendResponseWithDetails(sender, cmdID, command, 0, "DEL FAILED")
 				} else {
-					log.Printf("DEL command: file '%s' deleted successfully", fileName)
+					log.Printf("DEL command from sender %s: file '%s' deleted successfully", sender, fileName)
 					_, _ = sendResponseWithDetails(sender, cmdID, command, 1, "DEL OK")
 				}
 			} else if strings.HasPrefix(upperCmd, "REN ") {
@@ -1280,19 +1285,19 @@ func main() {
 				params := strings.TrimSpace(command[4:])
 				parts := strings.SplitN(params, "|", 2)
 				if len(parts) != 2 || strings.TrimSpace(parts[1]) == "" {
-					log.Printf("REN command: new filename not specified in '%s'", params)
+					log.Printf("REN command from sender %s: new filename not specified in '%s'", sender, params)
 					_, _ = sendResponseWithDetails(sender, cmdID, command, 0, "NEW FILENAME NOT SPECIFIED")
 					continue
 				}
 				currentFile := strings.TrimSpace(parts[0])
 				newFile := strings.TrimSpace(parts[1])
 				if len(currentFile) > maxFileNameLen || len(newFile) > maxFileNameLen {
-					log.Printf("REN command: one or both filenames ('%s', '%s') are too long", currentFile, newFile)
+					log.Printf("REN command from sender %s: one or both filenames ('%s', '%s') are too long", sender, currentFile, newFile)
 					_, _ = sendResponseWithDetails(sender, cmdID, command, 0, "FILE NAME TOO LONG")
 					continue
 				}
 				if isFilenameDisallowed(currentFile) || isFilenameDisallowed(newFile) {
-					log.Printf("REN command: renaming of file '%s' or '%s' is forbidden", currentFile, newFile)
+					log.Printf("REN command from sender %s: renaming of file '%s' or '%s' is forbidden", sender, currentFile, newFile)
 					_, _ = sendResponseWithDetails(sender, cmdID, command, 0, "FILE NAME NOT ALLOWED")
 					continue
 				}
@@ -1307,30 +1312,30 @@ func main() {
 				cleanCurrent := filepath.Clean(currentPath)
 				cleanNew := filepath.Clean(newPath)
 				if !strings.HasPrefix(cleanCurrent, dir) || !strings.HasPrefix(cleanNew, dir) {
-					log.Printf("REN command: attempted directory traversal with filenames '%s' or '%s'", currentFile, newFile)
+					log.Printf("REN command from sender %s: attempted directory traversal with filenames '%s' or '%s'", sender, currentFile, newFile)
 					_, _ = sendResponseWithDetails(sender, cmdID, command, 0, "INVALID FILE PATH")
 					continue
 				}
 				if _, err := os.Stat(cleanCurrent); os.IsNotExist(err) {
-					log.Printf("REN command: current file '%s' does not exist", currentFile)
+					log.Printf("REN command from sender %s: current file '%s' does not exist", sender, currentFile)
 					_, _ = sendResponseWithDetails(sender, cmdID, command, 0, "CURRENT FILE DOES NOT EXIST")
 					continue
 				}
 				if _, err := os.Stat(cleanNew); err == nil {
-					log.Printf("REN command: new file '%s' already exists", newFile)
+					log.Printf("REN command from sender %s: new file '%s' already exists", sender, newFile)
 					_, _ = sendResponseWithDetails(sender, cmdID, command, 0, "NEW FILE ALREADY EXISTS")
 					continue
 				}
 				err := os.Rename(cleanCurrent, cleanNew)
 				if err != nil {
-					log.Printf("REN command: error renaming file from '%s' to '%s': %v", currentFile, newFile, err)
+					log.Printf("REN command from sender %s: error renaming file from '%s' to '%s': %v", sender, currentFile, newFile, err)
 					_, _ = sendResponseWithDetails(sender, cmdID, command, 0, "REN FAILED")
 				} else {
-					log.Printf("REN command: file renamed from '%s' to '%s' successfully", currentFile, newFile)
+					log.Printf("REN command from sender %s: file renamed from '%s' to '%s' successfully", sender, currentFile, newFile)
 					_, _ = sendResponseWithDetails(sender, cmdID, command, 1, "REN OK")
 				}
 			} else {
-				log.Printf("Unrecognized command: %s", command)
+				log.Printf("Unrecognized command from sender %s: %s", sender, command)
 				_, _ = sendResponseWithDetails(sender, cmdID, command, 0, "AVAILABLE: LIST, GET [FILE], PUT [FILE], DEL [FILE], REN [CUR]|[NEW]")
 			}
 		}
