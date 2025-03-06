@@ -2043,7 +2043,9 @@ if (infoText.split(":")[1] && infoText.split(":")[1].toUpperCase() === "RSP") {
                   console.log(msg);
                 }
     		window.downloadReceivedFile = function(fileId) {
-    		  const file = persistentReceivedFiles.find(f => f.fileId === fileId);
+    		  const file = persistentReceivedFiles.find(f =>
+			f.fileId === fileId && f.fileName.trim() !== "LIST.txt"
+		  );
     		  if (!file) return;
     		  const a = document.createElement('a');
     		  a.href = file.dataUrl;
