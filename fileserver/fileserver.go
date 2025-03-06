@@ -75,11 +75,6 @@ var (
 	rspCacheLock sync.Mutex
 )
 
-// --- Concurrency Control ---
-// activeTransfers tracks which callsigns currently have an active transfer.
-var activeTransfers = make(map[string]struct{})
-var activeTransfersLock sync.Mutex
-
 // cacheCleanup periodically removes cache entries older than 30 seconds.
 func cacheCleanup() {
 	for {
@@ -100,6 +95,13 @@ func cacheCleanup() {
 var (
 	processingCommands     = make(map[string]chan struct{})
 	processingCommandsLock sync.Mutex
+)
+
+// --- Active transfer tracking ---
+// This tracks the currently active transfers by callsign. The key is the sender's callsign and the value is the command ID.
+var (
+	activeTransfers     = make(map[string]string)
+	activeTransfersLock sync.Mutex
 )
 
 // --- Thread-safe connection accessor functions ---
@@ -148,8 +150,8 @@ type Arguments struct {
 	IdPeriod          int    // Minutes between sending an ID packet (0 means never)
 	PerCallsignDir    string // New: base directory for per-callsign subdirectories (mutually exclusive with serve-directory, save-directory, get-callsigns, put-callsigns, and admin-callsigns)
 	OverwriteExisting bool   // New: if true, overwrite existing files instead of appending _x
-	// New field:
-	MaxConcurrency int // Maximum number of concurrent transfers allowed from different callsigns.
+	// New field for concurrency control:
+	MaxConcurrency int // Maximum concurrent transfers allowed (default 1)
 }
 
 func parseArguments() *Arguments {
@@ -161,7 +163,7 @@ func parseArguments() *Arguments {
 	flag.StringVar(&args.SerialPort, "serial-port", "", "Serial port (e.g., COM3 or /dev/ttyUSB0)")
 	flag.IntVar(&args.Baud, "baud", 115200, "Baud rate for serial connection")
 	flag.StringVar(&args.GetCallsigns, "get-callsigns", "", "Comma delimited list of allowed sender callsign patterns for GET command (supports wildcards)")
-	flag.StringVar(&args.PutCallsigns, "put-callsigns", "", "Comma delimited list of allowed sender callsign patterns for PUT command (supports wildcards)")
+	flag.StringVar(&args.PutCallsigns, "put-callsigns", "", "Comma delimited list for allowed sender callsign patterns for PUT command (supports wildcards)")
 	flag.StringVar(&args.AdminCallsigns, "admin-callsigns", "", "Comma delimited list of allowed sender callsign patterns for ADMIN commands (supports wildcards)")
 	flag.StringVar(&args.ServeDirectory, "serve-directory", "", "Directory to serve files from (mandatory unless -per-callsign is used)")
 	flag.StringVar(&args.SaveDirectory, "save-directory", ".", "Directory where received files should be saved (default current directory; not used in per-callsign mode)")
@@ -171,8 +173,8 @@ func parseArguments() *Arguments {
 	flag.IntVar(&args.IdPeriod, "id-period", 30, "Minutes between sending an ID packet (0 means never)")
 	flag.StringVar(&args.PerCallsignDir, "per-callsign", "", "Base directory for per-callsign subdirectories (mutually exclusive with serve-directory, save-directory, get-callsigns, put-callsigns, and admin-callsigns)")
 	flag.BoolVar(&args.OverwriteExisting, "overwrite-existing", false, "Overwrite existing files instead of appending _x to file names")
-	// New argument for concurrency control.
-	flag.IntVar(&args.MaxConcurrency, "max-concurrency", 1, "Maximum number of concurrent transfers allowed from different callsigns")
+	// New flag for concurrency:
+	flag.IntVar(&args.MaxConcurrency, "max-concurrency", 1, "Maximum concurrent transfers allowed (GET/PUT/LIST)")
 	flag.Parse()
 
 	if args.PerCallsignDir != "" {
@@ -477,7 +479,6 @@ func parseCommandPacket(packet []byte) (sender, cmdID, command string, ok bool) 
 }
 
 // createResponsePacket builds the response payload.
-// The response format is "RSP:<cmdID> <status> <message>" padded or truncated to 128 bytes.
 func createResponsePacket(cmdID string, status int, msg string) []byte {
 	// New variable-length response format: cmdID:RSP:<status>:<msg>
 	responseText := fmt.Sprintf("%s:RSP:%d:%s", cmdID, status, msg)
@@ -758,10 +759,6 @@ func invokeSenderBinary(args *Arguments, receiverCallsign, fileName, inputData, 
 	if err := cmd.Start(); err != nil {
 		log.Printf("Error starting sender binary: %v", err)
 		runningSender.Delete(receiverCallsign)
-		// Remove active transfer on error.
-		activeTransfersLock.Lock()
-		delete(activeTransfers, receiverCallsign)
-		activeTransfersLock.Unlock()
 		return
 	}
 	go func() {
@@ -789,9 +786,11 @@ func invokeSenderBinary(args *Arguments, receiverCallsign, fileName, inputData, 
 			log.Printf("Sender binary completed successfully.")
 		}
 		runningSender.Delete(receiverCallsign)
-		// Remove the callsign from activeTransfers.
+		// Remove active transfer if it still matches the command ID.
 		activeTransfersLock.Lock()
-		delete(activeTransfers, receiverCallsign)
+		if current, ok := activeTransfers[receiverCallsign]; ok && current == cmdID {
+			delete(activeTransfers, receiverCallsign)
+		}
 		activeTransfersLock.Unlock()
 	}()
 }
@@ -843,24 +842,27 @@ func invokeReceiverBinary(args *Arguments, senderCallsign, fileName, cmdID, base
 
 	if err := cmd.Start(); err != nil {
 		runningReceiver.Delete(senderCallsign)
-		activeTransfersLock.Lock()
-		delete(activeTransfers, senderCallsign)
-		activeTransfersLock.Unlock()
 		return fmt.Errorf("Error starting receiver binary: %v", err)
 	}
 
 	go func() {
+		// Ensure cleanup of active transfer regardless of receiver outcome.
+		defer func() {
+			activeTransfersLock.Lock()
+			if current, ok := activeTransfers[senderCallsign]; ok && current == cmdID {
+				delete(activeTransfers, senderCallsign)
+			}
+			activeTransfersLock.Unlock()
+		}()
+
 		output, err := io.ReadAll(stdoutPipe)
 		if err != nil {
 			log.Printf("Error reading receiver stdout: %v", err)
 		}
 		waitErr := cmd.Wait()
+		runningReceiver.Delete(senderCallsign)
 		if waitErr != nil {
 			log.Printf("Receiver binary exited with error: %v", waitErr)
-			runningReceiver.Delete(senderCallsign)
-			activeTransfersLock.Lock()
-			delete(activeTransfers, senderCallsign)
-			activeTransfersLock.Unlock()
 			return
 		} else {
 			log.Printf("Receiver binary completed successfully.")
@@ -896,11 +898,6 @@ func invokeReceiverBinary(args *Arguments, senderCallsign, fileName, cmdID, base
 				log.Printf("Received file saved to %s", cleanSavePath)
 			}
 		}
-		runningReceiver.Delete(senderCallsign)
-		// Remove the callsign from activeTransfers.
-		activeTransfersLock.Lock()
-		delete(activeTransfers, senderCallsign)
-		activeTransfersLock.Unlock()
 	}()
 
 	return nil
@@ -1111,26 +1108,22 @@ func main() {
 			}
 
 			upperCmd := strings.ToUpper(command)
+			var baseDir string
 
-			// --- CONCURRENCY CHECK ---
-			if strings.HasPrefix(upperCmd, "GET ") || strings.HasPrefix(upperCmd, "LIST") || strings.HasPrefix(upperCmd, "PUT ") {
+			// Before processing GET/PUT/LIST, enforce global concurrency.
+			if strings.HasPrefix(upperCmd, "GET ") || strings.HasPrefix(upperCmd, "PUT ") || strings.HasPrefix(upperCmd, "LIST") {
 				activeTransfersLock.Lock()
-				// If this callsign is not already active and we've reached max concurrency, reject the command.
+				// If this sender isn’t already active and we have reached max concurrency, reject.
 				if _, exists := activeTransfers[sender]; !exists && len(activeTransfers) >= globalArgs.MaxConcurrency {
 					activeTransfersLock.Unlock()
-					log.Printf("Transfer request from %s rejected: max concurrency reached", sender)
-					_, _ = sendResponseWithDetails(sender, cmdID, command, 0, "REQUEST ALREADY IN PROGRESS")
-					continue
+					sendResponseWithDetails(sender, cmdID, command, 0, "REQUEST ALREADY IN PROGRESS")
+					continue // Skip processing this command.
 				}
-				// Mark the callsign as active if not already.
-				if _, exists := activeTransfers[sender]; !exists {
-					activeTransfers[sender] = struct{}{}
-				}
+				// For the same sender, update (or add) the active transfer with the current command ID.
+				activeTransfers[sender] = cmdID
 				activeTransfersLock.Unlock()
 			}
-			// -------------------------
 
-			var baseDir string
 			if globalArgs.PerCallsignDir != "" {
 				baseDir = filepath.Join(absPerCallsignDir, sender)
 				os.MkdirAll(baseDir, 0755)
