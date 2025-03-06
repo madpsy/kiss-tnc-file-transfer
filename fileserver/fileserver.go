@@ -75,6 +75,11 @@ var (
 	rspCacheLock sync.Mutex
 )
 
+// --- Concurrency Control ---
+// activeTransfers tracks which callsigns currently have an active transfer.
+var activeTransfers = make(map[string]struct{})
+var activeTransfersLock sync.Mutex
+
 // cacheCleanup periodically removes cache entries older than 30 seconds.
 func cacheCleanup() {
 	for {
@@ -126,23 +131,25 @@ func setConn(newConn KISSConnection) {
 
 // Command-line arguments structure.
 type Arguments struct {
-	MyCallsign      string // your own callsign
-	Connection      string // "tcp" or "serial"
-	Host            string // used with TCP
-	Port            int    // used with TCP
-	SerialPort      string // used with serial
-	Baud            int    // used with serial
-	GetCallsigns    string // comma-delimited list for filtering GET sender callsigns (supports wildcards)
-	PutCallsigns    string // comma-delimited list for filtering PUT sender callsigns (supports wildcards)
-	AdminCallsigns  string // comma-delimited list for filtering ADMIN sender callsigns (supports wildcards)
-	ServeDirectory  string // directory to serve files from (mandatory unless -per-callsign is used)
-	SaveDirectory   string // where received files should be saved (default current directory; not used in per-callsign mode)
-	SenderBinary    string // path to the binary used to send files (mandatory)
-	ReceiverBinary  string // path to the binary used to receive files (default "receiver")
-	PassthroughPort int    // TCP port for transparent passthrough (default 5011)
-	IdPeriod        int    // Minutes between sending an ID packet (0 means never)
-	PerCallsignDir  string // New: base directory for per-callsign subdirectories (mutually exclusive with serve-directory, save-directory, get-callsigns, put-callsigns, and admin-callsigns)
-	OverwriteExisting bool // New: if true, overwrite existing files instead of appending _x
+	MyCallsign        string // your own callsign
+	Connection        string // "tcp" or "serial"
+	Host              string // used with TCP
+	Port              int    // used with TCP
+	SerialPort        string // used with serial
+	Baud              int    // used with serial
+	GetCallsigns      string // comma-delimited list for filtering GET sender callsigns (supports wildcards)
+	PutCallsigns      string // comma-delimited list for filtering PUT sender callsigns (supports wildcards)
+	AdminCallsigns    string // comma-delimited list for filtering ADMIN sender callsigns (supports wildcards)
+	ServeDirectory    string // directory to serve files from (mandatory unless -per-callsign is used)
+	SaveDirectory     string // where received files should be saved (default current directory; not used in per-callsign mode)
+	SenderBinary      string // path to the binary used to send files (mandatory)
+	ReceiverBinary    string // path to the binary used to receive files (default "receiver")
+	PassthroughPort   int    // TCP port for transparent passthrough (default 5011)
+	IdPeriod          int    // Minutes between sending an ID packet (0 means never)
+	PerCallsignDir    string // New: base directory for per-callsign subdirectories (mutually exclusive with serve-directory, save-directory, get-callsigns, put-callsigns, and admin-callsigns)
+	OverwriteExisting bool   // New: if true, overwrite existing files instead of appending _x
+	// New field:
+	MaxConcurrency int // Maximum number of concurrent transfers allowed from different callsigns.
 }
 
 func parseArguments() *Arguments {
@@ -164,6 +171,8 @@ func parseArguments() *Arguments {
 	flag.IntVar(&args.IdPeriod, "id-period", 30, "Minutes between sending an ID packet (0 means never)")
 	flag.StringVar(&args.PerCallsignDir, "per-callsign", "", "Base directory for per-callsign subdirectories (mutually exclusive with serve-directory, save-directory, get-callsigns, put-callsigns, and admin-callsigns)")
 	flag.BoolVar(&args.OverwriteExisting, "overwrite-existing", false, "Overwrite existing files instead of appending _x to file names")
+	// New argument for concurrency control.
+	flag.IntVar(&args.MaxConcurrency, "max-concurrency", 1, "Maximum number of concurrent transfers allowed from different callsigns")
 	flag.Parse()
 
 	if args.PerCallsignDir != "" {
@@ -281,18 +290,18 @@ func (s *SerialKISSConnection) Close() error {
 
 // createRSPPacket builds the RSP packet with an AX.25 header.
 func createRSPPacket(destCallsign, srcCallsign, cmdID string, status int, msg string) []byte {
-    // Build header as before.
-    destAddr := encodeAX25Address(destCallsign, false)
-    srcAddr := encodeAX25Address(srcCallsign, true)
-    header := append(append(destAddr, srcAddr...), 0x03, 0xF0)
+	// Build header as before.
+	destAddr := encodeAX25Address(destCallsign, false)
+	srcAddr := encodeAX25Address(srcCallsign, true)
+	header := append(append(destAddr, srcAddr...), 0x03, 0xF0)
 
-    // New variable-length info field: cmdID:RSP:<status>:<msg>
-    responseText := fmt.Sprintf("%s:RSP:%d:%s", cmdID, status, msg)
-    infoField := []byte(responseText)
+	// New variable-length info field: cmdID:RSP:<status>:<msg>
+	responseText := fmt.Sprintf("%s:RSP:%d:%s", cmdID, status, msg)
+	infoField := []byte(responseText)
 
-    // Combine header and info field
-    packet := append(header, infoField...)
-    return packet
+	// Combine header and info field
+	packet := append(header, infoField...)
+	return packet
 }
 
 // Helper: unescapeData reverses KISS escaping.
@@ -437,42 +446,42 @@ func decodeAX25Address(addr []byte) string {
 // parseCommandPacket now extracts the 2-character ID after "CMD:".
 // Note: the packet now must be at least 144 bytes long (16-byte header + 128-byte info field).
 func parseCommandPacket(packet []byte) (sender, cmdID, command string, ok bool) {
-    // Ensure packet has at least the header length.
-    if len(packet) < 16 {
-        return "", "", "", false
-    }
-    header := packet[:16]
-    dest := decodeAX25Address(header[0:7])
-    if dest != serverCallsign {
-        log.Printf("Dropping packet: destination %s does not match our callsign %s", dest, serverCallsign)
-        return "", "", "", false
-    }
-    // The info field now extends from byte 16 to the end.
-    infoField := packet[16:]
-    infoStr := strings.TrimSpace(string(infoField))
-    
-    // Expected format: "cmdID:CMD:<cmd text>"
-    parts := strings.SplitN(infoStr, ":", 3)
-    if len(parts) != 3 {
-        log.Printf("Invalid CMD format: %s", infoStr)
-        return "", "", "", false
-    }
-    cmdID = parts[0]
-    if strings.ToUpper(parts[1]) != "CMD" {
-        log.Printf("Expected 'CMD' in the packet, got: %s", parts[1])
-        return "", "", "", false
-    }
-    command = parts[2]
-    sender = decodeAX25Address(header[7:14])
-    return sender, cmdID, command, true
+	// Ensure packet has at least the header length.
+	if len(packet) < 16 {
+		return "", "", "", false
+	}
+	header := packet[:16]
+	dest := decodeAX25Address(header[0:7])
+	if dest != serverCallsign {
+		log.Printf("Dropping packet: destination %s does not match our callsign %s", dest, serverCallsign)
+		return "", "", "", false
+	}
+	// The info field now extends from byte 16 to the end.
+	infoField := packet[16:]
+	infoStr := strings.TrimSpace(string(infoField))
+
+	// Expected format: "cmdID:CMD:<cmd text>"
+	parts := strings.SplitN(infoStr, ":", 3)
+	if len(parts) != 3 {
+		log.Printf("Invalid CMD format: %s", infoStr)
+		return "", "", "", false
+	}
+	cmdID = parts[0]
+	if strings.ToUpper(parts[1]) != "CMD" {
+		log.Printf("Expected 'CMD' in the packet, got: %s", parts[1])
+		return "", "", "", false
+	}
+	command = parts[2]
+	sender = decodeAX25Address(header[7:14])
+	return sender, cmdID, command, true
 }
 
 // createResponsePacket builds the response payload.
 // The response format is "RSP:<cmdID> <status> <message>" padded or truncated to 128 bytes.
 func createResponsePacket(cmdID string, status int, msg string) []byte {
-    // New variable-length response format: cmdID:RSP:<status>:<msg>
-    responseText := fmt.Sprintf("%s:RSP:%d:%s", cmdID, status, msg)
-    return []byte(responseText)
+	// New variable-length response format: cmdID:RSP:<status>:<msg>
+	responseText := fmt.Sprintf("%s:RSP:%d:%s", cmdID, status, msg)
+	return []byte(responseText)
 }
 
 func callsignAllowedForGet(cs string) bool {
@@ -749,6 +758,10 @@ func invokeSenderBinary(args *Arguments, receiverCallsign, fileName, inputData, 
 	if err := cmd.Start(); err != nil {
 		log.Printf("Error starting sender binary: %v", err)
 		runningSender.Delete(receiverCallsign)
+		// Remove active transfer on error.
+		activeTransfersLock.Lock()
+		delete(activeTransfers, receiverCallsign)
+		activeTransfersLock.Unlock()
 		return
 	}
 	go func() {
@@ -776,6 +789,10 @@ func invokeSenderBinary(args *Arguments, receiverCallsign, fileName, inputData, 
 			log.Printf("Sender binary completed successfully.")
 		}
 		runningSender.Delete(receiverCallsign)
+		// Remove the callsign from activeTransfers.
+		activeTransfersLock.Lock()
+		delete(activeTransfers, receiverCallsign)
+		activeTransfersLock.Unlock()
 	}()
 }
 
@@ -826,6 +843,9 @@ func invokeReceiverBinary(args *Arguments, senderCallsign, fileName, cmdID, base
 
 	if err := cmd.Start(); err != nil {
 		runningReceiver.Delete(senderCallsign)
+		activeTransfersLock.Lock()
+		delete(activeTransfers, senderCallsign)
+		activeTransfersLock.Unlock()
 		return fmt.Errorf("Error starting receiver binary: %v", err)
 	}
 
@@ -838,6 +858,9 @@ func invokeReceiverBinary(args *Arguments, senderCallsign, fileName, cmdID, base
 		if waitErr != nil {
 			log.Printf("Receiver binary exited with error: %v", waitErr)
 			runningReceiver.Delete(senderCallsign)
+			activeTransfersLock.Lock()
+			delete(activeTransfers, senderCallsign)
+			activeTransfersLock.Unlock()
 			return
 		} else {
 			log.Printf("Receiver binary completed successfully.")
@@ -874,6 +897,10 @@ func invokeReceiverBinary(args *Arguments, senderCallsign, fileName, cmdID, base
 			}
 		}
 		runningReceiver.Delete(senderCallsign)
+		// Remove the callsign from activeTransfers.
+		activeTransfersLock.Lock()
+		delete(activeTransfers, senderCallsign)
+		activeTransfersLock.Unlock()
 	}()
 
 	return nil
@@ -881,11 +908,11 @@ func invokeReceiverBinary(args *Arguments, senderCallsign, fileName, cmdID, base
 
 // --- Periodic ID Packet Functions ---
 func createIDPacket() []byte {
-    dest := encodeAX25Address("BEACON", false)
-    src := encodeAX25Address(serverCallsign, true)
-    header := append(append(dest, src...), 0x03, 0xF0)
-    info := ">KISS File Server https://github.com/madpsy/kiss-tnc-file-transfer"
-    return append(header, []byte(info)...)
+	dest := encodeAX25Address("BEACON", false)
+	src := encodeAX25Address(serverCallsign, true)
+	header := append(append(dest, src...), 0x03, 0xF0)
+	info := ">KISS File Server https://github.com/madpsy/kiss-tnc-file-transfer"
+	return append(header, []byte(info)...)
 }
 
 func sendIDPacket() {
@@ -1084,6 +1111,25 @@ func main() {
 			}
 
 			upperCmd := strings.ToUpper(command)
+
+			// --- CONCURRENCY CHECK ---
+			if strings.HasPrefix(upperCmd, "GET ") || strings.HasPrefix(upperCmd, "LIST") || strings.HasPrefix(upperCmd, "PUT ") {
+				activeTransfersLock.Lock()
+				// If this callsign is not already active and we've reached max concurrency, reject the command.
+				if _, exists := activeTransfers[sender]; !exists && len(activeTransfers) >= globalArgs.MaxConcurrency {
+					activeTransfersLock.Unlock()
+					log.Printf("Transfer request from %s rejected: max concurrency reached", sender)
+					_, _ = sendResponseWithDetails(sender, cmdID, command, 0, "REQUEST ALREADY IN PROGRESS")
+					continue
+				}
+				// Mark the callsign as active if not already.
+				if _, exists := activeTransfers[sender]; !exists {
+					activeTransfers[sender] = struct{}{}
+				}
+				activeTransfersLock.Unlock()
+			}
+			// -------------------------
+
 			var baseDir string
 			if globalArgs.PerCallsignDir != "" {
 				baseDir = filepath.Join(absPerCallsignDir, sender)
