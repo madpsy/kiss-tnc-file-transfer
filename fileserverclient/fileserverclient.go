@@ -390,48 +390,36 @@ func buildAX25Header(source, destination string) []byte {
 	return header
 }
 
-// buildCommandPacket creates an 144-byte command packet.
-// The new format is "CMD:" + <2-char cmdID> + " " + <command text>
-// (The rest of the 128-byte info field is padded or truncated.)
 func buildCommandPacket(myCallsign, fileServerCallsign, commandText string) ([]byte, string) {
-	header := buildAX25Header(myCallsign, fileServerCallsign)
-	cmdID := generateCmdID() // Randomized CMD ID.
-	info := "CMD:" + cmdID + " " + commandText
-	if len(info) > 128 {
-		info = info[:128]
-	} else {
-		info = info + strings.Repeat(" ", 128-len(info))
-	}
-	packet := append(header, []byte(info)...)
-	return packet, cmdID
+    header := buildAX25Header(myCallsign, fileServerCallsign)
+    cmdID := generateCmdID() // Randomized CMD ID.
+    // New format: "cmdID:CMD:<cmd text>"
+    info := fmt.Sprintf("%s:CMD:%s", cmdID, commandText)
+    packet := append(header, []byte(info)...)
+    return packet, cmdID
 }
 
-// parseResponsePacket parses a 128-byte response info field in the format:
-// "RSP:<cmdID> <status> <message>".
+
 func parseResponsePacket(payload []byte) (cmdID string, status int, msg string, ok bool) {
-	str := strings.TrimSpace(string(payload))
-	if !strings.HasPrefix(str, "RSP:") {
-		return "", 0, "", false
-	}
-	// Expected format: RSP:XX <status> <message>
-	parts := strings.Fields(str)
-	if len(parts) < 2 {
-		return "", 0, "", false
-	}
-	if len(parts[0]) < 5 {
-		return "", 0, "", false
-	}
-	cmdID = parts[0][4:6]
-	st, err := strconv.Atoi(parts[1])
-	if err != nil {
-		return "", 0, "", false
-	}
-	status = st
-	if len(parts) > 2 {
-		msg = strings.Join(parts[2:], " ")
-	}
-	return cmdID, status, msg, true
+    str := strings.TrimSpace(string(payload))
+    // Expected format: "cmdID:RSP:<status>:<msg>"
+    parts := strings.SplitN(str, ":", 4)
+    if len(parts) != 4 {
+        return "", 0, "", false
+    }
+    cmdID = parts[0]
+    if strings.ToUpper(parts[1]) != "RSP" {
+        return "", 0, "", false
+    }
+    st, err := strconv.Atoi(parts[2])
+    if err != nil {
+        return "", 0, "", false
+    }
+    status = st
+    msg = parts[3]
+    return cmdID, status, msg, true
 }
+
 
 // ------------------ Broadcaster ------------------
 
@@ -557,57 +545,47 @@ func startUnderlyingReader(underlying io.Reader, b *Broadcaster) {
 }
 
 // waitForResponse waits for a complete KISS frame from the broadcaster that contains a response.
-// It returns the unescaped 128-byte payload.
 func waitForResponse(b *Broadcaster, timeout time.Duration, expectedCmdID string) ([]byte, error) {
-	sub := b.Subscribe()
-	defer b.Unsubscribe(sub)
-	timeoutTimer := time.NewTimer(timeout)
-	defer timeoutTimer.Stop()
-	var buffer []byte
-	for {
-		select {
-		case data := <-sub:
-			buffer = append(buffer, data...)
-			frames, remaining := extractKISSFrames(buffer)
-			buffer = remaining
-			for _, frame := range frames {
-				if len(frame) < 2 || frame[0] != KISS_FLAG || frame[len(frame)-1] != KISS_FLAG {
-					continue
-				}
-				inner := frame[2 : len(frame)-1]
-				payload := unescapeData(inner)
-				var info []byte
-				if len(payload) == 144 {
-					// New RSP packet with header: skip the 16-byte header.
-					info = payload[16:]
-				} else if len(payload) == 128 {
-					// Old style RSP packet without header.
-					info = payload
-				} else {
-					if debugEnabled {
-						log.Printf("Ignoring frame with unexpected payload length: %d", len(payload))
-					}
-					continue
-				}
-				respCmdID, _, _, ok := parseResponsePacket(info)
-				if !ok {
-					if debugEnabled {
-						log.Printf("Malformed RSP info field")
-					}
-					continue
-				}
-				if respCmdID != expectedCmdID {
-					if debugEnabled {
-						log.Printf("Ignoring response with mismatched CMD ID: got %s, expected %s", respCmdID, expectedCmdID)
-					}
-					continue
-				}
-				return info, nil
-			}
-		case <-timeoutTimer.C:
-			return nil, fmt.Errorf("timeout waiting for response with CMD ID %s", expectedCmdID)
-		}
-	}
+    sub := b.Subscribe()
+    defer b.Unsubscribe(sub)
+    timeoutTimer := time.NewTimer(timeout)
+    defer timeoutTimer.Stop()
+    var buffer []byte
+    for {
+        select {
+        case data := <-sub:
+            buffer = append(buffer, data...)
+            frames, remaining := extractKISSFrames(buffer)
+            buffer = remaining
+            for _, frame := range frames {
+                if len(frame) < 2 || frame[0] != KISS_FLAG || frame[len(frame)-1] != KISS_FLAG {
+                    continue
+                }
+                inner := frame[2 : len(frame)-1]
+                payload := unescapeData(inner)
+                if len(payload) <= 16 {
+                    continue
+                }
+                info := payload[16:] // Extract info field after the 16-byte header.
+                respCmdID, _, _, ok := parseResponsePacket(info)
+                if !ok {
+                    if debugEnabled {
+                        log.Printf("Malformed RSP info field")
+                    }
+                    continue
+                }
+                if respCmdID != expectedCmdID {
+                    if debugEnabled {
+                        log.Printf("Ignoring response with mismatched CMD ID: got %s, expected %s", respCmdID, expectedCmdID)
+                    }
+                    continue
+                }
+                return info, nil
+            }
+        case <-timeoutTimer.C:
+            return nil, fmt.Errorf("timeout waiting for response with CMD ID %s", expectedCmdID)
+        }
+    }
 }
 
 // extractKISSFrames extracts complete KISS frames from a buffer.

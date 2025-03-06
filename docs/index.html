@@ -1139,16 +1139,17 @@ html += `<tr>
             let infoText = new TextDecoder().decode(infoField);
         
             // --- New: Process RSP packets (responses to CMD packets) ---
-            if (infoText.startsWith("RSP:")) {
-              const rsp = parseRspPacket(infoField);
-              if (rsp.ok && pendingCmdResponses[rsp.cmdID]) {
-                pendingCmdResponses[rsp.cmdID].resolve(rsp);
-                delete pendingCmdResponses[rsp.cmdID];
-              } else {
-                console.warn("Received RSP for unknown CMD ID or with error:", rsp.error);
-              }
-              return;
-            } 
+if (infoText.split(":")[1] && infoText.split(":")[1].toUpperCase() === "RSP") {
+  const rsp = parseRspPacket(infoField);
+  if (rsp.ok && pendingCmdResponses[rsp.cmdID]) {
+    pendingCmdResponses[rsp.cmdID].resolve(rsp);
+    delete pendingCmdResponses[rsp.cmdID];
+  } else {
+    console.warn("Received RSP for unknown CMD ID or with error:", rsp.error);
+  }
+  return;
+}
+
             
             if (infoText.indexOf(":ACK:FIN-ACK") !== -1) {
               let parts = infoText.split(":"); // Expected format: fileId, "ACK", "FIN-ACK"
@@ -2143,61 +2144,42 @@ html += `<tr>
     
         
         // Build a CMD packet given your callsigns and command text.
-        // The packet consists of a 16-byte AX.25 header plus a 64-byte info field.
-        function buildCmdPacket(myCallsign, fileServerCallsign, commandText) {
-          // Use your existing helper to build the AX.25 header (assumed to return a Uint8Array of length 16).
-          const header = buildAX25Header(myCallsign, fileServerCallsign);
-          // Generate a two-character command ID.
-          const cmdID = generateTwoCharID();
-          // Build the info field starting with "CMD:" + cmdID + " " followed by the command text.
-          let infoStr = "CMD:" + cmdID + " " + commandText;
-          // Ensure the info field is exactly 64 characters.
-          if (infoStr.length > 128) {
-            infoStr = infoStr.substring(0, 128);
-          } else {
-            infoStr = infoStr.padEnd(128, ' ');
-          }
-          const encoder = new TextEncoder();
-          const infoBytes = encoder.encode(infoStr); // Should yield 64 bytes (assuming ASCII)
-          // Concatenate the header and info field into an 80-byte packet.
-          const packet = new Uint8Array(header.length + infoBytes.length);
-          packet.set(header, 0);
-          packet.set(infoBytes, header.length);
-          return { packet, cmdID };
-        }
+function buildCmdPacket(myCallsign, fileServerCallsign, commandText) {
+  const header = buildAX25Header(myCallsign, fileServerCallsign);
+  const cmdID = generateTwoCharID();
+  // New format: "cmdID:CMD:<command text>"
+  let infoStr = `${cmdID}:CMD:${commandText}`;
+  const encoder = new TextEncoder();
+  const infoBytes = encoder.encode(infoStr); // No fixed-length padding/truncation
+  const packet = new Uint8Array(header.length + infoBytes.length);
+  packet.set(header, 0);
+  packet.set(infoBytes, header.length);
+  return { packet, cmdID };
+}
+
         
-        // Parse an RSP packet's info field. Expected format:
-        // "RSP:" + <2-character cmdID> + " " + <status> + " " + <message>
-        // Returns an object with the parsed cmdID, status (as a number), message, and an ok flag.
-        function parseRspPacket(payload) {
-          // Assume 'payload' is a Uint8Array (the 64-byte info field after unescaping and trimming header if needed)
-          const decoder = new TextDecoder();
-          const str = decoder.decode(payload).trim();
-          
-          if (!str.startsWith("RSP:")) {
-            return { ok: false, error: "Not an RSP packet" };
-          }
-          
-          // Split the string by whitespace.
-          const parts = str.split(/\s+/);
-          if (parts.length < 2) {
-            return { ok: false, error: "Incomplete RSP packet" };
-          }
-          
-          // The first part should be "RSP:XX" where XX is the cmdID.
-          const rspHeader = parts[0];
-          if (rspHeader.length < 5) {
-            return { ok: false, error: "Invalid RSP header" };
-          }
-          const cmdID = rspHeader.substring(4, 6);
-          const status = parseInt(parts[1], 10);
-          if (isNaN(status)) {
-            return { ok: false, error: "Invalid status value" };
-          }
-          // The remainder of the parts (if any) form the response message.
-          const message = parts.slice(2).join(" ");
-          return { ok: true, cmdID, status, message };
-        }
+function parseRspPacket(payload) {
+  // Assume 'payload' is a Uint8Array containing the variable-length RSP info field.
+  const decoder = new TextDecoder();
+  const str = decoder.decode(payload).trim();
+  
+  // Expected new format: "cmdID:RSP:<status>:<message>"
+  const parts = str.split(":", 4);
+  if (parts.length < 4) {
+    return { ok: false, error: "Incomplete RSP packet" };
+  }
+  const cmdID = parts[0];
+  if (parts[1].toUpperCase() !== "RSP") {
+    return { ok: false, error: "Not an RSP packet" };
+  }
+  const status = parseInt(parts[2], 10);
+  if (isNaN(status)) {
+    return { ok: false, error: "Invalid status value" };
+  }
+  const message = parts[3];
+  return { ok: true, cmdID, status, message };
+}
+
         
         // Optional: Send a CMD packet over the active connection and wait for its corresponding RSP.
         // This function uses a pending responses map to associate incoming responses with sent commands.

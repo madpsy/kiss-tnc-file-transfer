@@ -281,26 +281,18 @@ func (s *SerialKISSConnection) Close() error {
 
 // createRSPPacket builds the RSP packet with an AX.25 header.
 func createRSPPacket(destCallsign, srcCallsign, cmdID string, status int, msg string) []byte {
-	// Build the AX.25 header:
-	//  - Destination: original sender's callsign (no "last" flag).
-	//  - Source: our server's callsign (with "last" flag set).
-	destAddr := encodeAX25Address(destCallsign, false)
-	srcAddr := encodeAX25Address(srcCallsign, true)
-	// Append control (0x03) and PID (0xF0) bytes to complete the 16-byte header.
-	header := append(append(destAddr, srcAddr...), 0x03, 0xF0)
+    // Build header as before.
+    destAddr := encodeAX25Address(destCallsign, false)
+    srcAddr := encodeAX25Address(srcCallsign, true)
+    header := append(append(destAddr, srcAddr...), 0x03, 0xF0)
 
-	// Build the info field (128 bytes) with the RSP message.
-	responseText := fmt.Sprintf("RSP:%s %d %s", cmdID, status, msg)
-	if len(responseText) > 128 {
-		responseText = responseText[:128]
-	} else {
-		responseText = responseText + strings.Repeat(" ", 128-len(responseText))
-	}
-	infoField := []byte(responseText)
+    // New variable-length info field: cmdID:RSP:<status>:<msg>
+    responseText := fmt.Sprintf("%s:RSP:%d:%s", cmdID, status, msg)
+    infoField := []byte(responseText)
 
-	// Combine header and info field to form the full packet.
-	packet := append(header, infoField...)
-	return packet
+    // Combine header and info field
+    packet := append(header, infoField...)
+    return packet
 }
 
 // Helper: unescapeData reverses KISS escaping.
@@ -445,40 +437,42 @@ func decodeAX25Address(addr []byte) string {
 // parseCommandPacket now extracts the 2-character ID after "CMD:".
 // Note: the packet now must be at least 144 bytes long (16-byte header + 128-byte info field).
 func parseCommandPacket(packet []byte) (sender, cmdID, command string, ok bool) {
-	if len(packet) < 144 {
-		return "", "", "", false
-	}
-	header := packet[:16]
-	dest := decodeAX25Address(header[0:7])
-	if dest != serverCallsign {
-		log.Printf("Dropping packet: destination %s does not match our callsign %s", dest, serverCallsign)
-		return "", "", "", false
-	}
-	infoField := packet[16:144]
-	infoStr := strings.TrimSpace(string(infoField))
-	if !strings.HasPrefix(infoStr, "CMD:") {
-		return "", "", "", false
-	}
-	// Ensure there is room for a 2-character ID
-	if len(infoStr) < 6 {
-		return "", "", "", false
-	}
-	cmdID = infoStr[4:6]
-	command = strings.TrimSpace(infoStr[6:])
-	sender = decodeAX25Address(header[7:14])
-	return sender, cmdID, command, true
+    // Ensure packet has at least the header length.
+    if len(packet) < 16 {
+        return "", "", "", false
+    }
+    header := packet[:16]
+    dest := decodeAX25Address(header[0:7])
+    if dest != serverCallsign {
+        log.Printf("Dropping packet: destination %s does not match our callsign %s", dest, serverCallsign)
+        return "", "", "", false
+    }
+    // The info field now extends from byte 16 to the end.
+    infoField := packet[16:]
+    infoStr := strings.TrimSpace(string(infoField))
+    
+    // Expected format: "cmdID:CMD:<cmd text>"
+    parts := strings.SplitN(infoStr, ":", 3)
+    if len(parts) != 3 {
+        log.Printf("Invalid CMD format: %s", infoStr)
+        return "", "", "", false
+    }
+    cmdID = parts[0]
+    if strings.ToUpper(parts[1]) != "CMD" {
+        log.Printf("Expected 'CMD' in the packet, got: %s", parts[1])
+        return "", "", "", false
+    }
+    command = parts[2]
+    sender = decodeAX25Address(header[7:14])
+    return sender, cmdID, command, true
 }
 
 // createResponsePacket builds the response payload.
 // The response format is "RSP:<cmdID> <status> <message>" padded or truncated to 128 bytes.
 func createResponsePacket(cmdID string, status int, msg string) []byte {
-	responseText := fmt.Sprintf("RSP:%s %d %s", cmdID, status, msg)
-	if len(responseText) > 128 {
-		responseText = responseText[:128]
-	} else {
-		responseText = responseText + strings.Repeat(" ", 128-len(responseText))
-	}
-	return []byte(responseText)
+    // New variable-length response format: cmdID:RSP:<status>:<msg>
+    responseText := fmt.Sprintf("%s:RSP:%d:%s", cmdID, status, msg)
+    return []byte(responseText)
 }
 
 func callsignAllowedForGet(cs string) bool {
@@ -887,16 +881,11 @@ func invokeReceiverBinary(args *Arguments, senderCallsign, fileName, cmdID, base
 
 // --- Periodic ID Packet Functions ---
 func createIDPacket() []byte {
-	dest := encodeAX25Address("BEACON", false)
-	src := encodeAX25Address(serverCallsign, true)
-	header := append(append(dest, src...), 0x03, 0xF0)
-	info := ">KISS File Server https://github.com/madpsy/kiss-tnc-file-transfer"
-	if len(info) > 128 {
-		info = info[:128]
-	} else {
-		info += strings.Repeat(" ", 128-len(info))
-	}
-	return append(header, []byte(info)...)
+    dest := encodeAX25Address("BEACON", false)
+    src := encodeAX25Address(serverCallsign, true)
+    header := append(append(dest, src...), 0x03, 0xF0)
+    info := ">KISS File Server https://github.com/madpsy/kiss-tnc-file-transfer"
+    return append(header, []byte(info)...)
 }
 
 func sendIDPacket() {

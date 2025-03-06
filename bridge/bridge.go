@@ -204,7 +204,7 @@ func parsePacket(packet []byte) *Packet {
 	if len(packet) < 16 {
 		return nil
 	}
-	// Always decode sender and receiver from the AX.25 header.
+	// Always decode sender and receiver from the header.
 	sender := decodeAX25Address(packet[7:14])
 	receiver := decodeAX25Address(packet[0:7])
 	// Get everything past the 16-byte header.
@@ -213,27 +213,25 @@ func parsePacket(packet []byte) *Packet {
 		return nil
 	}
 
-	// First, check for CMD/RSP packets.
-	if len(packet) >= 80 {
-		rspInfo := packet[16:80]
-		strInfo := string(rspInfo)
-		if strings.HasPrefix(strInfo, "CMD:") || strings.HasPrefix(strInfo, "RSP:") {
-			return &Packet{
-				Type:     "cmdrsp",
-				Sender:   sender,
-				Receiver: receiver,
-				RawInfo:  strInfo,
-			}
+	// ----- CMD/RSP Packet Branch -----
+	// New format: "cmdID:CMD:<cmd text>" or "cmdID:RSP:<status>:<msg>"
+	fields := strings.SplitN(string(infoAndPayload), ":", 4)
+	if len(fields) >= 2 && (strings.ToUpper(fields[1]) == "CMD" || strings.ToUpper(fields[1]) == "RSP") {
+		return &Packet{
+			Type:     "cmdrsp",
+			Sender:   sender,
+			Receiver: receiver,
+			RawInfo:  string(infoAndPayload),
 		}
 	}
 
-	// Next, check for ACK packets.
-	// New ACK format is: "fileID:ACK:ackValue:" (fields separated by colons)
+	// ----- ACK Packet Branch -----
+	// New ACK format: "fileID:ACK:ackValue:" (fields separated by colons)
 	if strings.Contains(string(infoAndPayload), "ACK:") {
-		fields := strings.Split(string(infoAndPayload), ":")
-		if len(fields) >= 3 {
-			fileID := strings.TrimSpace(fields[0])
-			ackVal := strings.TrimSpace(fields[2])
+		ackFields := strings.Split(string(infoAndPayload), ":")
+		if len(ackFields) >= 3 {
+			fileID := strings.TrimSpace(ackFields[0])
+			ackVal := strings.TrimSpace(ackFields[2])
 			return &Packet{
 				Type:     "ack",
 				Sender:   sender,
@@ -258,7 +256,7 @@ func parsePacket(packet []byte) *Packet {
 		}
 	}
 
-	// Otherwise, assume it is a data packet.
+	// ----- DATA Packet Branch -----
 	var infoField, payload []byte
 	// Determine if this is the header packet (seq == 1) or a regular data packet.
 	// Header packets have a 17-byte info field where positions 3–7 equal "0001".
@@ -273,42 +271,42 @@ func parsePacket(packet []byte) *Packet {
 	}
 
 	infoStr := string(infoField)
-	fields := strings.Split(infoStr, ":")
-	if len(fields) < 2 {
+	parts := strings.Split(infoStr, ":") // Declare local variable "parts"
+	if len(parts) < 2 {
 		return nil
 	}
-	fileID := strings.TrimSpace(fields[0])
+	fileID := strings.TrimSpace(parts[0])
 	var seq, burstTo, total int
 	// For header packet: info field length is 17 bytes, format: fileID:0001XXXX/YYYY:
 	if len(infoField) == 17 {
 		seq = 1
-		if len(fields[1]) < 9 {
+		if len(parts[1]) < 9 {
 			return nil
 		}
-		// BurstTo is in characters 4 to 8 of fields[1].
-		burstPart := fields[1][4:8]
+		// BurstTo is in characters 4 to 8 of parts[1].
+		burstPart := parts[1][4:8]
 		b, err := strconv.ParseInt(burstPart, 16, 32)
 		if err != nil {
 			return nil
 		}
 		burstTo = int(b)
-		// Total is after the "/" in fields[1].
-		parts := strings.Split(fields[1], "/")
-		if len(parts) < 2 {
+		// Total is after the "/" in parts[1].
+		temp := strings.Split(parts[1], "/")
+		if len(temp) < 2 {
 			return nil
 		}
-		totalVal, err := strconv.ParseInt(parts[1], 16, 32)
+		totalVal, err := strconv.ParseInt(temp[1], 16, 32)
 		if err != nil {
 			return nil
 		}
 		total = int(totalVal)
 	} else if len(infoField) == 12 {
 		// Data packet: format: fileID:SSSSBBBB:
-		if len(fields[1]) < 8 {
+		if len(parts[1]) < 8 {
 			return nil
 		}
-		seqPart := fields[1][:4]
-		burstPart := fields[1][4:8]
+		seqPart := parts[1][:4]
+		burstPart := parts[1][4:8]
 		s, err1 := strconv.ParseInt(seqPart, 16, 32)
 		b, err2 := strconv.ParseInt(burstPart, 16, 32)
 		if err1 != nil || err2 != nil {
@@ -330,7 +328,6 @@ func parsePacket(packet []byte) *Packet {
 			}
 		}
 	}
-
 	return &Packet{
 		Type:           "data",
 		Sender:         sender,
@@ -344,9 +341,6 @@ func parsePacket(packet []byte) *Packet {
 		EncodingMethod: encodingMethod,
 	}
 }
-
-
-
 
 // -----------------------------------------------------------------------------
 // KISSConnection Interface and Implementations (TCP and Serial)

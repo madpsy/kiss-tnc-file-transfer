@@ -269,23 +269,21 @@ func parsePacket(rawFrame []byte) *Packet {
 	}
 
 	// ----- CMD/RSP Packet Branch -----
-	if strings.HasPrefix(prefix, "CMD:") || strings.HasPrefix(prefix, "RSP:") {
-		// Decode the addresses from the header.
-		infoStr := string(infoAndPayload)
+	// New format: "cmdID:CMD:<cmd text>" or "cmdID:RSP:<status>:<msg>"
+	fields := strings.SplitN(string(infoAndPayload), ":", 4)
+	if len(fields) >= 2 && (strings.ToUpper(fields[1]) == "CMD" || strings.ToUpper(fields[1]) == "RSP") {
 		return &Packet{
 			Type:     "cmdrsp",
 			Sender:   sender,
 			Receiver: receiver,
-			FileID:   "", // CMD/RSP packets do not include a fileID.
-			RawInfo:  infoStr,
+			FileID:   "",
+			RawInfo:  string(infoAndPayload),
 			RawFrame: rawFrame,
 		}
 	}
 
 	// ----- DATA Packet Branch -----
 	var infoField, payload []byte
-	// If the infoAndPayload has at least 27 bytes and bytes 23-27 equal "0001",
-	// treat it as a header packet.
 	if len(infoAndPayload) >= 27 && string(infoAndPayload[23:27]) == "0001" {
 		idx := bytes.IndexByte(infoAndPayload[27:], ':')
 		if idx == -1 {
@@ -306,7 +304,7 @@ func parsePacket(rawFrame []byte) *Packet {
 	}
 	var encodingMethod byte = 0
 	infoStr := string(infoField)
-	parts := strings.Split(infoStr, ":")
+	parts := strings.Split(infoStr, ":") // Declare "parts" here.
 	if len(parts) < 2 {
 		debugf("Insufficient parts in info field: %s", infoStr)
 		return nil
@@ -354,7 +352,6 @@ func parsePacket(rawFrame []byte) *Packet {
 		RawFrame:       rawFrame,
 	}
 }
-
 
 func min(a, b int) int {
 	if a < b {

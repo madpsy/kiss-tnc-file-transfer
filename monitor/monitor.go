@@ -63,11 +63,10 @@ var decodeAx25 bool
 // decodeFileTransferPacket attempts to decode a file-transfer packet,
 // and now also CMD/RSP packets.
 func decodeFileTransferPacket(packet []byte) string {
-	// First, remove the KISS command byte.
+	// Remove the KISS command byte.
 	if len(packet) < 1 {
 		return ""
 	}
-	// Remove the first byte (e.g. KISS_CMD_DATA)
 	packet = packet[1:]
 
 	// Require at least 16 bytes for the AX.25 header.
@@ -76,155 +75,146 @@ func decodeFileTransferPacket(packet []byte) string {
 	}
 	totalPacketSize := len(packet)
 
-	// Decode the AX.25 header addresses.
+	// Decode the AX.25 header.
 	header := packet[:16]
 	dest := decodeAX25Address(header[0:7])
 	src := decodeAX25Address(header[7:14])
-	// For file-transfer packets, we now ignore any sender/receiver in the info field.
+	// For file-transfer packets, we use the decoded addresses.
 	sender := src
 	receiver := dest
 
-	// First, check if this is a CMD or RSP packet.
-	if len(packet) >= 80 {
-		infoField := packet[16:80]
+	// If there is any info beyond the header, process it.
+	if len(packet) > 16 {
+		infoField := packet[16:]
 		infoStr := strings.TrimSpace(string(infoField))
-		if strings.HasPrefix(infoStr, "CMD:") || strings.HasPrefix(infoStr, "RSP:") {
-			if strings.HasPrefix(infoStr, "CMD:") {
-				if len(infoStr) < 6 {
-					return ""
-				}
-				cmdID := infoStr[4:6]
-				command := strings.TrimSpace(infoStr[6:])
+		// Split the info field using colon as delimiter.
+		parts := strings.Split(infoStr, ":")
+		if len(parts) >= 3 {
+			// Check for a CMD packet: expected format "cmdID:CMD:<cmd text>"
+			if strings.ToUpper(parts[1]) == "CMD" {
+				cmdID := parts[0]
+				command := strings.Join(parts[2:], ":")
 				return fmt.Sprintf("CMD Packet:\n  Total Packet Size: %d bytes\n  Destination: %s\n  Source: %s\n  Command ID: %s\n  Command: %s",
 					totalPacketSize, dest, src, cmdID, command)
 			}
-			if strings.HasPrefix(infoStr, "RSP:") {
-				if len(infoStr) < 6 {
-					return ""
-				}
-				cmdID := infoStr[4:6]
-				fields := strings.Fields(infoStr)
-				if len(fields) < 3 {
-					return ""
-				}
+			// Check for an RSP packet: expected format "cmdID:RSP:<status>:<msg>"
+			if strings.ToUpper(parts[1]) == "RSP" && len(parts) >= 4 {
+				cmdID := parts[0]
+				status := parts[2]
 				statusWord := "failed"
-				if fields[1] == "1" {
+				if status == "1" {
 					statusWord = "success"
 				}
-				msg := strings.Join(fields[2:], " ")
+				msg := strings.Join(parts[3:], ":")
 				return fmt.Sprintf("RSP Packet:\n  Total Packet Size: %d bytes\n  Destination: %s\n  Source: %s\n  Command ID: %s\n  Status: %s\n  Message: %s",
 					totalPacketSize, dest, src, cmdID, statusWord, msg)
 			}
 		}
-	}
 
-	// Now, process file-transfer packets.
-	// The info field and payload follow the 16-byte header.
-	infoAndPayload := packet[16:]
-	if len(infoAndPayload) == 0 {
-		return ""
-	}
-
-	var infoField, payload []byte
-
-	// If this packet contains "ACK:", treat the entire remainder as the info field.
-	if strings.Contains(string(infoAndPayload), "ACK:") {
-		infoField = infoAndPayload
-		payload = []byte{}
-	} else if len(infoAndPayload) >= 17 && string(infoAndPayload[3:7]) == "0001" {
-		// Header packet (seq == 1): first 17 bytes are the info field; remaining bytes are the header payload.
-		infoField = infoAndPayload[:17]
-		payload = infoAndPayload[17:]
-	} else if len(infoAndPayload) >= 12 {
-		// Data packet: 12-byte info field.
-		infoField = infoAndPayload[:12]
-		payload = infoAndPayload[12:]
-	} else {
-		return ""
-	}
-
-	infoStr := string(infoField)
-	parts := strings.Split(infoStr, ":")
-	if len(parts) < 3 {
-		return ""
-	}
-
-	// In the new design the first field is the fileID.
-	fileID := strings.TrimSpace(parts[0])
-
-	// ACK packet handling.
-	if strings.ToUpper(strings.TrimSpace(parts[1])) == "ACK" {
-		// Expect format: fileID:ACK:ackValue:
-		ackVal := strings.TrimSpace(parts[2])
-		return fmt.Sprintf("ACK Packet:\n  Total Packet Size: %d bytes\n  Sender: %s\n  Receiver: %s\n  FileID: %s\n  ACK Value: %s",
-			totalPacketSize, sender, receiver, fileID, ackVal)
-	}
-
-	// Header packet: expect second field to start with "0001"
-	if strings.HasPrefix(parts[1], "0001") {
-		if len(parts[1]) < 9 {
+		// If the info field doesn’t match CMD/RSP formats, assume it’s a file-transfer packet.
+		// (The file-transfer packet logic remains largely unchanged.)
+		infoAndPayload := infoField
+		if len(infoAndPayload) == 0 {
 			return ""
 		}
-		// Extract burstTo from characters 4 to 8.
-		burstHex := parts[1][4:8]
-		burstDec, err := strconv.ParseInt(burstHex, 16, 32)
-		if err != nil {
+
+		var fileInfoField, payload []byte
+		if strings.Contains(string(infoAndPayload), "ACK:") {
+			// ACK packet: treat entire remainder as the info field.
+			fileInfoField = infoAndPayload
+			payload = []byte{}
+		} else if len(infoAndPayload) >= 17 && string(infoAndPayload[3:7]) == "0001" {
+			// Header packet (sequence == 1): first 17 bytes are info.
+			fileInfoField = infoAndPayload[:17]
+			payload = infoAndPayload[17:]
+		} else if len(infoAndPayload) >= 12 {
+			// Data packet: 12-byte info field.
+			fileInfoField = infoAndPayload[:12]
+			payload = infoAndPayload[12:]
+		} else {
 			return ""
 		}
-		// Extract total data packets from the part after "/"
-		totalData := 0
-		if slashIdx := strings.Index(parts[1], "/"); slashIdx != -1 && len(parts[1]) > slashIdx+1 {
-			totalHex := parts[1][slashIdx+1:]
-			totalDec, err := strconv.ParseInt(totalHex, 16, 32)
-			if err == nil {
-				totalData = int(totalDec)
+
+		infoStr = string(fileInfoField)
+		parts = strings.Split(infoStr, ":")
+		if len(parts) < 3 {
+			return ""
+		}
+
+		// In file-transfer packets the first field is the fileID.
+		fileID := strings.TrimSpace(parts[0])
+
+		// ACK packet handling.
+		if strings.ToUpper(strings.TrimSpace(parts[1])) == "ACK" {
+			ackVal := strings.TrimSpace(parts[2])
+			return fmt.Sprintf("ACK Packet:\n  Total Packet Size: %d bytes\n  Sender: %s\n  Receiver: %s\n  FileID: %s\n  ACK Value: %s",
+				totalPacketSize, sender, receiver, fileID, ackVal)
+		}
+
+		// Header packet: expected second field to start with "0001"
+		if strings.HasPrefix(parts[1], "0001") {
+			if len(parts[1]) < 9 {
+				return ""
 			}
+			burstHex := parts[1][4:8]
+			burstDec, err := strconv.ParseInt(burstHex, 16, 32)
+			if err != nil {
+				return ""
+			}
+			totalData := 0
+			if slashIdx := strings.Index(parts[1], "/"); slashIdx != -1 && len(parts[1]) > slashIdx+1 {
+				totalHex := parts[1][slashIdx+1:]
+				totalDec, err := strconv.ParseInt(totalHex, 16, 32)
+				if err == nil {
+					totalData = int(totalDec)
+				}
+			}
+			headerPayload := strings.TrimSpace(string(payload))
+			headerFields := strings.Split(headerPayload, "|")
+			if len(headerFields) < 10 {
+				return ""
+			}
+			timeoutSeconds, err := strconv.Atoi(strings.TrimSpace(headerFields[0]))
+			if err != nil {
+				timeoutSeconds = 0
+			}
+			timeoutRetries := strings.TrimSpace(headerFields[1])
+			fileName := headerFields[2]
+			origSize := headerFields[3]
+			compSize := headerFields[4]
+			md5Hash := headerFields[5]
+			encodingMethod := headerFields[7] // "0" = binary, "1" = base64
+			compressFlag := headerFields[8]     // "1" if enabled
+			totalIncludingHeader := headerFields[9]
+			encStr := "Binary"
+			if encodingMethod == "1" {
+				encStr = "Base64"
+			}
+			compStr := "No"
+			if compressFlag == "1" {
+				compStr = "Yes"
+			}
+			return fmt.Sprintf("HEADER Packet:\n  Total Packet Size: %d bytes\n  Sender: %s\n  Receiver: %s\n  FileID: %s\n  Sequence: 1\n  BurstTo: %d\n  Total Data Packets (excluding header): %d\n\n  Header Payload:\n    Timeout Seconds: %d\n    Timeout Retries: %s\n    File Name: %s\n    Original Size: %s bytes\n    Compressed Size: %s bytes\n    MD5 Hash: %s\n    Encoding: %s\n    Compression Enabled: %s\n    Total Packets (including header): %s",
+				totalPacketSize, sender, receiver, fileID, burstDec, totalData,
+				timeoutSeconds, timeoutRetries, fileName, origSize, compSize, md5Hash, encStr, compStr, totalIncludingHeader)
 		}
-		// The header payload (with additional file meta–data) is in the remaining payload.
-		headerPayload := strings.TrimSpace(string(payload))
-		headerFields := strings.Split(headerPayload, "|")
-		if len(headerFields) < 10 {
+
+		// Otherwise, assume a regular data packet.
+		if len(parts[1]) < 8 {
 			return ""
 		}
-		timeoutSeconds, err := strconv.Atoi(strings.TrimSpace(headerFields[0]))
-		if err != nil {
-			timeoutSeconds = 0
+		seqHex := parts[1][:4]
+		burstHex := parts[1][4:8]
+		seqDec, err1 := strconv.ParseInt(seqHex, 16, 32)
+		burstDec, err2 := strconv.ParseInt(burstHex, 16, 32)
+		if err1 != nil || err2 != nil {
+			return ""
 		}
-		timeoutRetries := strings.TrimSpace(headerFields[1])
-		fileName := headerFields[2]
-		origSize := headerFields[3]
-		compSize := headerFields[4]
-		md5Hash := headerFields[5]
-		encodingMethod := headerFields[7] // "0" = binary, "1" = base64
-		compressFlag := headerFields[8]     // "1" if enabled
-		totalIncludingHeader := headerFields[9]
-		encStr := "Binary"
-		if encodingMethod == "1" {
-			encStr = "Base64"
-		}
-		compStr := "No"
-		if compressFlag == "1" {
-			compStr = "Yes"
-		}
-		return fmt.Sprintf("HEADER Packet:\n  Total Packet Size: %d bytes\n  Sender: %s\n  Receiver: %s\n  FileID: %s\n  Sequence: 1\n  BurstTo: %d\n  Total Data Packets (excluding header): %d\n\n  Header Payload:\n    Timeout Seconds: %d\n    Timeout Retries: %s\n    File Name: %s\n    Original Size: %s bytes\n    Compressed Size: %s bytes\n    MD5 Hash: %s\n    Encoding: %s\n    Compression Enabled: %s\n    Total Packets (including header): %s",
-			totalPacketSize, sender, receiver, fileID, burstDec, totalData,
-			timeoutSeconds, timeoutRetries, fileName, origSize, compSize, md5Hash, encStr, compStr, totalIncludingHeader)
+		return fmt.Sprintf("DATA Packet:\n  Total Packet Size: %d bytes\n  Sender: %s\n  Receiver: %s\n  FileID: %s\n  Sequence: %d\n  BurstTo: %d\n  Payload Length: %d bytes",
+			totalPacketSize, sender, receiver, fileID, seqDec, burstDec, len(payload))
 	}
 
-	// Otherwise, assume a regular data packet.
-	// In a data packet the second field should be exactly 8 hex digits: first 4 for sequence, next 4 for burstTo.
-	if len(parts[1]) < 8 {
-		return ""
-	}
-	seqHex := parts[1][:4]
-	burstHex := parts[1][4:8]
-	seqDec, err1 := strconv.ParseInt(seqHex, 16, 32)
-	burstDec, err2 := strconv.ParseInt(burstHex, 16, 32)
-	if err1 != nil || err2 != nil {
-		return ""
-	}
-	return fmt.Sprintf("DATA Packet:\n  Total Packet Size: %d bytes\n  Sender: %s\n  Receiver: %s\n  FileID: %s\n  Sequence: %d\n  BurstTo: %d\n  Payload Length: %d bytes",
-		totalPacketSize, sender, receiver, fileID, seqDec, burstDec, len(payload))
+	return ""
 }
 
 // decodeAX25Packet attempts to decode the AX.25 header and payload from the packet.
