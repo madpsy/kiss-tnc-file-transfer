@@ -1116,7 +1116,7 @@ func main() {
 				// If this sender isn’t already active and we have reached max concurrency, reject.
 				if _, exists := activeTransfers[sender]; !exists && len(activeTransfers) >= globalArgs.MaxConcurrency {
 					activeTransfersLock.Unlock()
-					sendResponseWithDetails(sender, cmdID, command, 0, "REQUEST ALREADY IN PROGRESS")
+					sendResponseWithDetails(sender, cmdID, command, 0, "TRANSFER ALREADY IN PROGRESS. PLEASE WAIT.")
 					continue // Skip processing this command.
 				}
 				// For the same sender, update (or add) the active transfer with the current command ID.
