@@ -59,7 +59,7 @@ const maxFileNameLen = 58
 var absServeDir string
 var absSaveDir string
 
-// Global map to track running processes per sender callsign.
+// Global maps to track running processes per sender callsign.
 var runningSender sync.Map
 var runningReceiver sync.Map
 
@@ -132,9 +132,9 @@ type Arguments struct {
 	Port            int    // used with TCP
 	SerialPort      string // used with serial
 	Baud            int    // used with serial
-	GetCallsigns    string // comma-delimited list for filtering GET sender callsigns (supports wildcards).
-	PutCallsigns    string // comma-delimited list for filtering PUT sender callsigns (supports wildcards).
-	AdminCallsigns  string // comma-delimited list for filtering ADMIN sender callsigns (supports wildcards).
+	GetCallsigns    string // comma-delimited list for filtering GET sender callsigns (supports wildcards)
+	PutCallsigns    string // comma-delimited list for filtering PUT sender callsigns (supports wildcards)
+	AdminCallsigns  string // comma-delimited list for filtering ADMIN sender callsigns (supports wildcards)
 	ServeDirectory  string // directory to serve files from (mandatory unless -per-callsign is used)
 	SaveDirectory   string // where received files should be saved (default current directory; not used in per-callsign mode)
 	SenderBinary    string // path to the binary used to send files (mandatory)
@@ -710,13 +710,17 @@ func startTransparentListener(port int, b *Broadcaster) {
 
 // --- Invoking the Sender Binary ---
 func invokeSenderBinary(args *Arguments, receiverCallsign, fileName, inputData, cmdID string) {
-	// Check if a sender binary is already running for this callsign.
-	if _, alreadyRunning := runningSender.LoadOrStore(receiverCallsign, true); alreadyRunning {
-		log.Printf("A sender binary is already running for callsign %s, skipping.", receiverCallsign)
-		return
+	// If a sender binary is already running for this callsign, kill it.
+	if v, exists := runningSender.Load(receiverCallsign); exists {
+		if existingCmd, ok := v.(*exec.Cmd); ok {
+			log.Printf("Killing existing sender process for callsign %s", receiverCallsign)
+			if err := existingCmd.Process.Kill(); err != nil {
+				log.Printf("Error killing sender process: %v", err)
+			}
+			existingCmd.Wait()
+		}
+		runningSender.Delete(receiverCallsign)
 	}
-	// Ensure we remove the entry when done.
-	defer runningSender.Delete(receiverCallsign)
 
 	var cmdArgs []string
 	cmdArgs = append(cmdArgs, "-connection=tcp", "-host=localhost", fmt.Sprintf("-port=%d", args.PassthroughPort))
@@ -745,8 +749,12 @@ func invokeSenderBinary(args *Arguments, receiverCallsign, fileName, inputData, 
 		log.Printf("Error obtaining stderr pipe: %v", err)
 		return
 	}
+	// Store the new sender process for this callsign.
+	runningSender.Store(receiverCallsign, cmd)
+
 	if err := cmd.Start(); err != nil {
 		log.Printf("Error starting sender binary: %v", err)
+		runningSender.Delete(receiverCallsign)
 		return
 	}
 	go func() {
@@ -767,18 +775,28 @@ func invokeSenderBinary(args *Arguments, receiverCallsign, fileName, inputData, 
 			log.Printf("Error reading sender stderr: %v", err)
 		}
 	}()
-	if err := cmd.Wait(); err != nil {
-		log.Printf("Sender binary exited with error: %v", err)
-	} else {
-		log.Printf("Sender binary completed successfully.")
-	}
+	go func() {
+		if err := cmd.Wait(); err != nil {
+			log.Printf("Sender binary exited with error: %v", err)
+		} else {
+			log.Printf("Sender binary completed successfully.")
+		}
+		runningSender.Delete(receiverCallsign)
+	}()
 }
 
 // --- Invoking the Receiver Binary ---
 func invokeReceiverBinary(args *Arguments, senderCallsign, fileName, cmdID, baseDir string) error {
-	if _, alreadyRunning := runningReceiver.LoadOrStore(senderCallsign, true); alreadyRunning {
-		log.Printf("A receiver binary is already running for callsign %s", senderCallsign)
-		return fmt.Errorf("receiver binary already running for callsign %s", senderCallsign)
+	// If a receiver binary is already running for this callsign, kill it.
+	if v, exists := runningReceiver.Load(senderCallsign); exists {
+		if existingCmd, ok := v.(*exec.Cmd); ok {
+			log.Printf("Killing existing receiver process for callsign %s", senderCallsign)
+			if err := existingCmd.Process.Kill(); err != nil {
+				log.Printf("Error killing receiver process: %v", err)
+			}
+			existingCmd.Wait()
+		}
+		runningReceiver.Delete(senderCallsign)
 	}
 
 	var cmdArgs []string
@@ -793,12 +811,10 @@ func invokeReceiverBinary(args *Arguments, senderCallsign, fileName, cmdID, base
 	cmd := exec.Command(args.ReceiverBinary, cmdArgs...)
 	stdoutPipe, err := cmd.StdoutPipe()
 	if err != nil {
-		runningReceiver.Delete(senderCallsign)
 		return fmt.Errorf("Error obtaining stdout pipe: %v", err)
 	}
 	stderrPipe, err := cmd.StderrPipe()
 	if err != nil {
-		runningReceiver.Delete(senderCallsign)
 		return fmt.Errorf("Error obtaining stderr pipe: %v", err)
 	}
 	go func() {
@@ -810,6 +826,9 @@ func invokeReceiverBinary(args *Arguments, senderCallsign, fileName, cmdID, base
 			log.Printf("Error reading receiver stderr: %v", err)
 		}
 	}()
+
+	// Store the new receiver process for this callsign.
+	runningReceiver.Store(senderCallsign, cmd)
 
 	if err := cmd.Start(); err != nil {
 		runningReceiver.Delete(senderCallsign)
@@ -836,7 +855,6 @@ func invokeReceiverBinary(args *Arguments, senderCallsign, fileName, cmdID, base
 		if !strings.HasPrefix(cleanSavePath, baseDir) {
 			log.Printf("PUT command: attempted directory traversal in file name '%s'", fileName)
 		} else {
-			// If the overwrite flag is NOT set, append a counter if the file exists.
 			if !globalArgs.OverwriteExisting {
 				if _, err := os.Stat(cleanSavePath); err == nil {
 					baseName := strings.TrimSuffix(fileName, filepath.Ext(fileName))
@@ -866,7 +884,6 @@ func invokeReceiverBinary(args *Arguments, senderCallsign, fileName, cmdID, base
 
 	return nil
 }
-
 
 // --- Periodic ID Packet Functions ---
 func createIDPacket() []byte {
@@ -1126,11 +1143,7 @@ func main() {
 					_, _ = sendResponseWithDetails(sender, cmdID, command, 0, "CANNOT FIND/READ FILE")
 					continue
 				}
-				if _, alreadyRunning := runningSender.Load(sender); alreadyRunning {
-					log.Printf("A sender binary is already running for callsign %s", sender)
-					_, _ = sendResponseWithDetails(sender, cmdID, command, 0, "REQUEST ALREADY IN PROGRESS")
-					continue
-				}
+				// Invoke sender binary (if one is already running for this callsign, it will be killed)
 				_, _ = sendResponseWithDetails(sender, cmdID, command, 1, "GET OK")
 				go invokeSenderBinary(args, sender, fileName, string(content), cmdID)
 			} else if strings.HasPrefix(upperCmd, "LIST") {
@@ -1146,11 +1159,7 @@ func main() {
 					_, _ = sendResponseWithDetails(sender, cmdID, command, 0, "LIST CANNOT READ")
 					continue
 				}
-				if _, alreadyRunning := runningSender.Load(sender); alreadyRunning {
-					log.Printf("A sender binary is already running for callsign %s", sender)
-					_, _ = sendResponseWithDetails(sender, cmdID, command, 0, "REQUEST ALREADY IN PROGRESS")
-					continue
-				}
+				// Invoke sender binary (if one is already running for this callsign, it will be killed)
 				_, _ = sendResponseWithDetails(sender, cmdID, command, 1, "LIST OK")
 				go invokeSenderBinary(args, sender, "LIST.txt", listing, cmdID)
 			} else if strings.HasPrefix(upperCmd, "PUT ") {
@@ -1183,11 +1192,7 @@ func main() {
 					_, _ = sendResponseWithDetails(sender, cmdID, command, 0, "INVALID FILE PATH")
 					continue
 				}
-				if _, alreadyRunning := runningReceiver.Load(sender); alreadyRunning {
-					log.Printf("A receiver binary is already running for callsign %s", sender)
-					_, _ = sendResponseWithDetails(sender, cmdID, command, 0, "REQUEST ALREADY IN PROGRESS")
-					continue
-				}
+				// Invoke receiver binary (if one is already running for this callsign, it will be killed)
 				err := invokeReceiverBinary(args, sender, fileName, cmdID, dir)
 				if err != nil {
 					log.Printf("Receiver binary error: %v", err)
