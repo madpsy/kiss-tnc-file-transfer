@@ -292,7 +292,7 @@
                 let kissBuffer = new Uint8Array(0);
                 
                 // Sender globals
-                let maxRetries = 3;
+                let maxRetries = parseInt(document.getElementById('timeoutRetries').value, 10) || 3;
                 let burstSize = 4; // if auto mode is off; if auto then burstSize === 0
                 let currentPacketIndex = 0;
                 let currentRetries = 0, totalRetries = 0;
@@ -331,6 +331,7 @@
                 // NEW: Variables to record burst timing for per-packet timeout update
                 let burstStartTimestamp = 0;
                 let lastBurstSentCount = 0; // actual number of packets sent in the burst
+		let dataRetryCount = 0;
                 
                 // NEW: FIN-ACK retry loop variables – these are read from the UI.
                 let finalAckRetryTimer = null;
@@ -349,11 +350,18 @@
                 
                 // Track highest packet sequence number sent so far
                 let highestPacketSentSoFar = 0;  
-                
+               
                 /***********************
                  * Persistence Functions
                  ***********************/
-            
+            window.addEventListener("error", (event) => {
+		  console.error("Global error or uncaught exception:", event.error);
+	    });
+
+function getMaxRetries() {
+  return parseInt(document.getElementById('timeoutRetries').value, 10) || 3;
+}
+
               function waitForHeaderAck() {
               if (headerAckReceived) return; // Header ACK was received, so no need to wait further.
               headerRetryCount++;
@@ -901,6 +909,7 @@ html += `<tr>
                   console.log(`Processed header ACK: 0001; header ack time: ${headerAckTime}ms, setting perPacketTimeout to ${perPacketTimeout}ms`);
                   currentPacketIndex = 1;
                   if (headerAckTimer) {
+		    console.log("Clearing headerAckTimer");
                     clearTimeout(headerAckTimer);
                     headerAckTimer = null;
                   }
@@ -965,84 +974,92 @@ html += `<tr>
             
             
                 
-            
-              function processRangeAck(ackContent) {
-              // Expand the ACK range to get all acknowledged packet numbers.
-              let receivedList = expandRanges(ackContent).sort((a, b) => a - b);
-            
-              // Determine the highest contiguous packet number acknowledged.
-              let newIndex = currentPacketIndex;
-              let expected = currentPacketIndex + 1;
-              while (receivedList.includes(expected)) {
-                newIndex = expected;
-                expected++;
-              }
-            
-              // If the new index is not greater than currentPacketIndex, it’s a duplicate.
-              if (newIndex <= currentPacketIndex) {
-                duplicateAckCount++;
-                console.log("Received duplicate range ACK (" + duplicateAckCount + "):", ackContent);
-                sendBurstPackets();
-                return;
-              }
-            
-              // Update state.
-              duplicateAckCount = 0;
-              lastRangeAck = ackContent;
-              currentPacketIndex = newIndex;
-            
-              console.log("Sender: Cumulative ACK received. Updating highest contiguous ACK to", newIndex);
-            
-              if (ackTimer) {
-                clearTimeout(ackTimer);
-                ackTimer = null;
-              }
-              burstInProgress = false;
-              updateSenderProgressUI();
-            
-              // Check for final packet receipt regardless of burst mode.
-              if (currentPacketIndex >= totalPackets &&
-                highestPacketSentSoFar >= totalPackets &&
-                missingPackets.length === 0) {
-                updateStatus("Final ACK received.");
-                finalizeTransfer();
-                return;
-              }
-            
-              // For non-auto mode, continue sending burst packets if needed.
-              if (burstSize !== 0 && currentPacketIndex < totalPackets) {
-                sendBurstPackets();
-              }
-            
-              // For auto mode, handle dynamic burst (automatic sliding window) logic.
-              if (burstSize === 0) { 
-                if (missingPackets.length === 0) {
-                  consecutiveSuccessCount++;
-                  console.log("Consecutive success count:", consecutiveSuccessCount);
-                  if (consecutiveSuccessCount >= 2) {
-                    if (currentDynamicBurstIndex < dynamicBurstSizes.length - 1) {
-                      currentDynamicBurstIndex++;
-                      currentBurstSizeDynamic = dynamicBurstSizes[currentDynamicBurstIndex];
-                      console.log("Dynamic burst increased to", currentBurstSizeDynamic);
-                      updateBurstSlider(currentDynamicBurstIndex);
-                    } else {
-                      console.log("Dynamic burst is already at maximum index.");
-                    }
-                    consecutiveSuccessCount = 0;
-                  }
-                } else {
-                  if (currentDynamicBurstIndex > 0) {
-                    currentDynamicBurstIndex--;
-                    currentBurstSizeDynamic = dynamicBurstSizes[currentDynamicBurstIndex];
-                    console.log("Dynamic burst decreased to", currentBurstSizeDynamic);
-                    updateBurstSlider(currentDynamicBurstIndex);
-                  }
-                  consecutiveSuccessCount = 0;
-                }
-                sendBurstPackets();
-              }
-              }
-            
+
+        
+     
+ function processRangeAck(ackContent) {
+  let receivedList = expandRanges(ackContent).sort((a, b) => a - b);
+
+  let newIndex = currentPacketIndex;
+  let expected = currentPacketIndex + 1;
+  while (receivedList.includes(expected)) {
+    newIndex = expected;
+    expected++;
+  }
+
+  console.log("processRangeAck: Received ACK range", ackContent, "-> newIndex =", newIndex);
+
+  if (newIndex <= currentPacketIndex) {
+    duplicateAckCount++;
+    console.log("Received duplicate range ACK (" + duplicateAckCount + "):", ackContent);
+    sendBurstPackets();
+    return;
+  }
+
+  duplicateAckCount = 0;
+  lastRangeAck = ackContent;
+  currentPacketIndex = newIndex;
+
+  console.log("Sender: Cumulative ACK received. Updated highest contiguous ACK to", newIndex);
+
+  if (ackTimer) {
+    clearTimeout(ackTimer);
+    console.log(`Sender: Clearing ackTimer, received valid ACK range = ${ackContent}`);
+    ackTimer = null;
+  }
+  
+  let burstAckTime = Date.now() - burstStartTimestamp;
+  console.log("Burst ACK time:", burstAckTime, "ms for", lastBurstSentCount, "packets");
+  if (lastBurstSentCount > 0) {
+    perPacketTimeout = burstAckTime / lastBurstSentCount;
+    console.log("Updated perPacketTimeout to", perPacketTimeout, "ms based on burst ACK");
+  }
+  dataRetryCount = 0;
+
+  burstInProgress = false;
+  updateSenderProgressUI();
+
+  if (currentPacketIndex >= totalPackets &&
+      highestPacketSentSoFar >= totalPackets &&
+      missingPackets.length === 0) {
+    updateStatus("Final ACK received.");
+    finalizeTransfer();
+    return;
+  }
+
+  if (burstSize !== 0 && currentPacketIndex < totalPackets) {
+    sendBurstPackets();
+  }
+
+  if (burstSize === 0) { 
+    if (missingPackets.length === 0) {
+      consecutiveSuccessCount++;
+      console.log("Consecutive success count:", consecutiveSuccessCount);
+      if (consecutiveSuccessCount >= 2) {
+        if (currentDynamicBurstIndex < dynamicBurstSizes.length - 1) {
+          currentDynamicBurstIndex++;
+          currentBurstSizeDynamic = dynamicBurstSizes[currentDynamicBurstIndex];
+          console.log("Dynamic burst increased to", currentBurstSizeDynamic);
+          updateBurstSlider(currentDynamicBurstIndex);
+        } else {
+          console.log("Dynamic burst is already at maximum index.");
+        }
+        consecutiveSuccessCount = 0;
+      }
+    } else {
+      if (currentDynamicBurstIndex > 0) {
+        currentDynamicBurstIndex--;
+        currentBurstSizeDynamic = dynamicBurstSizes[currentDynamicBurstIndex];
+        console.log("Dynamic burst decreased to", currentBurstSizeDynamic);
+        updateBurstSlider(currentDynamicBurstIndex);
+      }
+      consecutiveSuccessCount = 0;
+    }
+    sendBurstPackets();
+  }
+}
+       
+
                 
                 /***********************
                  * FIN-ACK Functions (Sender & Receiver) – UPDATED WITH RETRY LOOP
@@ -1204,7 +1221,6 @@ if (infoText.split(":")[1] && infoText.split(":")[1].toUpperCase() === "RSP") {
               
               console.log("Sender received ACK:", ackData.ack, "for file", ackData.fileId);
               processAck(ackData.ack);
-              if (ackTimer) { clearTimeout(ackTimer); ackTimer = null; }
               burstInProgress = false;
               return;
             }
@@ -1562,73 +1578,119 @@ if (infoText.split(":")[1] && infoText.split(":")[1].toUpperCase() === "RSP") {
                 /***********************
                  * Sender ACK Handling & Burst Sending
                  ***********************/
-                function sendBurstPackets() {
-                  if (!fileTransferInProgress) return;
-                  if (missingPackets.length > 0) {
-                    console.log("Sender: Resending missing packets:", missingPackets);
-                    missingPackets.forEach(seq => { 
-                      sendPacket(seq); 
-                      totalRetries++; 
-                    });
-                    let effectiveBurst = (burstSize === 0 ? currentBurstSizeDynamic : burstSize);
-                    const fixedTimeout = defaultPerPacketTimeout;
-                    let effectiveTimeout = (burstSize === 0) ? perPacketTimeout : fixedTimeout;
-                    const ackTimeout = effectiveBurst * effectiveTimeout + 500;
-                    senderState = "Awaiting ACK";
-                    senderStateTimestamp = Date.now();
-                    ackTimer = setTimeout(() => {
-                      console.log("Sender: No ACK received for missing packets; resending missing packets again.");
-                      missingPackets.forEach(seq => { sendPacket(seq); });
-                      burstInProgress = false;
-                    }, ackTimeout);
-                    return;
-                  }
-                  if (currentPacketIndex >= totalPackets) {
-                    updateStatus("File transfer complete.");
-                    sentFileStats.endTime = Date.now();
-                    sentFileStats.totalTime = ((sentFileStats.endTime - sentFileStats.startTime) / 1000).toFixed(2);
-                    sentFileStats.totalRetries = totalRetries + currentRetries;
-                    sentFileStats.timestamp = sentFileStats.startTime;
-                    persistentSentFiles.push(sentFileStats);
-                    saveSentFilesToLocalStorage(persistentSentFiles);
-                    updateSentFilesUI();
-                    sentFileStats = null;
-                    totalRetries = 0;
-                    fileTransferInProgress = false;
-                    updateSenderProgressUI();
-                    for (let key in activeTransfers) {
-                      if (activeTransfers[key].completed) {
-                        delete activeTransfers[key];
-                      }
-                    }
-                    updateReceiverProgressUI();
-                    document.getElementById('sendFileBtn').disabled = false;
-                    // Instead of a single waitForFinalAck call, start the retry loop.
-                    startFinAckWaitLoop();
-                    return;
-                  }
-                  if (burstInProgress) return;
-                  burstInProgress = true;
-                  let effectiveBurst = (burstSize === 0 ? currentBurstSizeDynamic : burstSize);
-                  let startSeq = currentPacketIndex + 1;
-                  let endSeq = Math.min(totalPackets, currentPacketIndex + effectiveBurst);
-                  // NEW: Record burst start time and the actual number of packets sent.
-                  burstStartTimestamp = Date.now();
-                  lastBurstSentCount = endSeq - startSeq + 1;
-                  updateSenderProgressUI();
-                  for (let seq = startSeq; seq <= endSeq; seq++) {
-                    sendPacket(seq);
-                  }
-                  const ackTimeout = effectiveBurst * perPacketTimeout + 500;
-                  senderState = "Awaiting ACK";
-                  senderStateTimestamp = Date.now();
-                  ackTimer = setTimeout(() => {
-                    console.log("Sender: No ACK received; re-sending missing packets again.");
-                    totalRetries += missingPackets.length;
-                    missingPackets.forEach(seq => { sendPacket(seq); });
-                    burstInProgress = false;
-                  }, ackTimeout);
-                }
+
+ function sendBurstPackets() {
+  if (!fileTransferInProgress) return;
+
+  // If there are missing packets, resend them first.
+  if (missingPackets.length > 0) {
+    console.log("Sender: Resending missing packets:", missingPackets);
+
+    missingPackets.forEach(seq => {
+      sendPacket(seq);
+      totalRetries++;
+    });
+
+    // Calculate how long to wait before we expect an ACK.
+    const userTimeoutMs = (parseFloat(document.getElementById('timeoutSeconds')?.value) * 1000) || 5000;
+    const effectiveBurst = (burstSize === 0 ? currentBurstSizeDynamic : burstSize);
+    const burstTimeout = (effectiveBurst * perPacketTimeout) + userTimeoutMs;
+
+    console.log(`Sender: Scheduling ackTimer for missing packets. burstTimeout=${burstTimeout}ms`);
+
+    ackTimer = setTimeout(() => {
+      try {
+        console.log(`[AckTimer] Fired after missing-packets burstTimeout=${burstTimeout}ms`);
+        dataRetryCount++;
+        console.log(`Sender: dataRetryCount incremented to ${dataRetryCount}`);
+
+        // If we exceeded maxRetries, abort the transfer.
+        if (dataRetryCount > getMaxRetries()) {
+          updateStatus("No ACK received after max retries (missing packets). Aborting transfer.");
+          cancelSenderTransfer();
+          return;
+        }
+
+        // Otherwise, force a new burst attempt (or re‐resend missing packets).
+        // Important: set burstInProgress to false so we can call sendBurstPackets() again.
+        burstInProgress = false;
+        console.log("Sender: Retrying missing packets again...");
+        sendBurstPackets();
+
+      } catch (err) {
+        console.error("[AckTimer] Uncaught error in missing-packets callback:", err);
+      }
+    }, burstTimeout);
+
+    return;
+  }
+
+  // Check if we already sent everything
+  if (currentPacketIndex >= totalPackets) {
+    finalizeTransfer();
+    return;
+  }
+
+  // Prevent re-entrancy if we're in the middle of sending a burst
+  if (burstInProgress) {
+    console.log("Sender: Attempted to burst but burstInProgress is true; skipping.");
+    return;
+  }
+  burstInProgress = true;
+
+  // Figure out how many packets we will burst
+  const effectiveBurst = (burstSize === 0 ? currentBurstSizeDynamic : burstSize);
+  const startSeq = currentPacketIndex + 1;
+  const endSeq = Math.min(totalPackets, currentPacketIndex + effectiveBurst);
+
+  // Record how many packets we're sending
+  lastBurstSentCount = endSeq - startSeq + 1;
+  burstStartTimestamp = Date.now();
+
+  console.log(`Sender: Sending burst from seq=${startSeq} to seq=${endSeq} (count=${lastBurstSentCount})`);
+
+  // Send each packet in this burst
+  for (let seq = startSeq; seq <= endSeq; seq++) {
+    sendPacket(seq);
+  }
+
+  // Keep track of how long we will wait for the ACK
+  const userTimeoutMs = (parseFloat(document.getElementById('timeoutSeconds')?.value) * 1000) || 5000;
+  const burstTimeout = (lastBurstSentCount * perPacketTimeout) + userTimeoutMs;
+
+  console.log(`Sender: Scheduling ackTimer with burstTimeout=${burstTimeout}ms`);
+
+  ackTimer = setTimeout(() => {
+    try {
+      console.log(`[AckTimer] Fired after burstTimeout=${burstTimeout}ms (seqs ${startSeq}..${endSeq})`);
+      dataRetryCount++;
+      console.log(`Sender: dataRetryCount incremented to ${dataRetryCount}`);
+
+      if (dataRetryCount > getMaxRetries()) {
+        updateStatus("No ACK received for this burst after max retries. Aborting transfer.");
+        cancelSenderTransfer();
+        return;
+      }
+
+      // We got no ACK in time, so let's mark all these packets missing and retry.
+      console.log(`Sender: No ACK at all for these packets; marking them missing and retrying.`);
+      missingPackets = [];
+      for (let seq = startSeq; seq <= endSeq; seq++) {
+        missingPackets.push(seq);
+      }
+
+      // Important: let the next call of sendBurstPackets() actually happen
+      burstInProgress = false;
+      // Re-send
+      sendBurstPackets();
+
+    } catch (err) {
+      console.error("[AckTimer] Uncaught error in burst callback:", err);
+    }
+  }, burstTimeout);
+}
+
+
                 
                 function sendPacket(seq) {
                   if (seq > highestPacketSentSoFar) {
@@ -2092,16 +2154,25 @@ if (infoText.split(":")[1] && infoText.split(":")[1].toUpperCase() === "RSP") {
                   sendBurstPackets();
                 }
                 
-                function cancelSenderTransfer() {
-                  if (fileTransferInProgress) {
-                    fileTransferInProgress = false;
-                    if (ackTimer) clearTimeout(ackTimer);
-                    if (headerAckTimer) clearTimeout(headerAckTimer);
-                    updateStatus("File transfer canceled.");
-                    updateSenderProgressUI();
-                    document.getElementById('sendFileBtn').disabled = false;
-                  }
-                }
+function cancelSenderTransfer() {
+  console.log("cancelSenderTransfer() called at", Date.now());
+  if (fileTransferInProgress) {
+    fileTransferInProgress = false;
+    if (ackTimer) {
+      console.log("Clearing ackTimer in cancelSenderTransfer");
+      clearTimeout(ackTimer);
+    }
+    if (headerAckTimer) {
+      console.log("Clearing headerAckTimer in cancelSenderTransfer");
+      clearTimeout(headerAckTimer);
+    }
+    updateStatus("File transfer canceled.");
+    updateSenderProgressUI();
+    document.getElementById('sendFileBtn').disabled = false;
+  }
+}
+
+
               document.getElementById('senderCallsign').addEventListener('input', function() {
               this.value = this.value.toUpperCase();
               });
@@ -2253,7 +2324,7 @@ function parseRspPacket(payload) {
           const timeoutMS = (parseFloat(document.getElementById('timeoutSeconds').value) * 1000) || 10000;
           setTimeout(() => {
             if (pendingCmdResponses[cmdID]) {
-              if (attempts < maxRetries) {
+              if (attempts < getMaxRetries()) {
                 console.log(`No RSP within timeout. Retrying CMD "${commandText}" (attempt ${attempts + 1}/${maxRetries})`);
                 attemptSend();
               } else {
