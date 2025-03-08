@@ -2187,9 +2187,7 @@ function cancelSenderTransfer() {
                 const transfer = activeTransfers[key];
                 // Skip transfers that are already finalized.
                 if (transfer.finalHandshakeReceived || transfer.completed) continue;
-                
-                // Log the current retry count and max retries.
-                console.log(`Periodic check for transfer ${key}: current retry ${transfer.ackRetryCount} of ${transfer.maxAckRetries}`);
+             
                 
                 // Check if maximum ACK retries have been reached.
                 if (transfer.ackRetryCount >= transfer.maxAckRetries) {
