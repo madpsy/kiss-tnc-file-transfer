@@ -573,9 +573,9 @@ html += `<tr>
                     <p>${blueTotal} of ${total} packets received</p>
                     ${progressBarHTML}
                     <p>
-                      Status: ${(transfer.lastAckTime && (Date.now() - transfer.lastAckTime < 1100))
-                               ? '<span style="color: blue; font-weight: bold;">Ack</span>'
-                               : '<span style="color: green; font-weight: bold;">Receiving</span>'}
+                      Status: ${(transfer.lastAckTime && (Date.now() - transfer.lastAckTime < 1000))
+         		? '<span style="color: orange; font-weight: bold;">Sending ACK</span>'
+         		: '<span style="color: green; font-weight: bold;">Receiving</span>'}
                     </p>
                     <div style="margin-top: 0.5rem;">
                       <button class="btn btn-danger btn-sm" onclick="cancelReceiverTransfer('${key}')">Cancel</button>
@@ -689,26 +689,33 @@ html += `<tr>
                 /***********************
                  * Receiver ACK Function
                  ***********************/
-            function sendAckFromReceiver(sender, fileId, ackStr) {
-              let localCallsign = document.getElementById('senderCallsign').value.trim();
-              // Build info field using only fileId, "ACK", and ackStr.
-              const info = fileId + ':' + "ACK" + ':' + ackStr;
-              const encoder = new TextEncoder();
-              const infoBytes = encoder.encode(info);
-              const ax25Header = buildAX25Header(localCallsign, sender);
-              const ackPacket = new Uint8Array(ax25Header.length + infoBytes.length);
-              ackPacket.set(ax25Header, 0);
-              ackPacket.set(infoBytes, ax25Header.length);
-              const ackKissFrame = buildKissFrame(ackPacket);
-              console.log("Receiver sending ACK:", ackStr);
-              
-              // Update transfer record if needed, then send via the appropriate connection.
-              if (document.getElementById('connectionType').value === 'websockets') {
-                if (socket) socket.emit('raw_kiss_frame', ackKissFrame);
-              } else if (document.getElementById('connectionType').value === 'serial' && serialWriter) {
-                serialWriter.write(ackKissFrame).catch(err => console.error("Error writing ACK:", err));
-              }
-            }
+function sendAckFromReceiver(sender, fileId, ackStr) {
+  let localCallsign = document.getElementById('senderCallsign').value.trim();
+  const info = fileId + ':' + "ACK" + ':' + ackStr;
+  const encoder = new TextEncoder();
+  const infoBytes = encoder.encode(info);
+  const ax25Header = buildAX25Header(localCallsign, sender);
+  const ackPacket = new Uint8Array(ax25Header.length + infoBytes.length);
+  ackPacket.set(ax25Header, 0);
+  ackPacket.set(infoBytes, ax25Header.length);
+  const ackKissFrame = buildKissFrame(ackPacket);
+
+  // Look up the active transfer for this file so we can track ACK time.
+  const transferKey = sender + "_" + fileId;
+  if (activeTransfers[transferKey]) {
+    activeTransfers[transferKey].lastAckTime = Date.now(); // <-- Add this line
+  }
+
+  console.log("Receiver sending ACK:", ackStr);
+
+  // Send via your chosen connection
+  if (document.getElementById('connectionType').value === 'websockets') {
+    if (socket) socket.emit('raw_kiss_frame', ackKissFrame);
+  } else if (document.getElementById('connectionType').value === 'serial' && serialWriter) {
+    serialWriter.write(ackKissFrame).catch(err => console.error("Error writing ACK:", err));
+  }
+}
+
             
                 
                 /***********************
