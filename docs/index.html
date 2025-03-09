@@ -944,9 +944,9 @@ function sendAckFromReceiver(sender, fileId, ackStr) {
                 if (duplicateAckCount >= 3) {
                   console.log("Three duplicate ACKs received; resending missing packets:", missingPackets);
                   missingPackets.forEach(seq => { 
-                    sendPacket(seq); 
-                    totalRetries++; 
-                  });
+  			sendPacket(seq, endSeq); 
+			  totalRetries++; 
+		  });
                   duplicateAckCount = 0;
                 }
                 return;
@@ -1006,6 +1006,7 @@ function sendAckFromReceiver(sender, fileId, ackStr) {
   duplicateAckCount = 0;
   lastRangeAck = ackContent;
   currentPacketIndex = newIndex;
+  missingPackets = [];
 
   console.log("Sender: Cumulative ACK received. Updated highest contiguous ACK to", newIndex);
 
@@ -1699,27 +1700,31 @@ if (infoText.split(":")[1] && infoText.split(":")[1].toUpperCase() === "RSP") {
 
 
                 
-                function sendPacket(seq) {
-                  if (seq > highestPacketSentSoFar) {
-                    highestPacketSentSoFar = seq; 
-                  }
-                  let payloadChunk = fileDataChunks[seq - 1];
-                  let effectiveBurst = (burstSize === 0 ? currentBurstSizeDynamic : burstSize);
-                  let currentBurstTo = Math.min(totalPackets, currentPacketIndex + effectiveBurst);
-                  if (seq === 1) {
-                    currentBurstTo = 1;
-                  }
-                  let packet = buildPacket(sender, receiver, seq, totalPackets, payloadChunk, fileId, currentBurstTo);
-                  sentFileStats.bytesSent = (sentFileStats.bytesSent || 0) + packet.length;
-                  console.log(`Sending packet ${seq} of ${totalPackets}`);
-                  const kissFrame = buildKissFrame(packet);
-            
-                  if (document.getElementById('connectionType').value === 'websockets') {
-                    if (socket) socket.emit('raw_kiss_frame', kissFrame);
-                  } else if (document.getElementById('connectionType').value === 'serial' && serialWriter) {
-                    serialWriter.write(kissFrame).catch(err => console.error("Error sending packet:", err));
-                  }
-                }
+function sendPacket(seq, overrideBurstTo) {
+  if (seq > highestPacketSentSoFar) {
+    highestPacketSentSoFar = seq; 
+  }
+  let payloadChunk = fileDataChunks[seq - 1];
+  let effectiveBurst = (burstSize === 0 ? currentBurstSizeDynamic : burstSize);
+  // Use overrideBurstTo if provided; otherwise, calculate it normally.
+  let currentBurstTo = (overrideBurstTo !== undefined)
+                         ? overrideBurstTo
+                         : Math.min(totalPackets, currentPacketIndex + effectiveBurst);
+  if (seq === 1) {
+    currentBurstTo = 1;
+  }
+  let packet = buildPacket(sender, receiver, seq, totalPackets, payloadChunk, fileId, currentBurstTo);
+  sentFileStats.bytesSent = (sentFileStats.bytesSent || 0) + packet.length;
+  console.log(`Sending packet ${seq} of ${totalPackets}`);
+  const kissFrame = buildKissFrame(packet);
+
+  if (document.getElementById('connectionType').value === 'websockets') {
+    if (socket) socket.emit('raw_kiss_frame', kissFrame);
+  } else if (document.getElementById('connectionType').value === 'serial' && serialWriter) {
+    serialWriter.write(kissFrame).catch(err => console.error("Error sending packet:", err));
+  }
+}
+
                 
                 /***********************
                  * KISS Framing Functions

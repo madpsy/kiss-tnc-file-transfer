@@ -49,7 +49,7 @@ var (
 // Global slices for allowed sender callsigns.
 var getAllowedCallsigns []string
 var putAllowedCallsigns []string
-// New: allowed ADMIN callsigns. If empty then admin commands are denied.
+// allowed ADMIN callsigns – if empty, admin commands are denied.
 var adminAllowedCallsigns []string
 
 // Maximum allowed file name length.
@@ -64,7 +64,6 @@ var runningSender sync.Map
 var runningReceiver sync.Map
 
 // --- Duplicate response cache ---
-
 type cachedResponse struct {
 	timestamp time.Time
 	frame     []byte
@@ -91,21 +90,20 @@ func cacheCleanup() {
 }
 
 // --- In-progress command tracking ---
-// This ensures that concurrent duplicate commands wait for the first to finish processing.
+// Ensures that concurrent duplicate commands wait for the first to finish processing.
 var (
 	processingCommands     = make(map[string]chan struct{})
 	processingCommandsLock sync.Mutex
 )
 
 // --- Active transfer tracking ---
-// This tracks the currently active transfers by callsign. The key is the sender's callsign and the value is the command ID.
+// Tracks the currently active transfers by sender callsign.
 var (
 	activeTransfers     = make(map[string]string)
 	activeTransfersLock sync.Mutex
 )
 
 // --- Thread-safe connection accessor functions ---
-
 func isFilenameDisallowed(fileName string) bool {
 	for _, disallowed := range disallowedFilenames {
 		if strings.EqualFold(fileName, disallowed) {
@@ -123,7 +121,6 @@ func getConn() KISSConnection {
 
 func setConn(newConn KISSConnection) {
 	connLock.Lock()
-	// If there’s an existing connection, close it.
 	if globalConn != nil {
 		globalConn.Close()
 	}
@@ -141,17 +138,16 @@ type Arguments struct {
 	Baud              int    // used with serial
 	GetCallsigns      string // comma-delimited list for filtering GET sender callsigns (supports wildcards)
 	PutCallsigns      string // comma-delimited list for filtering PUT sender callsigns (supports wildcards)
-	AdminCallsigns    string // comma-delimited list of allowed sender callsigns for ADMIN commands (supports wildcards)
+	AdminCallsigns    string // comma-delimited list for filtering ADMIN commands (supports wildcards)
 	ServeDirectory    string // directory to serve files from (mandatory unless -per-callsign is used)
-	SaveDirectory     string // where received files should be saved (default current directory; not used in per-callsign mode)
-	SenderBinary      string // path to the binary used to send files (mandatory)
+	SaveDirectory     string // where received files should be saved (default current directory)
+	SenderBinary      string // path to the binary used to send files
 	ReceiverBinary    string // path to the binary used to receive files (default "receiver")
 	PassthroughPort   int    // TCP port for transparent passthrough (default 5011)
 	IdPeriod          int    // Minutes between sending an ID packet (0 means never)
-	PerCallsignDir    string // New: base directory for per-callsign subdirectories (mutually exclusive with serve-directory, save-directory, get-callsigns, put-callsigns, and admin-callsigns)
-	OverwriteExisting bool   // New: if true, overwrite existing files instead of appending _x
-	// New field for concurrency control:
-	MaxConcurrency int // Maximum concurrent transfers allowed (default 1)
+	PerCallsignDir    string // base directory for per-callsign subdirectories (mutually exclusive with other directory options)
+	OverwriteExisting bool   // if true, overwrite existing files instead of appending _x
+	MaxConcurrency    int    // Maximum concurrent transfers allowed (default 1)
 }
 
 func parseArguments() *Arguments {
@@ -162,29 +158,26 @@ func parseArguments() *Arguments {
 	flag.IntVar(&args.Port, "port", 9001, "TCP port (if connection is tcp)")
 	flag.StringVar(&args.SerialPort, "serial-port", "", "Serial port (e.g., COM3 or /dev/ttyUSB0)")
 	flag.IntVar(&args.Baud, "baud", 115200, "Baud rate for serial connection")
-	flag.StringVar(&args.GetCallsigns, "get-callsigns", "", "Comma delimited list of allowed sender callsign patterns for GET command (supports wildcards)")
-	flag.StringVar(&args.PutCallsigns, "put-callsigns", "", "Comma delimited list of allowed sender callsign patterns for PUT command (supports wildcards)")
-	flag.StringVar(&args.AdminCallsigns, "admin-callsigns", "", "Comma delimited list of allowed sender callsign patterns for ADMIN commands (supports wildcards)")
-	flag.StringVar(&args.ServeDirectory, "serve-directory", "", "Directory to serve files from (mandatory unless -per-callsign is used)")
-	flag.StringVar(&args.SaveDirectory, "save-directory", ".", "Directory where received files should be saved (default current directory; not used in per-callsign mode)")
-	flag.StringVar(&args.SenderBinary, "sender-binary", "sender", "Path to the binary used to send files (default 'sender')")
-	flag.StringVar(&args.ReceiverBinary, "receiver-binary", "receiver", "Path to the binary used to receive files (default 'receiver')")
-	flag.IntVar(&args.PassthroughPort, "passthrough-port", 5011, "TCP port for transparent passthrough (default 5011)")
+	flag.StringVar(&args.GetCallsigns, "get-callsigns", "", "Comma delimited list for allowed GET sender callsigns (supports wildcards)")
+	flag.StringVar(&args.PutCallsigns, "put-callsigns", "", "Comma delimited list for allowed PUT sender callsigns (supports wildcards)")
+	flag.StringVar(&args.AdminCallsigns, "admin-callsigns", "", "Comma delimited list for allowed ADMIN sender callsigns (supports wildcards)")
+	flag.StringVar(&args.ServeDirectory, "serve-directory", "", "Directory to serve files from (unless -per-callsign is used)")
+	flag.StringVar(&args.SaveDirectory, "save-directory", ".", "Directory where received files should be saved")
+	flag.StringVar(&args.SenderBinary, "sender-binary", "sender", "Path to the binary used to send files")
+	flag.StringVar(&args.ReceiverBinary, "receiver-binary", "receiver", "Path to the binary used to receive files")
+	flag.IntVar(&args.PassthroughPort, "passthrough-port", 5011, "TCP port for transparent passthrough")
 	flag.IntVar(&args.IdPeriod, "id-period", 30, "Minutes between sending an ID packet (0 means never)")
-	flag.StringVar(&args.PerCallsignDir, "per-callsign", "", "Base directory for per-callsign subdirectories (mutually exclusive with serve-directory, save-directory, get-callsigns, put-callsigns, and admin-callsigns)")
-	flag.BoolVar(&args.OverwriteExisting, "overwrite-existing", false, "Overwrite existing files instead of appending _x to file names")
-	// New flag for concurrency:
-	flag.IntVar(&args.MaxConcurrency, "max-concurrency", 1, "Maximum concurrent transfers allowed (GET/PUT/LIST)")
+	flag.StringVar(&args.PerCallsignDir, "per-callsign", "", "Base directory for per-callsign subdirectories")
+	flag.BoolVar(&args.OverwriteExisting, "overwrite-existing", false, "Overwrite existing files instead of appending _x")
+	flag.IntVar(&args.MaxConcurrency, "max-concurrency", 1, "Maximum concurrent transfers allowed (GET/PUT)")
 	flag.Parse()
 
 	if args.PerCallsignDir != "" {
 		if args.ServeDirectory != "" || args.SaveDirectory != "." || args.GetCallsigns != "" || args.PutCallsigns != "" || args.AdminCallsigns != "" {
 			log.Fatalf("When using -per-callsign, do not specify serve-directory, save-directory, get-callsigns, put-callsigns or admin-callsigns.")
 		}
-	} else {
-		if args.ServeDirectory == "" {
-			log.Fatalf("--serve-directory is required.")
-		}
+	} else if args.ServeDirectory == "" {
+		log.Fatalf("--serve-directory is required.")
 	}
 	if args.MyCallsign == "" {
 		log.Fatalf("--my-callsign is required.")
@@ -195,7 +188,7 @@ func parseArguments() *Arguments {
 	return args
 }
 
-// KISSConnection is the minimal interface we need.
+// KISSConnection is the minimal interface.
 type KISSConnection interface {
 	RecvData(timeout time.Duration) ([]byte, error)
 	Write([]byte) (int, error)
@@ -292,21 +285,15 @@ func (s *SerialKISSConnection) Close() error {
 
 // createRSPPacket builds the RSP packet with an AX.25 header.
 func createRSPPacket(destCallsign, srcCallsign, cmdID string, status int, msg string) []byte {
-	// Build header as before.
 	destAddr := encodeAX25Address(destCallsign, false)
 	srcAddr := encodeAX25Address(srcCallsign, true)
 	header := append(append(destAddr, srcAddr...), 0x03, 0xF0)
-
-	// New variable-length info field: cmdID:RSP:<status>:<msg>
 	responseText := fmt.Sprintf("%s:RSP:%d:%s", cmdID, status, msg)
 	infoField := []byte(responseText)
-
-	// Combine header and info field
-	packet := append(header, infoField...)
-	return packet
+	return append(header, infoField...)
 }
 
-// Helper: unescapeData reverses KISS escaping.
+// unescapeData reverses KISS escaping.
 func unescapeData(data []byte) []byte {
 	var out bytes.Buffer
 	for i := 0; i < len(data); {
@@ -329,7 +316,7 @@ func unescapeData(data []byte) []byte {
 	return out.Bytes()
 }
 
-// Helper: escapeData applies KISS escaping.
+// escapeData applies KISS escaping.
 func escapeData(data []byte) []byte {
 	var out bytes.Buffer
 	for _, b := range data {
@@ -346,7 +333,7 @@ func escapeData(data []byte) []byte {
 	return out.Bytes()
 }
 
-// sendResponse wraps the payload in a KISS frame and writes it directly to the connection.
+// sendResponse wraps the payload in a KISS frame and writes it.
 func sendResponse(responsePayload []byte) error {
 	conn := getConn()
 	escaped := escapeData(responsePayload)
@@ -357,35 +344,28 @@ func sendResponse(responsePayload []byte) error {
 	return err
 }
 
-// sendResponseWithDetails builds the response packet, logs the details,
-// sends it, and caches the response. It returns the full frame and any error.
+// sendResponseWithDetails builds, logs, sends, and caches the response.
 func sendResponseWithDetails(sender, cmdID, command string, status int, msg string) ([]byte, error) {
-	conn := getConn() // always use the current connection
+	conn := getConn()
 	rspPacket := createRSPPacket(sender, serverCallsign, cmdID, status, msg)
 	escaped := escapeData(rspPacket)
 	frame := []byte{KISS_FLAG, KISS_CMD_DATA}
 	frame = append(frame, escaped...)
 	frame = append(frame, KISS_FLAG)
-
 	statusText := "FAILED"
 	if status == 1 {
 		statusText = "SUCCESS"
 	}
-	// Now include the sender's callsign in the log.
 	log.Printf("Sending RSP packet to sender %s for command '%s' (ID: %s): %s - %s", sender, command, cmdID, statusText, msg)
 	_, err := conn.Write(frame)
-	// Cache the response
 	cacheKey := sender + ":" + cmdID
 	rspCacheLock.Lock()
-	rspCache[cacheKey] = cachedResponse{
-		timestamp: time.Now(),
-		frame:     frame,
-	}
+	rspCache[cacheKey] = cachedResponse{timestamp: time.Now(), frame: frame}
 	rspCacheLock.Unlock()
 	return frame, err
 }
 
-// Helper: extractKISSFrames extracts complete KISS frames from a buffer.
+// extractKISSFrames extracts complete KISS frames from a buffer.
 func extractKISSFrames(data []byte) ([][]byte, []byte) {
 	var frames [][]byte
 	for {
@@ -405,7 +385,7 @@ func extractKISSFrames(data []byte) ([][]byte, []byte) {
 	return frames, data
 }
 
-// encodeAX25Address now supports SSIDs.
+// encodeAX25Address supports SSIDs.
 func encodeAX25Address(callsign string, isLast bool) []byte {
 	parts := strings.Split(callsign, "-")
 	base := strings.ToUpper(strings.TrimSpace(parts[0]))
@@ -446,10 +426,8 @@ func decodeAX25Address(addr []byte) string {
 	return base
 }
 
-// parseCommandPacket now extracts the 2-character ID after "CMD:".
-// Note: the packet now must be at least 144 bytes long (16-byte header + 128-byte info field).
+// parseCommandPacket extracts the command from a packet.
 func parseCommandPacket(packet []byte) (sender, cmdID, command string, ok bool) {
-	// Ensure packet has at least the header length.
 	if len(packet) < 16 {
 		return "", "", "", false
 	}
@@ -459,11 +437,8 @@ func parseCommandPacket(packet []byte) (sender, cmdID, command string, ok bool) 
 		log.Printf("Dropping packet: destination %s does not match our callsign %s", dest, serverCallsign)
 		return "", "", "", false
 	}
-	// The info field now extends from byte 16 to the end.
 	infoField := packet[16:]
 	infoStr := strings.TrimSpace(string(infoField))
-
-	// Expected format: "cmdID:CMD:<cmd text>"
 	parts := strings.SplitN(infoStr, ":", 3)
 	if len(parts) != 3 {
 		log.Printf("Invalid CMD format: %s", infoStr)
@@ -481,13 +456,11 @@ func parseCommandPacket(packet []byte) (sender, cmdID, command string, ok bool) 
 
 // createResponsePacket builds the response payload.
 func createResponsePacket(cmdID string, status int, msg string) []byte {
-	// New variable-length response format: cmdID:RSP:<status>:<msg>
 	responseText := fmt.Sprintf("%s:RSP:%d:%s", cmdID, status, msg)
 	return []byte(responseText)
 }
 
 func callsignAllowedForGet(cs string) bool {
-	// If no restrictions provided, do not allow any GETs.
 	if len(getAllowedCallsigns) == 0 {
 		return false
 	}
@@ -501,7 +474,6 @@ func callsignAllowedForGet(cs string) bool {
 }
 
 func callsignAllowedForPut(cs string) bool {
-	// If no restrictions provided, do not allow any PUTs.
 	if len(putAllowedCallsigns) == 0 {
 		return false
 	}
@@ -514,7 +486,6 @@ func callsignAllowedForPut(cs string) bool {
 	return false
 }
 
-// Helper function to check if a sender is allowed for ADMIN commands.
 func callsignAllowedForAdmin(cs string) bool {
 	if len(adminAllowedCallsigns) == 0 {
 		return false
@@ -533,44 +504,32 @@ func listFiles(dir string) (string, error) {
 	if err != nil {
 		return "", err
 	}
-
-	// Filter out directories and hidden files.
 	var files []os.FileInfo
 	for _, entry := range entries {
 		if !entry.IsDir() && !strings.HasPrefix(entry.Name(), ".") {
 			files = append(files, entry)
 		}
 	}
-
-	// Sort files alphanumerically.
 	sort.Slice(files, func(i, j int) bool {
 		return strings.ToLower(files[i].Name()) < strings.ToLower(files[j].Name())
 	})
-
 	var output strings.Builder
-	// Write CSV header.
 	output.WriteString("File Name,Modified Date,Size\n")
-
-	// Write file details in CSV format.
 	for _, file := range files {
 		modTime := file.ModTime().Format("2006-01-02 15:04:05")
 		output.WriteString(fmt.Sprintf("\"%s\",\"%s\",%d\n", file.Name(), modTime, file.Size()))
 	}
-
 	return output.String(), nil
 }
 
 // --- Broadcaster ---
-// This helper will allow multiple goroutines to receive the same data from the underlying KISS connection.
 type Broadcaster struct {
 	subscribers map[chan []byte]struct{}
 	lock        sync.Mutex
 }
 
 func NewBroadcaster() *Broadcaster {
-	return &Broadcaster{
-		subscribers: make(map[chan []byte]struct{}),
-	}
+	return &Broadcaster{subscribers: make(map[chan []byte]struct{})}
 }
 
 func (b *Broadcaster) Subscribe() chan []byte {
@@ -599,7 +558,6 @@ func (b *Broadcaster) Broadcast(data []byte) {
 	}
 }
 
-// startKISSReader continuously reads from the underlying connection and broadcasts data.
 func startKISSReader(conn KISSConnection, b *Broadcaster) {
 	for {
 		data, err := conn.RecvData(100 * time.Millisecond)
@@ -665,12 +623,10 @@ func doReconnect() {
 	reconnectMutex.Unlock()
 }
 
-// --- Transparent Passthrough Handler ---
 func handleTransparentConnection(remoteConn net.Conn, b *Broadcaster) {
 	defer remoteConn.Close()
 	log.Printf("Accepted transparent connection from %s", remoteConn.RemoteAddr())
 	go func() {
-		// Continuously write to the current connection.
 		for {
 			currentConn := getConn()
 			if currentConn == nil {
@@ -713,9 +669,8 @@ func startTransparentListener(port int, b *Broadcaster) {
 	}
 }
 
-// --- Invoking the Sender Binary ---
+// Invoking the Sender Binary.
 func invokeSenderBinary(args *Arguments, receiverCallsign, fileName, inputData, cmdID string) {
-	// If a sender binary is already running for this callsign, kill it.
 	if v, exists := runningSender.Load(receiverCallsign); exists {
 		if existingCmd, ok := v.(*exec.Cmd); ok {
 			log.Printf("Killing existing sender process for callsign %s", receiverCallsign)
@@ -733,8 +688,7 @@ func invokeSenderBinary(args *Arguments, receiverCallsign, fileName, inputData, 
 	cmdArgs = append(cmdArgs, fmt.Sprintf("-receiver-callsign=%s", receiverCallsign))
 	cmdArgs = append(cmdArgs, "-stdin", "-file-name="+fileName)
 	cmdArgs = append(cmdArgs, fmt.Sprintf("-fileid=%s", cmdID))
-	cmdArgs = append(cmdArgs, "-timeout-seconds=5")
-	cmdArgs = append(cmdArgs, "-timeout-retries=3")
+	cmdArgs = append(cmdArgs, "-timeout-seconds=5", "-timeout-retries=3")
 	fullCmd := fmt.Sprintf("%s %s", args.SenderBinary, strings.Join(cmdArgs, " "))
 	log.Printf("Invoking sender binary: %s", fullCmd)
 
@@ -754,9 +708,7 @@ func invokeSenderBinary(args *Arguments, receiverCallsign, fileName, inputData, 
 		log.Printf("Error obtaining stderr pipe: %v", err)
 		return
 	}
-	// Store the new sender process for this callsign.
 	runningSender.Store(receiverCallsign, cmd)
-
 	if err := cmd.Start(); err != nil {
 		log.Printf("Error starting sender binary: %v", err)
 		runningSender.Delete(receiverCallsign)
@@ -787,7 +739,6 @@ func invokeSenderBinary(args *Arguments, receiverCallsign, fileName, inputData, 
 			log.Printf("Sender binary completed successfully.")
 		}
 		runningSender.Delete(receiverCallsign)
-		// Remove active transfer if it still matches the command ID.
 		activeTransfersLock.Lock()
 		if current, ok := activeTransfers[receiverCallsign]; ok && current == cmdID {
 			delete(activeTransfers, receiverCallsign)
@@ -796,9 +747,8 @@ func invokeSenderBinary(args *Arguments, receiverCallsign, fileName, inputData, 
 	}()
 }
 
-// --- Invoking the Receiver Binary ---
+// Invoking the Receiver Binary.
 func invokeReceiverBinary(args *Arguments, senderCallsign, fileName, cmdID, baseDir string) error {
-	// If a receiver binary is already running for this callsign, kill it.
 	if v, exists := runningReceiver.Load(senderCallsign); exists {
 		if existingCmd, ok := v.(*exec.Cmd); ok {
 			log.Printf("Killing existing receiver process for callsign %s", senderCallsign)
@@ -837,17 +787,12 @@ func invokeReceiverBinary(args *Arguments, senderCallsign, fileName, cmdID, base
 			log.Printf("Error reading receiver stderr: %v", err)
 		}
 	}()
-
-	// Store the new receiver process for this callsign.
 	runningReceiver.Store(senderCallsign, cmd)
-
 	if err := cmd.Start(); err != nil {
 		runningReceiver.Delete(senderCallsign)
 		return fmt.Errorf("Error starting receiver binary: %v", err)
 	}
-
 	go func() {
-		// Ensure cleanup of active transfer regardless of receiver outcome.
 		defer func() {
 			activeTransfersLock.Lock()
 			if current, ok := activeTransfers[senderCallsign]; ok && current == cmdID {
@@ -855,7 +800,6 @@ func invokeReceiverBinary(args *Arguments, senderCallsign, fileName, cmdID, base
 			}
 			activeTransfersLock.Unlock()
 		}()
-
 		output, err := io.ReadAll(stdoutPipe)
 		if err != nil {
 			log.Printf("Error reading receiver stdout: %v", err)
@@ -868,8 +812,6 @@ func invokeReceiverBinary(args *Arguments, senderCallsign, fileName, cmdID, base
 		} else {
 			log.Printf("Receiver binary completed successfully.")
 		}
-
-		// Compute and write the received file only if no error occurred.
 		savePath := filepath.Join(baseDir, fileName)
 		cleanSavePath := filepath.Clean(savePath)
 		if !strings.HasPrefix(cleanSavePath, baseDir) {
@@ -900,7 +842,6 @@ func invokeReceiverBinary(args *Arguments, senderCallsign, fileName, cmdID, base
 			}
 		}
 	}()
-
 	return nil
 }
 
@@ -996,7 +937,6 @@ func main() {
 		log.Printf("No ADMIN callsign filtering enabled; admin commands will be denied.")
 	}
 
-	// Establish the underlying KISS connection.
 	var conn KISSConnection
 	var err error
 	if strings.ToLower(args.Connection) == "tcp" {
@@ -1015,7 +955,6 @@ func main() {
 
 	log.Printf("File Server started. My callsign: %s", serverCallsign)
 
-	// Start periodic ID packet sender if enabled.
 	if args.IdPeriod > 0 {
 		go func() {
 			ticker := time.NewTicker(time.Duration(args.IdPeriod) * time.Minute)
@@ -1027,17 +966,13 @@ func main() {
 		}()
 	}
 
-	// Start cache cleanup goroutine.
 	go cacheCleanup()
-
-	// Create a broadcaster to distribute data read from the underlying connection.
 	broadcaster = NewBroadcaster()
 	lastDataTime = time.Now()
 	go startKISSReader(getConn(), broadcaster)
 	go monitorInactivity(600 * time.Second)
 	go startTransparentListener(args.PassthroughPort, broadcaster)
 
-	// Command processing: subscribe to the broadcaster.
 	cmdSub := broadcaster.Subscribe()
 	defer broadcaster.Unsubscribe(cmdSub)
 	var buffer []byte
@@ -1046,10 +981,7 @@ func main() {
 		frames, remaining := extractKISSFrames(buffer)
 		buffer = remaining
 		for _, frame := range frames {
-			if len(frame) < 3 {
-				continue
-			}
-			if frame[0] != KISS_FLAG || frame[len(frame)-1] != KISS_FLAG {
+			if len(frame) < 3 || frame[0] != KISS_FLAG || frame[len(frame)-1] != KISS_FLAG {
 				continue
 			}
 			inner := frame[2 : len(frame)-1]
@@ -1060,7 +992,6 @@ func main() {
 			}
 			cacheKey := sender + ":" + cmdID
 
-			// First, check if a valid cached response exists.
 			rspCacheLock.Lock()
 			if cached, exists := rspCache[cacheKey]; exists && time.Since(cached.timestamp) < 30*time.Second {
 				rspCacheLock.Unlock()
@@ -1075,12 +1006,10 @@ func main() {
 			}
 			rspCacheLock.Unlock()
 
-			// Next, check if this command is already being processed.
 			processingCommandsLock.Lock()
 			if ch, exists := processingCommands[cacheKey]; exists {
 				processingCommandsLock.Unlock()
-				<-ch // wait until processing completes
-				// Then re-check the cache.
+				<-ch
 				rspCacheLock.Lock()
 				if cached, exists := rspCache[cacheKey]; exists && time.Since(cached.timestamp) < 30*time.Second {
 					rspCacheLock.Unlock()
@@ -1095,11 +1024,9 @@ func main() {
 				}
 				rspCacheLock.Unlock()
 			} else {
-				// Mark this command as in progress.
 				ch := make(chan struct{})
 				processingCommands[cacheKey] = ch
 				processingCommandsLock.Unlock()
-				// Ensure that we remove the processing marker when done.
 				defer func(key string, ch chan struct{}) {
 					processingCommandsLock.Lock()
 					close(ch)
@@ -1110,42 +1037,36 @@ func main() {
 
 			upperCmd := strings.ToUpper(command)
 			var baseDir string
-
-			// Before processing GET/PUT/LIST, enforce global concurrency.
-			if strings.HasPrefix(upperCmd, "GET ") || strings.HasPrefix(upperCmd, "PUT ") || strings.HasPrefix(upperCmd, "LIST") {
-				activeTransfersLock.Lock()
-				// If this sender isn’t already active and we have reached max concurrency, reject.
-				if _, exists := activeTransfers[sender]; !exists && len(activeTransfers) >= globalArgs.MaxConcurrency {
-					// Log which transfers are currently active.
-					for cs, lockedCmdID := range activeTransfers {
-						log.Printf("Active transfer in progress: sender %s, cmdID %s", cs, lockedCmdID)
-					}
-					activeTransfersLock.Unlock()
-					sendResponseWithDetails(sender, cmdID, command, 0, "TRANSFER ALREADY IN PROGRESS. PLEASE WAIT.")
-					continue // Skip processing this command.
-				}
-				// For the same sender, update (or add) the active transfer with the current command ID.
-				activeTransfers[sender] = cmdID
-				activeTransfersLock.Unlock()
-			}
-
 			if globalArgs.PerCallsignDir != "" {
 				baseDir = filepath.Join(absPerCallsignDir, sender)
 				os.MkdirAll(baseDir, 0755)
 				readmePath := filepath.Join(baseDir, "README.txt")
 				if _, err := os.Stat(readmePath); os.IsNotExist(err) {
-					readmeContent := fmt.Sprintf("Welcome %s to your personal file store!\n\nYou have full permissions to all files here and can use it to store any files you wish.\n\nHave fun!", sender)
+					readmeContent := fmt.Sprintf("Welcome %s to your personal file store!\n\nYou have full permissions to all files here.\n\nHave fun!", sender)
 					if err := ioutil.WriteFile(readmePath, []byte(readmeContent), 0644); err != nil {
 						log.Printf("Error creating README.txt: %v", err)
 					}
 				}
 			}
+
 			if strings.HasPrefix(upperCmd, "GET ") {
 				if globalArgs.PerCallsignDir == "" && !callsignAllowedForGet(sender) {
 					log.Printf("Dropping GET command from sender %s: not allowed.", sender)
+					activeTransfersLock.Lock()
+					delete(activeTransfers, sender)
+					activeTransfersLock.Unlock()
 					_, _ = sendResponseWithDetails(sender, cmdID, command, 0, "CALLSIGN NOT ALLOWED")
 					continue
 				}
+				activeTransfersLock.Lock()
+				if _, exists := activeTransfers[sender]; !exists && len(activeTransfers) >= globalArgs.MaxConcurrency {
+					activeTransfersLock.Unlock()
+					sendResponseWithDetails(sender, cmdID, command, 0, "TRANSFER ALREADY IN PROGRESS. PLEASE WAIT.")
+					continue
+				}
+				activeTransfers[sender] = cmdID
+				activeTransfersLock.Unlock()
+
 				fileName := strings.TrimSpace(command[4:])
 				if len(fileName) > maxFileNameLen {
 					log.Printf("GET command from sender %s: file name '%s' too long", sender, fileName)
@@ -1176,31 +1097,40 @@ func main() {
 					_, _ = sendResponseWithDetails(sender, cmdID, command, 0, "CANNOT FIND/READ FILE")
 					continue
 				}
-				// Invoke sender binary (if one is already running for this callsign, it will be killed)
 				_, _ = sendResponseWithDetails(sender, cmdID, command, 1, "GET OK")
 				go invokeSenderBinary(args, sender, fileName, string(content), cmdID)
 			} else if strings.HasPrefix(upperCmd, "LIST") {
-				var dir string
 				if globalArgs.PerCallsignDir != "" {
-					dir = baseDir
+					baseDir = filepath.Join(absPerCallsignDir, sender)
 				} else {
-					dir = absServeDir
+					baseDir = absServeDir
 				}
-				listing, err := listFiles(dir)
+				listing, err := listFiles(baseDir)
 				if err != nil {
 					log.Printf("LIST command from sender %s: error listing files: %v", sender, err)
 					_, _ = sendResponseWithDetails(sender, cmdID, command, 0, "LIST CANNOT READ")
 					continue
 				}
-				// Invoke sender binary (if one is already running for this callsign, it will be killed)
 				_, _ = sendResponseWithDetails(sender, cmdID, command, 1, "LIST OK")
 				go invokeSenderBinary(args, sender, "LIST.txt", listing, cmdID)
 			} else if strings.HasPrefix(upperCmd, "PUT ") {
 				if globalArgs.PerCallsignDir == "" && !callsignAllowedForPut(sender) {
 					log.Printf("PUT command from sender %s not allowed.", sender)
+					activeTransfersLock.Lock()
+					delete(activeTransfers, sender)
+					activeTransfersLock.Unlock()
 					_, _ = sendResponseWithDetails(sender, cmdID, command, 0, "CALLSIGN NOT ALLOWED")
 					continue
 				}
+				activeTransfersLock.Lock()
+				if _, exists := activeTransfers[sender]; !exists && len(activeTransfers) >= globalArgs.MaxConcurrency {
+					activeTransfersLock.Unlock()
+					sendResponseWithDetails(sender, cmdID, command, 0, "TRANSFER ALREADY IN PROGRESS. PLEASE WAIT.")
+					continue
+				}
+				activeTransfers[sender] = cmdID
+				activeTransfersLock.Unlock()
+
 				fileName := strings.TrimSpace(command[4:])
 				if len(fileName) > maxFileNameLen {
 					log.Printf("PUT command from sender %s: file name '%s' too long", sender, fileName)
@@ -1225,7 +1155,6 @@ func main() {
 					_, _ = sendResponseWithDetails(sender, cmdID, command, 0, "INVALID FILE PATH")
 					continue
 				}
-				// Invoke receiver binary (if one is already running for this callsign, it will be killed)
 				err := invokeReceiverBinary(args, sender, fileName, cmdID, dir)
 				if err != nil {
 					log.Printf("PUT command from sender %s: receiver binary error: %v", sender, err)

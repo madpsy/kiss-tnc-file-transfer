@@ -861,10 +861,17 @@ func receiverMain(args *Arguments) {
 				transfer.BurstTo = parsed.BurstTo
 			}
 			if _, exists := transfer.Packets[seq]; exists {
-				transfer.DuplicateCount++
-				log.Printf("Duplicate packet seq %d received; duplicates so far: %d.", seq, transfer.DuplicateCount)
-				continue
+    			transfer.DuplicateCount++
+			    log.Printf("Duplicate packet seq %d received; duplicates so far: %d.", seq, transfer.DuplicateCount)
+			    // If this duplicate's sequence equals or exceeds the burst marker, send an ACK.
+			    if seq >= transfer.BurstTo {
+			        ackRange := computeCumulativeAck(transfer)
+			        sendAck(conn, args.MyCallsign, sender, fileID, ackRange)
+			        transfer.LastAckSent = time.Now()
+			    }
+			    continue
 			}
+
 			transfer.Packets[seq] = parsed.Payload
 			transfer.BytesReceived += len(parsed.Payload)
 			transfer.BurstBytes += len(parsed.Payload)
