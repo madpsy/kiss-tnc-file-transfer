@@ -446,7 +446,6 @@ func parseCommandPacket(packet []byte) (sender, cmdID, command string, ok bool) 
 	}
 	cmdID = parts[0]
 	if strings.ToUpper(parts[1]) != "CMD" {
-		log.Printf("Expected 'CMD' in the packet, got: %s", parts[1])
 		return "", "", "", false
 	}
 	command = parts[2]
