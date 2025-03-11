@@ -314,12 +314,15 @@
                     <div class="modal-content">
                         <!-- Navigation header -->
                         <div class="modal-header" style="display: flex; align-items: center; justify-content: flex-start;">
+                            <button id="navBackBtn" class="btn btn-secondary btn-sm" style="margin-right: 5px;">Back</button>
+                            <button id="navForwardBtn" class="btn btn-secondary btn-sm" style="margin-right: 5px;">Forward</button>
                             <button id="navHomeBtn" class="btn btn-secondary btn-sm" style="margin-right: 5px;">Home</button>
                             <div style="display: flex; align-items: center;">
                                 <button id="navRefreshBtn" class="btn btn-secondary btn-sm" style="margin-right: 10px;">&#10227;</button>
                                 <input type="text" id="currentPageUrl" class="form-control" readonly placeholder="Current page" style="max-width: 300px;">
                             </div>
                         </div>
+
                         <!-- Modal body for content -->
                         <div class="modal-body p-0" id="webViewContent" style="min-height: 500px; overflow:auto;">
                             <div id="spinnerContainer">
@@ -410,6 +413,8 @@
 		let cachedIndexHTML = null;
 		let currentPageName = "index.html";
 		let autoSaveFilesEnabled = true;
+		let pageHistory = [];	
+		let historyIndex = -1;
                
                 /***********************
                  * Persistence Functions
@@ -3077,24 +3082,25 @@ function openWebViewModal() {
   currentPageName = "index.html";
   document.getElementById('currentPageUrl').value = currentPageName;
   const contentEl = document.getElementById('webViewContent');
-  
-  // Show the spinner immediately in the modal
+
+  // Show spinner immediately in the modal.
   contentEl.innerHTML = '<div id="spinnerContainer"><div class="spinner"></div></div>';
   (new bootstrap.Modal(document.getElementById('webViewModal'))).show();
-  
-  // If the page is already cached, load it immediately.
+
+  // Instead of calling loadIndexWithAssets directly, always use loadPage.
   if (cachedIndexHTML) {
-    loadIndexWithAssets(cachedIndexHTML);
+    // Use loadPage to update history and content.
+    loadPage("index.html", cachedIndexHTML);
   } else {
-    // Send the GET command to fetch index.html.
+    // Send the GET command and then call loadPage once the HTML is available.
     sendCmdWithRetry("GET index.html")
       .then(rsp => {
         console.log("index.html GET command sent.");
-        // Optionally, poll until cachedIndexHTML is updated by your packet processing:
+        // Poll until cachedIndexHTML is updated by your packet processing.
         let checkInterval = setInterval(() => {
           if (cachedIndexHTML) {
             clearInterval(checkInterval);
-            loadIndexWithAssets(cachedIndexHTML);
+            loadPage("index.html", cachedIndexHTML);
           }
         }, 200);
       })
@@ -3103,6 +3109,7 @@ function openWebViewModal() {
       });
   }
 }
+
 
 
 
@@ -3209,16 +3216,16 @@ function loadIndexWithAssets(htmlContent) {
 
 // Event listener for the Home button.
 document.getElementById('navHomeBtn').addEventListener('click', () => {
-  currentPageName = "index.html";
-  document.getElementById('currentPageUrl').value = currentPageName;
-  fetchAssetViaGET("index.html")
+  const homePage = "index.html";
+  fetchAssetViaGET(homePage)
     .then(dataUrl => fetch(dataUrl))
     .then(response => response.text())
     .then(htmlContent => {
-      loadIndexWithAssets(htmlContent);
+      loadPage(homePage, htmlContent);
     })
     .catch(err => console.error("Error loading home page:", err));
 });
+
 
 // Event listener for the Refresh button.
 document.getElementById('navRefreshBtn').addEventListener('click', () => {
@@ -3249,54 +3256,116 @@ function setupModalLinks() {
   const modalContent = document.getElementById('webViewContent');
   const links = modalContent.querySelectorAll('a[href]');
   links.forEach(link => {
-link.addEventListener('click', function(e) {
-  e.preventDefault();
-  const href = this.getAttribute('href');
-  // If the link is for an HTML file and we're in view mode (autoSaveFilesEnabled is false),
-  // show the spinner.
-  if (href.endsWith('.html') && !autoSaveFilesEnabled) {
-    document.getElementById('webViewContent').innerHTML = '<div id="spinnerContainer"><div class="spinner"></div></div>';
-    fetchAssetViaGET(href)
+    link.addEventListener('click', function(e) {
+      e.preventDefault();
+      const href = this.getAttribute('href');
+      if (href.endsWith('.html') && !autoSaveFilesEnabled) {
+        // Show spinner while fetching new page.
+        document.getElementById('webViewContent').innerHTML =
+          '<div id="spinnerContainer"><div class="spinner"></div></div>';
+        fetchAssetViaGET(href)
+          .then(dataUrl => fetch(dataUrl))
+          .then(response => response.text())
+          .then(htmlContent => {
+            // Use loadPage to update history and content.
+            loadPage(href, htmlContent);
+          })
+          .catch(err => console.error("Error fetching HTML asset:", err));
+      } else {
+        // For non-HTML files, handle downloads as before.
+        const flashMsg = document.createElement('div');
+        flashMsg.innerText = 'Download started...';
+        flashMsg.style.position = 'fixed';
+        flashMsg.style.top = '50%';
+        flashMsg.style.left = '50%';
+        flashMsg.style.transform = 'translate(-50%, -50%)';
+        flashMsg.style.padding = '1rem 2rem';
+        flashMsg.style.backgroundColor = 'rgba(0, 0, 0, 0.8)';
+        flashMsg.style.color = '#fff';
+        flashMsg.style.fontSize = '1.5rem';
+        flashMsg.style.borderRadius = '8px';
+        flashMsg.style.zIndex = '9999';
+        document.getElementById('webViewContent').appendChild(flashMsg);
+        setTimeout(() => flashMsg.remove(), 3000);
+
+        // Trigger download without modifying modal content.
+        fetchAssetViaGET(href)
+          .then(dataUrl => {
+            const a = document.createElement('a');
+            a.href = dataUrl;
+            a.download = href;
+            document.body.appendChild(a);
+            a.click();
+            document.body.removeChild(a);
+          })
+          .catch(err => console.error("Error fetching asset for download:", err));
+      }
+    });
+  });
+}
+
+
+function loadPage(pageName, htmlContent) {
+  // Inject the HTML into the modal.
+  loadIndexWithAssets(htmlContent);
+  
+  // Update the current page name.
+  currentPageName = pageName;
+  document.getElementById('currentPageUrl').value = currentPageName;
+  
+  // If we're not at the end of history, truncate forward history.
+  if (historyIndex < pageHistory.length - 1) {
+    pageHistory = pageHistory.slice(0, historyIndex + 1);
+  }
+  
+  // Record the new page and update the history index.
+  pageHistory.push(pageName);
+  historyIndex = pageHistory.length - 1;
+  
+  // Update the navigation buttons.
+  updateNavButtons();
+}
+
+function updateNavButtons() {
+  document.getElementById('navBackBtn').disabled = (historyIndex <= 0);
+  document.getElementById('navForwardBtn').disabled = (historyIndex >= pageHistory.length - 1);
+}
+
+// Add event listener for the Back button.
+document.getElementById('navBackBtn').addEventListener('click', () => {
+  if (historyIndex > 0) {
+    historyIndex--;
+    const prevPage = pageHistory[historyIndex];
+    fetchAssetViaGET(prevPage)
       .then(dataUrl => fetch(dataUrl))
       .then(response => response.text())
       .then(htmlContent => {
-        currentPageName = href;
+        currentPageName = prevPage;
         document.getElementById('currentPageUrl').value = currentPageName;
         loadIndexWithAssets(htmlContent);
+        updateNavButtons();
       })
-      .catch(err => console.error("Error fetching HTML asset:", err));
-  } else {
-    // For non-HTML files, do not clear or replace the modal content.
-    // Optionally, flash a temporary message that the download has started.
-    const flashMsg = document.createElement('div');
-    flashMsg.innerText = 'Download started...';
-    flashMsg.style.position = 'absolute';
-    flashMsg.style.top = '10px';
-    flashMsg.style.right = '10px';
-    flashMsg.style.padding = '0.5rem 1rem';
-    flashMsg.style.backgroundColor = 'rgba(0,0,0,0.7)';
-    flashMsg.style.color = '#fff';
-    flashMsg.style.borderRadius = '5px';
-    document.getElementById('webViewContent').appendChild(flashMsg);
-    setTimeout(() => flashMsg.remove(), 2000);
-    
-    // Trigger download without modifying the modal's main content.
-    fetchAssetViaGET(href)
-      .then(dataUrl => {
-        const a = document.createElement('a');
-        a.href = dataUrl;
-        a.download = href;
-        document.body.appendChild(a);
-        a.click();
-        document.body.removeChild(a);
-      })
-      .catch(err => console.error("Error fetching asset for download:", err));
+      .catch(err => console.error("Error loading page:", err));
   }
 });
 
-
-  });
-}
+// Add event listener for the Forward button.
+document.getElementById('navForwardBtn').addEventListener('click', () => {
+  if (historyIndex < pageHistory.length - 1) {
+    historyIndex++;
+    const nextPage = pageHistory[historyIndex];
+    fetchAssetViaGET(nextPage)
+      .then(dataUrl => fetch(dataUrl))
+      .then(response => response.text())
+      .then(htmlContent => {
+        currentPageName = nextPage;
+        document.getElementById('currentPageUrl').value = currentPageName;
+        loadIndexWithAssets(htmlContent);
+        updateNavButtons();
+      })
+      .catch(err => console.error("Error loading page:", err));
+  }
+});
             </script>
             <footer style="text-align: center; margin-top: 20px;">
                 <a href="https://github.com/madpsy/kiss-tnc-file-transfer" target="_blank">Github Repo</a>
