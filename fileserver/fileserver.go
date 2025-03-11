@@ -228,6 +228,30 @@ type TCPKISSConnection struct {
 	lock sync.Mutex
 }
 
+
+func resetState() {
+    // Reset the timestamp so that the inactivity monitor starts fresh.
+    lastDataTime = time.Now()
+
+    // Clear the response cache.
+    rspCacheLock.Lock()
+    rspCache = make(map[string]cachedResponse)
+    rspCacheLock.Unlock()
+
+    // Clear any in-progress command tracking.
+    processingCommandsLock.Lock()
+    processingCommands = make(map[string]chan struct{})
+    processingCommandsLock.Unlock()
+
+    // Clear active transfers.
+    activeTransfersLock.Lock()
+    activeTransfers = make(map[string]string)
+    activeTransfersLock.Unlock()
+
+    // Optionally, reinitialize the broadcaster.
+    broadcaster = NewBroadcaster()
+}
+
 func newTCPKISSConnection(host string, port int) (*TCPKISSConnection, error) {
 	addr := fmt.Sprintf("%s:%d", host, port)
 	conn, err := net.Dial("tcp", addr)
@@ -647,6 +671,7 @@ func doReconnect() {
 			continue
 		}
 		setConn(newConn)
+		resetState()
 		lastDataTime = time.Now()
 		log.Println("Reconnected successfully to the underlying device")
 		go startKISSReader(newConn, broadcaster)
