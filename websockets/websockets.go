@@ -39,12 +39,16 @@ var deviceConfig DeviceConfig
 
 // Global variables for reconnection and inactivity tracking.
 var (
-	// lastDataTime holds the time when data was last received.
+	// lastDataTime holds the time when data was last received from the device.
 	lastDataTime time.Time
+	// Protect lastDataTime with a mutex for safe concurrent access.
+	lastDataTimeMutex sync.Mutex
 	// Protects the reconnecting flag.
 	reconnectMutex sync.Mutex
 	// Indicates if a reconnect is already in progress.
 	reconnecting bool
+	// turnaround delay duration (if > 0, a delay is applied before sending a frame)
+	sendDelay time.Duration
 )
 
 // extractKISSFrames searches the provided data for complete frames.
@@ -93,6 +97,21 @@ func unescapeData(data []byte) []byte {
 	return out.Bytes()
 }
 
+// waitForTurnaroundDelay pauses until at least the specified delay has passed since the last device frame was received.
+func waitForTurnaroundDelay(delay time.Duration) {
+	if delay > 0 {
+		lastDataTimeMutex.Lock()
+		lastRecv := lastDataTime
+		lastDataTimeMutex.Unlock()
+		elapsed := time.Since(lastRecv)
+		if elapsed < delay {
+			remaining := delay - elapsed
+			log.Printf("Applying turnaround delay of %v", remaining)
+			time.Sleep(remaining)
+		}
+	}
+}
+
 // Global variable for the underlying device connection.
 var deviceConn io.ReadWriteCloser
 
@@ -117,6 +136,9 @@ var (
 
 // frameChan is a buffered channel used to decouple device reading from broadcasting.
 var frameChan = make(chan []byte, 100)
+
+// kissTxChan is a buffered channel used for sending outgoing KISS frames to the device.
+var kissTxChan = make(chan []byte, 100)
 
 // connectDevice creates a new connection based on the provided DeviceConfig.
 func connectDevice(cfg DeviceConfig) (io.ReadWriteCloser, error) {
@@ -189,7 +211,9 @@ func doReconnect() {
 			log.Printf("Reconnect failed: %v", err)
 		} else {
 			deviceConn = newConn
+			lastDataTimeMutex.Lock()
 			lastDataTime = time.Now() // reset the inactivity timer
+			lastDataTimeMutex.Unlock()
 			log.Println("Reconnected successfully to the device")
 			break
 		}
@@ -209,14 +233,21 @@ func main() {
 	tcpPort := flag.Int("port", 0, "TCP port (required for tcp connection)")
 	listenIP := flag.String("listen-ip", "0.0.0.0", "IP address to bind the HTTP server (default 0.0.0.0)")
 	listenPort := flag.Int("listen-port", 5000, "Port to bind the HTTP server (default 5000)")
-	// New flag: only used for TCP TNC inactivity (in seconds)
-	tcpReadDeadline := flag.Int("tcp-read-deadline", 600, "Time (in seconds) without data before triggering reconnect (only for TCP TNC)")
+	// New flag: only used for TCP device inactivity (in seconds)
+	tcpReadDeadline := flag.Int("tcp-read-deadline", 600, "Time (in seconds) without data before triggering reconnect (only for TCP device)")
 	// New flag: specify the web root for static files
 	webRoot := flag.String("web-root", ".", "Root directory for web files (default: current directory)")
+	// Existing flag: delay between sending each kiss frame (post-send delay)
+	delay := flag.Int("delay", 0, "Delay in milliseconds between sending each kiss frame to the device (default 0)")
+	// New flag: turnaround delay before sending a frame if a frame was recently received.
+	sendDelayFlag := flag.Int("send-delay", 0, "Delay in milliseconds before sending frames to the device if we have just received a frame (turnaround delay)")
 	debug := flag.Bool("debug", false, "Enable verbose debug logging")
 	flag.Parse()
 
 	debugMode := *debug
+
+	// Set the turnaround delay duration.
+	sendDelay = time.Duration(*sendDelayFlag) * time.Millisecond
 
 	// Populate device configuration.
 	deviceConfig = DeviceConfig{
@@ -235,17 +266,44 @@ func main() {
 	}
 
 	// Initialize the timestamp for the last received data.
+	lastDataTimeMutex.Lock()
 	lastDataTime = time.Now()
+	lastDataTimeMutex.Unlock()
 
 	// Start a goroutine to monitor inactivity.
 	go func() {
 		tncTimeout := time.Duration(*tcpReadDeadline) * time.Second
 		for {
 			time.Sleep(1 * time.Second)
-			if time.Since(lastDataTime) > tncTimeout {
+			lastDataTimeMutex.Lock()
+			last := lastDataTime
+			lastDataTimeMutex.Unlock()
+			if time.Since(last) > tncTimeout {
 				log.Println("No data received for the specified deadline; triggering reconnect")
 				// Trigger reconnect (if not already in progress).
 				go doReconnect()
+			}
+		}
+	}()
+
+	// Start a dedicated goroutine to send KISS frames to the device with the turnaround delay.
+	go func() {
+		for frame := range kissTxChan {
+			// Wait until the turnaround delay has been satisfied.
+			waitForTurnaroundDelay(sendDelay)
+			if deviceConn != nil {
+				_, err := deviceConn.Write(frame)
+				if err != nil {
+					log.Printf("Error writing to device: %v", err)
+				} else {
+					log.Printf("Sent %d bytes to device", len(frame))
+				}
+			} else {
+				log.Printf("Device connection is nil, dropping frame")
+			}
+			// Additional delay between frames if specified.
+			if *delay > 0 {
+				time.Sleep(time.Millisecond * time.Duration(*delay))
 			}
 		}
 	}()
@@ -294,14 +352,9 @@ func main() {
 				log.Printf("Unexpected type for raw_kiss_frame: %T", v)
 				return
 			}
-			if deviceConn != nil {
-				_, err := deviceConn.Write(msg)
-				if err != nil {
-					log.Printf("Error writing to device: %v", err)
-				} else {
-					log.Printf("Forwarded %d bytes from Socket.IO client to device", len(msg))
-				}
-			}
+			// Instead of writing directly to the device, queue the frame.
+			kissTxChan <- msg
+			log.Printf("Queued %d bytes from Socket.IO client for device", len(msg))
 		})
 
 		client.On("disconnect", func(datas ...any) {
@@ -366,7 +419,9 @@ func main() {
 			}
 			if n > 0 {
 				// Update our inactivity timer.
+				lastDataTimeMutex.Lock()
 				lastDataTime = time.Now()
+				lastDataTimeMutex.Unlock()
 			}
 			if n == 0 {
 				// No data read; let the inactivity timer handle reconnect if needed.
@@ -437,11 +492,11 @@ func main() {
 	mux := http.NewServeMux()
 	mux.Handle("/socket.io/", engineServer)
 	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
-        if r.URL.Path == "/" && r.URL.Query().Get("connection") == "" {
-    	    http.Redirect(w, r, "/?connection=websockets", http.StatusFound)
-    	    return
-    	}
-    		http.FileServer(http.Dir(*webRoot)).ServeHTTP(w, r)
+		if r.URL.Path == "/" && r.URL.Query().Get("connection") == "" {
+			http.Redirect(w, r, "/?connection=websockets", http.StatusFound)
+			return
+		}
+		http.FileServer(http.Dir(*webRoot)).ServeHTTP(w, r)
 	})
 	bindAddr := fmt.Sprintf("%s:%d", *listenIP, *listenPort)
 	httpServer := &http.Server{
@@ -494,11 +549,10 @@ func handleRawTCPClient(conn net.Conn, debugMode bool) {
 				log.Printf("DEBUG: Received %d bytes from raw TCP client %s: % X", n, conn.RemoteAddr().String(), data)
 			}
 			log.Printf("Received %d bytes from raw TCP client %s; forwarding to device", n, conn.RemoteAddr().String())
+			// Queue the data to be sent to the device.
 			if deviceConn != nil {
-				_, err := deviceConn.Write(data)
-				if err != nil {
-					log.Printf("Error writing to device from raw TCP client %s: %v", conn.RemoteAddr().String(), err)
-				}
+				kissTxChan <- data
+				log.Printf("Queued %d bytes from raw TCP client for device", len(data))
 			}
 		}
 	}

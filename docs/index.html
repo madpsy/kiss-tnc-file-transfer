@@ -297,7 +297,7 @@
                 let currentPacketIndex = 0;
                 let currentRetries = 0, totalRetries = 0;
                 let fileTransferInProgress = false, ackTimer = null, sentFileStats = null;
-                const CHUNK_SIZE = 225;
+                const CHUNK_SIZE = 227;
                 let headerAckReceived = false; // whether header ACK has been received
                 let burstInProgress = false;
                 let lastRangeAck = "";
@@ -332,6 +332,7 @@
                 let burstStartTimestamp = 0;
                 let lastBurstSentCount = 0; // actual number of packets sent in the burst
 		let dataRetryCount = 0;
+		let currentBurstId = 0;
                 
                 // NEW: FIN-ACK retry loop variables – these are read from the UI.
                 let finalAckRetryTimer = null;
@@ -1599,76 +1600,79 @@ if (infoText.split(":")[1] && infoText.split(":")[1].toUpperCase() === "RSP") {
       totalRetries++;
     });
 
-    // Calculate how long to wait before we expect an ACK.
+    // Calculate how long to wait before expecting an ACK.
     const userTimeoutMs = (parseFloat(document.getElementById('timeoutSeconds')?.value) * 1000) || 5000;
     const effectiveBurst = (burstSize === 0 ? currentBurstSizeDynamic : burstSize);
     const burstTimeout = (effectiveBurst * perPacketTimeout) + userTimeoutMs;
 
-    console.log(`Sender: Scheduling ackTimer for missing packets. burstTimeout=${burstTimeout}ms`);
+    // Increment burst ID for this new missing-packets burst.
+    currentBurstId++;
+    const thisBurstId = currentBurstId;
 
+    console.log(`Sender: Scheduling ackTimer for missing packets. burstTimeout=${burstTimeout}ms, burstId=${thisBurstId}`);
     ackTimer = setTimeout(() => {
-      try {
-        console.log(`[AckTimer] Fired after missing-packets burstTimeout=${burstTimeout}ms`);
-        dataRetryCount++;
-        console.log(`Sender: dataRetryCount incremented to ${dataRetryCount}`);
+      // Check if this timer is still valid.
+      if (thisBurstId !== currentBurstId) return; // Outdated timer; do nothing.
 
-        // If we exceeded maxRetries, abort the transfer.
-        if (dataRetryCount > getMaxRetries()) {
-          updateStatus("No ACK received after max retries (missing packets). Aborting transfer.");
-          cancelSenderTransfer();
-          return;
-        }
+      console.log(`[AckTimer] Fired after missing-packets burstTimeout=${burstTimeout}ms`);
+      dataRetryCount++;
+      console.log(`Sender: dataRetryCount incremented to ${dataRetryCount}`);
 
-        // Otherwise, force a new burst attempt (or re‐resend missing packets).
-        // Important: set burstInProgress to false so we can call sendBurstPackets() again.
-        burstInProgress = false;
-        console.log("Sender: Retrying missing packets again...");
-        sendBurstPackets();
-
-      } catch (err) {
-        console.error("[AckTimer] Uncaught error in missing-packets callback:", err);
+      if (dataRetryCount > getMaxRetries()) {
+        updateStatus("No ACK received after max retries (missing packets). Aborting transfer.");
+        cancelSenderTransfer();
+        return;
       }
+
+      console.log(`Sender: No ACK at all for these packets; marking them missing and retrying.`);
+      missingPackets = [];
+      for (let seq = currentPacketIndex + 1; seq <= currentPacketIndex + effectiveBurst; seq++) {
+        missingPackets.push(seq);
+      }
+      burstInProgress = false;
+      sendBurstPackets();
+
     }, burstTimeout);
 
     return;
   }
 
-  // Check if we already sent everything
   if (currentPacketIndex >= totalPackets) {
     finalizeTransfer();
     return;
   }
 
-  // Prevent re-entrancy if we're in the middle of sending a burst
+  // Prevent re-entrancy if already in a burst.
   if (burstInProgress) {
     console.log("Sender: Attempted to burst but burstInProgress is true; skipping.");
     return;
   }
   burstInProgress = true;
 
-  // Figure out how many packets we will burst
+  // Calculate burst window.
   const effectiveBurst = (burstSize === 0 ? currentBurstSizeDynamic : burstSize);
   const startSeq = currentPacketIndex + 1;
   const endSeq = Math.min(totalPackets, currentPacketIndex + effectiveBurst);
-
-  // Record how many packets we're sending
   lastBurstSentCount = endSeq - startSeq + 1;
   burstStartTimestamp = Date.now();
 
-  console.log(`Sender: Sending burst from seq=${startSeq} to seq=${endSeq} (count=${lastBurstSentCount})`);
+  // Increment burst ID for the new burst and capture it.
+  currentBurstId++;
+  const thisBurstId = currentBurstId;
 
-  // Send each packet in this burst
+  console.log(`Sender: Sending burst from seq=${startSeq} to seq=${endSeq} (count=${lastBurstSentCount}), burstId=${thisBurstId}`);
   for (let seq = startSeq; seq <= endSeq; seq++) {
     sendPacket(seq);
   }
 
-  // Keep track of how long we will wait for the ACK
   const userTimeoutMs = (parseFloat(document.getElementById('timeoutSeconds')?.value) * 1000) || 5000;
   const burstTimeout = (lastBurstSentCount * perPacketTimeout) + userTimeoutMs;
-
-  console.log(`Sender: Scheduling ackTimer with burstTimeout=${burstTimeout}ms`);
+  console.log(`Sender: Scheduling ackTimer with burstTimeout=${burstTimeout}ms, burstId=${thisBurstId}`);
 
   ackTimer = setTimeout(() => {
+    // Before processing, check if this timer is for the current burst.
+    if (thisBurstId !== currentBurstId) return; // This timer is outdated, so skip.
+    
     try {
       console.log(`[AckTimer] Fired after burstTimeout=${burstTimeout}ms (seqs ${startSeq}..${endSeq})`);
       dataRetryCount++;
@@ -1680,16 +1684,12 @@ if (infoText.split(":")[1] && infoText.split(":")[1].toUpperCase() === "RSP") {
         return;
       }
 
-      // We got no ACK in time, so let's mark all these packets missing and retry.
       console.log(`Sender: No ACK at all for these packets; marking them missing and retrying.`);
       missingPackets = [];
       for (let seq = startSeq; seq <= endSeq; seq++) {
         missingPackets.push(seq);
       }
-
-      // Important: let the next call of sendBurstPackets() actually happen
       burstInProgress = false;
-      // Re-send
       sendBurstPackets();
 
     } catch (err) {
@@ -2519,7 +2519,7 @@ function parseRspPacket(payload) {
           document.getElementById('listTable').innerHTML = "";
           
           // Send the GET command.
-          sendCmd("GET " + fileName)
+          sendCmdWithRetry("GET " + fileName)
             .then(rsp => {
               const statusText = (rsp.status === 1) ? "Success" : (rsp.status === 0 ? "Failed" : "Unknown");
               document.getElementById('rspResponseList').innerText = "RSP: " + statusText + " - " + rsp.message;
@@ -2712,7 +2712,7 @@ function parseRspPacket(payload) {
         document.getElementById('listTable').innerHTML = "";
         
         // Send the DEL command.
-        sendCmd("DEL " + fileName)
+        sendCmdWithRetry("DEL " + fileName)
           .then(rsp => {
             const statusText = (rsp.status === 1) ? "Success" : (rsp.status === 0 ? "Failed" : "Unknown");
             document.getElementById('rspResponseList').innerText = "RSP: " + statusText + " - " + rsp.message;
@@ -2744,7 +2744,7 @@ function parseRspPacket(payload) {
         document.getElementById('listTable').innerHTML = "";
         
         // Send the REN command.
-        sendCmd("REN " + fileName + "|" + newName)
+        sendCmdWithRetry("REN " + fileName + "|" + newName)
           .then(rsp => {
             const statusText = (rsp.status === 1) ? "Success" : (rsp.status === 0 ? "Failed" : "Unknown");
             document.getElementById('rspResponseList').innerText = "RSP: " + statusText + " - " + rsp.message;

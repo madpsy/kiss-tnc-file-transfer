@@ -20,11 +20,13 @@ import (
 	"time"
 )
 
+// --- Global Constants and Variables ---
+
 var disallowedFilenames = []string{
 	"LIST.txt", // used internally for file lists
 }
 
-// Global constants for KISS framing.
+// KISS framing constants.
 const (
 	KISS_FLAG     = 0xC0
 	KISS_CMD_DATA = 0x00
@@ -35,21 +37,30 @@ var serverCallsign string
 
 var globalArgs *Arguments
 
-// Global variables for reconnection logic.
+// Control connection globals and reconnection logic.
 var (
 	lastDataTime   time.Time
 	reconnectMutex sync.Mutex
 	reconnecting   bool
-	// globalConn is now protected by connLock and should be accessed via getConn() and setConn().
-	globalConn  KISSConnection
-	broadcaster *Broadcaster // Already used for broadcasting.
+	// globalConn is the control (command) connection.
+	globalConn KISSConnection
+	// broadcaster is used for command/control messages.
+	broadcaster *Broadcaster
 	connLock    sync.RWMutex // Protects access to globalConn.
 )
 
-// Global slices for allowed sender callsigns.
+// File transfer connection globals and reconnection logic.
+var (
+	fileConn         KISSConnection
+	fileConnLock     sync.RWMutex
+	fileReconnectMux sync.Mutex
+	fileReconnecting bool
+)
+
+// Allowed sender callsigns.
 var getAllowedCallsigns []string
 var putAllowedCallsigns []string
-// allowed ADMIN callsigns – if empty, admin commands are denied.
+// Allowed ADMIN callsigns – if empty, admin commands are denied.
 var adminAllowedCallsigns []string
 
 // Maximum allowed file name length.
@@ -59,11 +70,11 @@ const maxFileNameLen = 58
 var absServeDir string
 var absSaveDir string
 
-// Global maps to track running processes per sender callsign.
+// Global maps for tracking running sender/receiver processes.
 var runningSender sync.Map
 var runningReceiver sync.Map
 
-// --- Duplicate response cache ---
+// --- Duplicate Response Cache ---
 type cachedResponse struct {
 	timestamp time.Time
 	frame     []byte
@@ -89,21 +100,20 @@ func cacheCleanup() {
 	}
 }
 
-// --- In-progress command tracking ---
-// Ensures that concurrent duplicate commands wait for the first to finish processing.
+// --- In-progress Command Tracking ---
 var (
 	processingCommands     = make(map[string]chan struct{})
 	processingCommandsLock sync.Mutex
 )
 
-// --- Active transfer tracking ---
-// Tracks the currently active transfers by sender callsign.
+// --- Active Transfer Tracking ---
 var (
 	activeTransfers     = make(map[string]string)
 	activeTransfersLock sync.Mutex
 )
 
-// --- Thread-safe connection accessor functions ---
+// --- Thread-safe Connection Accessor Functions ---
+
 func isFilenameDisallowed(fileName string) bool {
 	for _, disallowed := range disallowedFilenames {
 		if strings.EqualFold(fileName, disallowed) {
@@ -128,7 +138,23 @@ func setConn(newConn KISSConnection) {
 	connLock.Unlock()
 }
 
-// Command-line arguments structure.
+func getFileConn() KISSConnection {
+	fileConnLock.RLock()
+	defer fileConnLock.RUnlock()
+	return fileConn
+}
+
+func setFileConn(newConn KISSConnection) {
+	fileConnLock.Lock()
+	if fileConn != nil {
+		fileConn.Close()
+	}
+	fileConn = newConn
+	fileConnLock.Unlock()
+}
+
+// --- Command-line Arguments Structure ---
+
 type Arguments struct {
 	MyCallsign        string // your own callsign
 	Connection        string // "tcp" or "serial"
@@ -136,16 +162,16 @@ type Arguments struct {
 	Port              int    // used with TCP
 	SerialPort        string // used with serial
 	Baud              int    // used with serial
-	GetCallsigns      string // comma-delimited list for filtering GET sender callsigns (supports wildcards)
-	PutCallsigns      string // comma-delimited list for filtering PUT sender callsigns (supports wildcards)
-	AdminCallsigns    string // comma-delimited list for filtering ADMIN commands (supports wildcards)
-	ServeDirectory    string // directory to serve files from (mandatory unless -per-callsign is used)
-	SaveDirectory     string // where received files should be saved (default current directory)
+	GetCallsigns      string // comma-delimited list for allowed GET sender callsigns
+	PutCallsigns      string // comma-delimited list for allowed PUT sender callsigns
+	AdminCallsigns    string // comma-delimited list for allowed ADMIN commands
+	ServeDirectory    string // directory to serve files from (unless -per-callsign is used)
+	SaveDirectory     string // where received files should be saved
 	SenderBinary      string // path to the binary used to send files
-	ReceiverBinary    string // path to the binary used to receive files (default "receiver")
-	PassthroughPort   int    // TCP port for transparent passthrough (default 5011)
+	ReceiverBinary    string // path to the binary used to receive files
+	PassthroughPort   int    // TCP port for transparent passthrough
 	IdPeriod          int    // Minutes between sending an ID packet (0 means never)
-	PerCallsignDir    string // base directory for per-callsign subdirectories (mutually exclusive with other directory options)
+	PerCallsignDir    string // base directory for per-callsign subdirectories
 	OverwriteExisting bool   // if true, overwrite existing files instead of appending _x
 	MaxConcurrency    int    // Maximum concurrent transfers allowed (default 1)
 }
@@ -158,9 +184,9 @@ func parseArguments() *Arguments {
 	flag.IntVar(&args.Port, "port", 9001, "TCP port (if connection is tcp)")
 	flag.StringVar(&args.SerialPort, "serial-port", "", "Serial port (e.g., COM3 or /dev/ttyUSB0)")
 	flag.IntVar(&args.Baud, "baud", 115200, "Baud rate for serial connection")
-	flag.StringVar(&args.GetCallsigns, "get-callsigns", "", "Comma delimited list for allowed GET sender callsigns (supports wildcards)")
-	flag.StringVar(&args.PutCallsigns, "put-callsigns", "", "Comma delimited list for allowed PUT sender callsigns (supports wildcards)")
-	flag.StringVar(&args.AdminCallsigns, "admin-callsigns", "", "Comma delimited list for allowed ADMIN sender callsigns (supports wildcards)")
+	flag.StringVar(&args.GetCallsigns, "get-callsigns", "", "Comma delimited list for allowed GET sender callsigns")
+	flag.StringVar(&args.PutCallsigns, "put-callsigns", "", "Comma delimited list for allowed PUT sender callsigns")
+	flag.StringVar(&args.AdminCallsigns, "admin-callsigns", "", "Comma delimited list for allowed ADMIN commands")
 	flag.StringVar(&args.ServeDirectory, "serve-directory", "", "Directory to serve files from (unless -per-callsign is used)")
 	flag.StringVar(&args.SaveDirectory, "save-directory", ".", "Directory where received files should be saved")
 	flag.StringVar(&args.SenderBinary, "sender-binary", "sender", "Path to the binary used to send files")
@@ -188,7 +214,8 @@ func parseArguments() *Arguments {
 	return args
 }
 
-// KISSConnection is the minimal interface.
+// --- KISSConnection Interface and Implementations ---
+
 type KISSConnection interface {
 	RecvData(timeout time.Duration) ([]byte, error)
 	Write([]byte) (int, error)
@@ -282,6 +309,8 @@ func (s *SerialKISSConnection) Write(b []byte) (int, error) {
 func (s *SerialKISSConnection) Close() error {
 	return s.ser.Close()
 }
+
+// --- KISS Frame Functions ---
 
 // createRSPPacket builds the RSP packet with an AX.25 header.
 func createRSPPacket(destCallsign, srcCallsign, cmdID string, status int, msg string) []byte {
@@ -521,7 +550,8 @@ func listFiles(dir string) (string, error) {
 	return output.String(), nil
 }
 
-// --- Broadcaster ---
+// --- Broadcaster for Command Frames ---
+
 type Broadcaster struct {
 	subscribers map[chan []byte]struct{}
 	lock        sync.Mutex
@@ -557,6 +587,10 @@ func (b *Broadcaster) Broadcast(data []byte) {
 	}
 }
 
+// --- Reader and Monitor for the Control Connection ---
+//
+// Modified startKISSReader: if no data is received (empty slice), sleep for 50ms
+// before retrying. This helps avoid a tight busy loop.
 func startKISSReader(conn KISSConnection, b *Broadcaster) {
 	for {
 		data, err := conn.RecvData(100 * time.Millisecond)
@@ -567,10 +601,12 @@ func startKISSReader(conn KISSConnection, b *Broadcaster) {
 			}
 			break
 		}
-		if len(data) > 0 {
-			lastDataTime = time.Now()
-			b.Broadcast(data)
+		if len(data) == 0 {
+			time.Sleep(50 * time.Millisecond)
+			continue
 		}
+		lastDataTime = time.Now()
+		b.Broadcast(data)
 	}
 }
 
@@ -584,6 +620,7 @@ func monitorInactivity(timeout time.Duration) {
 	}
 }
 
+// doReconnect handles reconnection of the control channel.
 func doReconnect() {
 	reconnectMutex.Lock()
 	if reconnecting {
@@ -622,33 +659,78 @@ func doReconnect() {
 	reconnectMutex.Unlock()
 }
 
-func handleTransparentConnection(remoteConn net.Conn, b *Broadcaster) {
-	defer remoteConn.Close()
-	log.Printf("Accepted transparent connection from %s", remoteConn.RemoteAddr())
-	go func() {
-		for {
-			currentConn := getConn()
-			if currentConn == nil {
-				return
-			}
-			_, err := io.Copy(currentConn, remoteConn)
-			if err != nil {
-				if !strings.Contains(err.Error(), "use of closed network connection") {
-					log.Printf("Error copying from transparent client to underlying: %v", err)
-				}
-				return
-			}
-		}
-	}()
-	sub := b.Subscribe()
-	defer b.Unsubscribe(sub)
-	for data := range sub {
-		_, err := remoteConn.Write(data)
-		if err != nil {
-			return
-		}
+// doFileReconnect handles reconnection of the file transfer connection.
+func doFileReconnect() {
+	fileReconnectMux.Lock()
+	if fileReconnecting {
+		fileReconnectMux.Unlock()
+		return
 	}
+	fileReconnecting = true
+	fileReconnectMux.Unlock()
+
+	log.Println("File transfer connection: Triggering reconnect...")
+
+	for {
+		log.Println("File transfer connection: Attempting to reconnect in 5 seconds...")
+		time.Sleep(5 * time.Second)
+		var newConn KISSConnection
+		var err error
+		if strings.ToLower(globalArgs.Connection) == "tcp" {
+			newConn, err = newTCPKISSConnection(globalArgs.Host, globalArgs.Port)
+		} else {
+			newConn, err = newSerialKISSConnection(globalArgs.SerialPort, globalArgs.Baud)
+		}
+		if err != nil {
+			log.Printf("File transfer reconnect failed: %v", err)
+			continue
+		}
+		setFileConn(newConn)
+		log.Println("File transfer connection: Reconnected successfully")
+		break
+	}
+
+	fileReconnectMux.Lock()
+	fileReconnecting = false
+	fileReconnectMux.Unlock()
 }
+
+// --- Transparent Listener and Handler for File Transfers ---
+
+func handleTransparentConnection(remoteConn net.Conn, b *Broadcaster) {
+    defer remoteConn.Close()
+    log.Printf("Accepted transparent connection from %s", remoteConn.RemoteAddr())
+
+    // Instead of looping forever, do a single io.Copy and exit if no data is transferred.
+    go func() {
+        currentConn := getFileConn()
+        if currentConn == nil {
+            return
+        }
+        n, err := io.Copy(currentConn, remoteConn)
+        if err != nil {
+            if !strings.Contains(err.Error(), "use of closed network connection") {
+                log.Printf("Error copying from transparent client to file transfer connection: %v", err)
+            }
+            go doFileReconnect()
+            return
+        }
+        if n == 0 {
+            // No bytes were transferred; exit to avoid a busy loop.
+            return
+        }
+    }()
+
+    sub := b.Subscribe()
+    defer b.Unsubscribe(sub)
+    for data := range sub {
+        _, err := remoteConn.Write(data)
+        if err != nil {
+            return
+        }
+    }
+}
+
 
 func startTransparentListener(port int, b *Broadcaster) {
 	addr := fmt.Sprintf(":%d", port)
@@ -668,7 +750,8 @@ func startTransparentListener(port int, b *Broadcaster) {
 	}
 }
 
-// Invoking the Sender Binary.
+// --- Invoking the Sender and Receiver Binaries ---
+
 func invokeSenderBinary(args *Arguments, receiverCallsign, fileName, inputData, cmdID string) {
 	if v, exists := runningSender.Load(receiverCallsign); exists {
 		if existingCmd, ok := v.(*exec.Cmd); ok {
@@ -746,7 +829,6 @@ func invokeSenderBinary(args *Arguments, receiverCallsign, fileName, inputData, 
 	}()
 }
 
-// Invoking the Receiver Binary.
 func invokeReceiverBinary(args *Arguments, senderCallsign, fileName, cmdID, baseDir string) error {
 	if v, exists := runningReceiver.Load(senderCallsign); exists {
 		if existingCmd, ok := v.(*exec.Cmd); ok {
@@ -845,6 +927,7 @@ func invokeReceiverBinary(args *Arguments, senderCallsign, fileName, cmdID, base
 }
 
 // --- Periodic ID Packet Functions ---
+
 func createIDPacket() []byte {
 	dest := encodeAX25Address("BEACON", false)
 	src := encodeAX25Address(serverCallsign, true)
@@ -866,6 +949,8 @@ func sendIDPacket() {
 		log.Printf("Sent ID packet")
 	}
 }
+
+// --- main() Function ---
 
 func main() {
 	args := parseArguments()
@@ -936,21 +1021,32 @@ func main() {
 		log.Printf("No ADMIN callsign filtering enabled; admin commands will be denied.")
 	}
 
-	var conn KISSConnection
+	// --- Establish Two Separate Connections ---
+	var conn, fConn KISSConnection
 	var err error
 	if strings.ToLower(args.Connection) == "tcp" {
 		conn, err = newTCPKISSConnection(args.Host, args.Port)
 		if err != nil {
 			log.Fatalf("TCP connection error: %v", err)
 		}
+		fConn, err = newTCPKISSConnection(args.Host, args.Port)
+		if err != nil {
+			log.Fatalf("File transfer connection error: %v", err)
+		}
 	} else {
 		conn, err = newSerialKISSConnection(args.SerialPort, args.Baud)
 		if err != nil {
 			log.Fatalf("Serial connection error: %v", err)
 		}
+		fConn, err = newSerialKISSConnection(args.SerialPort, args.Baud)
+		if err != nil {
+			log.Fatalf("File transfer connection error: %v", err)
+		}
 	}
-	setConn(conn)
+	setConn(conn)      // Control channel
+	setFileConn(fConn) // File transfer channel
 	defer conn.Close()
+	defer fConn.Close()
 
 	log.Printf("File Server started. My callsign: %s", serverCallsign)
 

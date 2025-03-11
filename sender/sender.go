@@ -32,7 +32,7 @@ import (
 const (
 	KISS_FLAG     = 0xC0
 	KISS_CMD_DATA = 0x00
-	CHUNK_SIZE    = 225
+	CHUNK_SIZE    = 227
 )
 
 // ---------------------
