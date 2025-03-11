@@ -723,6 +723,7 @@ html += `<tr>
               finalFileId = sentFileStats.fileId; // new global variable on sender side
             
               fileTransferInProgress = false;
+	      
               updateSenderProgressUI();
               for (let key in activeTransfers) {
                 if (activeTransfers[key].completed) {
@@ -734,6 +735,7 @@ html += `<tr>
             
               // Start the FIN-ACK wait loop with the captured finalFileId.
               startFinAckWaitLoop(finalFileId);
+	      expectedFileId = null;
               
               // Note: Do NOT clear sentFileStats immediately; let the FIN-ACK loop complete.
             }
@@ -1369,6 +1371,7 @@ if (infoText.split(":")[1] && infoText.split(":")[1].toUpperCase() === "RSP") {
           // Optionally, ignore this transfer:
           return;
         }
+	expectedFileId = null;
       }
     
     
@@ -2298,6 +2301,7 @@ function cancelSenderTransfer() {
     updateStatus("File transfer canceled.");
     updateSenderProgressUI();
     document.getElementById('sendFileBtn').disabled = false;
+    expectedFileId = null;
   }
 }
 
@@ -3248,12 +3252,10 @@ function setupModalLinks() {
 link.addEventListener('click', function(e) {
   e.preventDefault();
   const href = this.getAttribute('href');
-  
-  // Immediately show the spinner
-  document.getElementById('webViewContent').innerHTML = '<div id="spinnerContainer"><div class="spinner"></div></div>';
-  
-  // If the link ends with '.html', fetch it via GET.
-  if (href.endsWith('.html')) {
+  // If the link is for an HTML file and we're in view mode (autoSaveFilesEnabled is false),
+  // show the spinner.
+  if (href.endsWith('.html') && !autoSaveFilesEnabled) {
+    document.getElementById('webViewContent').innerHTML = '<div id="spinnerContainer"><div class="spinner"></div></div>';
     fetchAssetViaGET(href)
       .then(dataUrl => fetch(dataUrl))
       .then(response => response.text())
@@ -3264,7 +3266,21 @@ link.addEventListener('click', function(e) {
       })
       .catch(err => console.error("Error fetching HTML asset:", err));
   } else {
-    // For non-HTML files, trigger a download.
+    // For non-HTML files, do not clear or replace the modal content.
+    // Optionally, flash a temporary message that the download has started.
+    const flashMsg = document.createElement('div');
+    flashMsg.innerText = 'Download started...';
+    flashMsg.style.position = 'absolute';
+    flashMsg.style.top = '10px';
+    flashMsg.style.right = '10px';
+    flashMsg.style.padding = '0.5rem 1rem';
+    flashMsg.style.backgroundColor = 'rgba(0,0,0,0.7)';
+    flashMsg.style.color = '#fff';
+    flashMsg.style.borderRadius = '5px';
+    document.getElementById('webViewContent').appendChild(flashMsg);
+    setTimeout(() => flashMsg.remove(), 2000);
+    
+    // Trigger download without modifying the modal's main content.
     fetchAssetViaGET(href)
       .then(dataUrl => {
         const a = document.createElement('a');
@@ -3277,6 +3293,7 @@ link.addEventListener('click', function(e) {
       .catch(err => console.error("Error fetching asset for download:", err));
   }
 });
+
 
   });
 }
