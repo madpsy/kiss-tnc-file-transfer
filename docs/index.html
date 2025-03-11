@@ -68,6 +68,44 @@
     0% { transform: rotate(0deg); }
     100% { transform: rotate(360deg); }
   }
+
+/* Back and Forward: Blue */
+#navBackBtn,
+#navForwardBtn {
+  background-color: #007bff;
+  border-color: #007bff;
+  color: #fff;
+}
+
+#navBackBtn:hover,
+#navForwardBtn:hover {
+  background-color: #0056b3;
+  border-color: #004085;
+}
+
+/* Home: Yellow */
+#navHomeBtn {
+  background-color: #ffc107;
+  border-color: #ffc107;
+  color: #000;
+}
+
+#navHomeBtn:hover {
+  background-color: #e0a800;
+  border-color: #d39e00;
+}
+
+/* Refresh: Red */
+#navRefreshBtn {
+  background-color: #dc3545;
+  border-color: #dc3545;
+  color: #fff;
+}
+
+#navRefreshBtn:hover {
+  background-color: #c82333;
+  border-color: #bd2130;
+}
     </style>
 </head>
 
@@ -314,11 +352,11 @@
                     <div class="modal-content">
                         <!-- Navigation header -->
                         <div class="modal-header" style="display: flex; align-items: center; justify-content: flex-start;">
-                            <button id="navBackBtn" class="btn btn-secondary btn-sm" style="margin-right: 5px;">Back</button>
-                            <button id="navForwardBtn" class="btn btn-secondary btn-sm" style="margin-right: 5px;">Forward</button>
-                            <button id="navHomeBtn" class="btn btn-secondary btn-sm" style="margin-right: 5px;">Home</button>
+                            <button id="navBackBtn" class="btn btn-sm btn-custom-nav" style="margin-right: 5px;">Back</button>
+                            <button id="navForwardBtn" class="btn btn-sm btn-custom-nav" style="margin-right: 5px;">Forward</button>
+                            <button id="navHomeBtn" class="btn btn-sm btn-custom-nav" style="margin-right: 5px;">Home</button>
                             <div style="display: flex; align-items: center;">
-                                <button id="navRefreshBtn" class="btn btn-secondary btn-sm" style="margin-right: 10px;">&#10227;</button>
+                                <button id="navRefreshBtn" class="btn btn-sm btn-custom-nav" style="margin-right: 10px;">&#10227;</button>
                                 <input type="text" id="currentPageUrl" class="form-control" readonly placeholder="Current page" style="max-width: 300px;">
                             </div>
                         </div>
