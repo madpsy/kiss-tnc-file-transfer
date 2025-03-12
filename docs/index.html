@@ -351,6 +351,7 @@
                 <div class="modal-dialog modal-lg">
                     <div class="modal-content">
                         <!-- Navigation header -->
+                        <!-- Navigation header -->
                         <div class="modal-header" style="display: flex; align-items: center; justify-content: flex-start;">
                             <button id="navBackBtn" class="btn btn-sm btn-custom-nav" style="margin-right: 5px;" title="Back">&#x2190;</button>
                             <button id="navForwardBtn" class="btn btn-sm btn-custom-nav" style="margin-right: 5px;" title="Forward">&#x2192;</button>
@@ -358,7 +359,10 @@
 
                             <div style="display: flex; align-items: center;">
                                 <button id="navRefreshBtn" class="btn btn-sm btn-custom-nav" style="margin-right: 10px;" title="Refresh">&#10227;</button>
-                                <input type="text" id="currentPageUrl" class="form-control" readonly placeholder="Current page" style="max-width: 300px;">
+                                <!-- Changed input: removed readonly and doubled max-width -->
+                                <input type="text" id="currentPageUrl" class="form-control" placeholder="Current page" style="width: 450px;">
+                                <!-- New Go! button -->
+                                <button id="goBtn" class="btn btn-success btn-sm" style="margin-left: 5px;">Go!</button>
                             </div>
                         </div>
 
@@ -1298,6 +1302,16 @@ function sendAckFromReceiver(sender, fileId, ackStr) {
 if (infoText.split(":")[1] && infoText.split(":")[1].toUpperCase() === "RSP") {
   const rsp = parseRspPacket(infoField);
   if (rsp.ok && pendingCmdResponses[rsp.cmdID]) {
+    if (rsp.status === 0) {
+      console.log("Received CMD RSP with status 0:", rsp.message);
+      // Check if the web view modal is open
+      const webViewModal = document.getElementById('webViewModal');
+      if (webViewModal && webViewModal.classList.contains('show')) {
+        showWebViewErrorOverlay("CMD failed: " + rsp.message);
+      }
+      // Optionally, update the global status as well.
+      updateStatus("CMD failed: " + rsp.message);
+    }
     pendingCmdResponses[rsp.cmdID].resolve(rsp);
     delete pendingCmdResponses[rsp.cmdID];
   } else {
@@ -1305,6 +1319,7 @@ if (infoText.split(":")[1] && infoText.split(":")[1].toUpperCase() === "RSP") {
   }
   return;
 }
+
 
             
             if (infoText.indexOf(":ACK:FIN-ACK") !== -1) {
@@ -2702,43 +2717,63 @@ function openListFilesModal() {
         
         
         // New function: when a Get button is clicked.
-        function getFile(fileName) {
-          // Hide the refresh button when the GET command is triggered.
-          const refreshBtn = document.getElementById('refreshListBtn');
-          if (refreshBtn) {
-            refreshBtn.style.display = 'none';
-          }
-        
-          // Update the modal's top CMD display.
-          document.getElementById('cmdSentList').innerText = "CMD: GET " + fileName;
-          // Clear any previous response and table.
-          document.getElementById('rspResponseList').innerText = "";
-          document.getElementById('listTable').innerHTML = "";
-          
-          // Send the GET command.
-          sendCmdWithRetry("GET " + fileName)
-            .then(rsp => {
-              const statusText = (rsp.status === 1) ? "Success" : (rsp.status === 0 ? "Failed" : "Unknown");
-              document.getElementById('rspResponseList').innerText = "RSP: " + statusText + " - " + rsp.message;
-              
-              // If the response indicates success, delay 1 second, then close the modal and scroll to the bottom.
-              if (rsp.status === 1) {
-    	    expectedFileId = rsp.cmdID;
-    	    console.log("Expected file ID set to:", expectedFileId);
-                setTimeout(() => {
-  const modalEl = document.getElementById('listFiles');
-  const modalInstance = bootstrap.Modal.getInstance(modalEl);
-  if (modalInstance) {
-    modalInstance.hide();
+function getFile(fileName) {
+  // Hide the refresh button when the GET command is triggered.
+  const refreshBtn = document.getElementById('refreshListBtn');
+  if (refreshBtn) {
+    refreshBtn.style.display = 'none';
   }
-  document.getElementById('receiverProgress').scrollIntoView({ behavior: 'smooth' });
-}, 1000);
-              }
-            })
-            .catch(err => {
-              document.getElementById('rspResponseList').innerText = "Error: " + err;
-            });
+
+  // Update the modal's top CMD display.
+  document.getElementById('cmdSentList').innerText = "CMD: GET " + fileName;
+  // Clear any previous response and table.
+  document.getElementById('rspResponseList').innerText = "";
+  document.getElementById('listTable').innerHTML = "";
+  
+  // Send the GET command.
+  sendCmdWithRetry("GET " + fileName)
+    .then(rsp => {
+      const statusText = (rsp.status === 1) ? "Success" : "Failed";
+      document.getElementById('rspResponseList').innerText = "RSP: " + statusText + " - " + rsp.message;
+      
+      // If the response indicates failure, show an overlay error in the web view modal.
+      if (rsp.status !== 1) {
+        console.log("GET RSP failed with message:", rsp.message);
+        const webViewModal = document.getElementById('webViewModal');
+        if (webViewModal && webViewModal.classList.contains('show')) {
+          showWebViewErrorOverlay("GET failed: " + rsp.message);
         }
+        // Also update the global status if desired.
+        updateStatus("GET failed: " + rsp.message);
+      }
+      
+      // If the response indicates success, proceed as usual.
+      if (rsp.status === 1) {
+        expectedFileId = rsp.cmdID;
+        console.log("Expected file ID set to:", expectedFileId);
+        setTimeout(() => {
+          const modalEl = document.getElementById('listFiles');
+          const modalInstance = bootstrap.Modal.getInstance(modalEl);
+          if (modalInstance) {
+            modalInstance.hide();
+          }
+          document.getElementById('receiverProgress').scrollIntoView({ behavior: 'smooth' });
+        }, 1000);
+      }
+    })
+  .catch(err => {
+    console.log("GET command failed with error:", err); // <-- Add this log
+    document.getElementById('rspResponseList').innerText = "Error: " + err;
+    updateStatus("Error sending GET: " + err);
+    const webViewModal = document.getElementById('webViewModal');
+    if (webViewModal && webViewModal.classList.contains('show')) {
+      console.log("Modal is open; calling showWebViewErrorOverlay"); // <-- Log here too
+      showWebViewErrorOverlay("Error sending GET: " + err);
+    }
+  });
+}
+
+
         
         
         function fetchListFiles() {
@@ -3195,22 +3230,23 @@ function openWebViewModal() {
   }
 }
 
-
-
-
-
-// New function: fetch an asset via your GET command and return a data URL.
 function fetchAssetViaGET(assetPath) {
-  // First, check if the asset is already in your cache (persistentReceivedFiles)
+  if (!assetPath.match(/^(?:[a-z]+:)?\/\//i) && !assetPath.startsWith('/')) {
+    const baseDir = currentPageName.substring(0, currentPageName.lastIndexOf('/') + 1);
+    // Only prepend the baseDir if assetPath does not already start with it
+    if (!assetPath.startsWith(baseDir)) {
+      assetPath = baseDir + assetPath;
+    }
+  }
+  // Check if the asset is already cached.
   const cachedAsset = persistentReceivedFiles.find(
     f => f.fileName.trim() === assetPath
   );
   if (cachedAsset && cachedAsset.dataUrl && !cachedAsset.dataUrl.includes("undefined")) {
-    // Asset is cached, so resolve immediately.
     return Promise.resolve(cachedAsset.dataUrl);
   }
   
-  // If a GET request is already in progress for this asset, return its promise.
+  // If a GET request is already pending, return its promise.
   if (pendingGETs[assetPath]) {
     return pendingGETs[assetPath];
   }
@@ -3218,10 +3254,8 @@ function fetchAssetViaGET(assetPath) {
   // Otherwise, create a new promise for the GET request.
   pendingGETs[assetPath] = new Promise((resolve, reject) => {
     console.log("Asset not cached; issuing GET command for:", assetPath);
-    // Issue the GET command using your existing command mechanism.
     sendCmdWithRetry("GET " + assetPath)
       .then(() => {
-        // Poll for the asset to appear in persistentReceivedFiles.
         let attempts = 0;
         const pollInterval = setInterval(() => {
           attempts++;
@@ -3230,11 +3264,10 @@ function fetchAssetViaGET(assetPath) {
           );
           if (assetObj && assetObj.dataUrl && !assetObj.dataUrl.includes("undefined")) {
             clearInterval(pollInterval);
-            // Remove from pending map.
             delete pendingGETs[assetPath];
             console.log("Asset fetched:", assetPath);
             resolve(assetObj.dataUrl);
-          } else if (attempts > 300) { // 300 * 200ms = 60 seconds
+          } else if (attempts > 300) { // 300*200ms = 60 seconds timeout
             clearInterval(pollInterval);
             delete pendingGETs[assetPath];
             reject("Asset not ready within timeout: " + assetPath);
@@ -3247,8 +3280,15 @@ function fetchAssetViaGET(assetPath) {
       });
   });
   
+  // Here we attach a catch handler to ensure that errors are shown to the user.
+  pendingGETs[assetPath].catch(err => {
+    updateStatus("Error loading asset " + assetPath + ": " + err);
+    // Optionally, you could also display an alert or update a dedicated error section in your modal.
+  });
+  
   return pendingGETs[assetPath];
 }
+
 
 // New function: parse the cached index.html, fetch its assets, then inject modified HTML into the modal.
 // Global variable to track the current page name.
@@ -3296,12 +3336,20 @@ async function loadIndexWithAssetsSequentially(htmlContent) {
 
 // Event listener for the Home button.
 document.getElementById('navHomeBtn').addEventListener('click', () => {
-  const homePage = "index.html";
+  const homePage = "index.html"; // Always use the root index.html
+  currentPageName = homePage;
+  document.getElementById('currentPageUrl').value = homePage;
+  
+  // Show spinner
+  document.getElementById('webViewContent').innerHTML =
+    '<div id="spinnerContainer"><div class="spinner"></div></div>';
+  
+  // Fetch and load index.html
   fetchAssetViaGET(homePage)
     .then(dataUrl => fetch(dataUrl))
     .then(response => response.text())
     .then(htmlContent => {
-      loadPage(homePage, htmlContent);
+      loadIndexWithAssetsSequentially(htmlContent);
     })
     .catch(err => console.error("Error loading home page:", err));
 });
@@ -3332,69 +3380,85 @@ document.getElementById('navRefreshBtn').addEventListener('click', () => {
 
 
 
+// Helper function to resolve a URL relative to the current page directory.
+function resolveRelativeURL(url, currentPage) {
+  // If the URL is already absolute (has a protocol or starts with '/'), return it unchanged.
+  if (/^(?:[a-z]+:)?\/\//i.test(url) || url.startsWith('/')) {
+    return url;
+  }
+  // Get the directory portion of the current page.
+  // E.g., for "MM3NDH-12/index.html" this gives "MM3NDH-12/"
+  let lastSlashIndex = currentPage.lastIndexOf('/');
+  let baseDir = (lastSlashIndex !== -1) ? currentPage.substring(0, lastSlashIndex + 1) : '';
+  return baseDir + url;
+}
+
+// Modified setupModalLinks function:
 function setupModalLinks() {
   const modalContent = document.getElementById('webViewContent');
   const links = modalContent.querySelectorAll('a[href]');
   links.forEach(link => {
     link.addEventListener('click', function(e) {
-      e.preventDefault();
-      const href = this.getAttribute('href');
-      if (href.endsWith('.html') && !autoSaveFilesEnabled) {
-        // Show spinner while fetching new page.
-        document.getElementById('webViewContent').innerHTML =
-          '<div id="spinnerContainer"><div class="spinner"></div></div>';
-        fetchAssetViaGET(href)
-          .then(dataUrl => fetch(dataUrl))
-          .then(response => response.text())
-          .then(htmlContent => {
-            // Use loadPage to update history and content.
-            loadPage(href, htmlContent);
-          })
-          .catch(err => console.error("Error fetching HTML asset:", err));
-      } else {
-        // For non-HTML files, handle downloads as before.
-        const flashMsg = document.createElement('div');
-        flashMsg.innerText = 'Download started...';
-        flashMsg.style.position = 'fixed';
-        flashMsg.style.top = '50%';
-        flashMsg.style.left = '50%';
-        flashMsg.style.transform = 'translate(-50%, -50%)';
-        flashMsg.style.padding = '1rem 2rem';
-        flashMsg.style.backgroundColor = 'rgba(0, 0, 0, 0.8)';
-        flashMsg.style.color = '#fff';
-        flashMsg.style.fontSize = '1.5rem';
-        flashMsg.style.borderRadius = '8px';
-        flashMsg.style.zIndex = '9999';
-        document.getElementById('webViewContent').appendChild(flashMsg);
-	setTimeout(() => {
-	  flashMsg.remove();
-	  const modalEl = document.getElementById('webViewModal');
-	  const modalInstance = bootstrap.Modal.getInstance(modalEl);
-	  if (modalInstance) {
-	    modalInstance.hide();
-	  }
-	  document.getElementById('receiverProgress').scrollIntoView({ behavior: 'smooth' });
-	}, 3000);
+  e.preventDefault();
+  // Get the original href from the link.
+  const originalHref = this.getAttribute('href');
+  // Resolve the URL relative to the current page.
+  const resolvedHref = resolveRelativeURL(originalHref, currentPageName);
+  document.getElementById('currentPageUrl').value = resolvedHref;
 
-        // Trigger download without modifying modal content.
-        fetchAssetViaGET(href)
-          .then(dataUrl => {
-            const a = document.createElement('a');
-            a.href = dataUrl;
-            a.download = href;
-            document.body.appendChild(a);
-            a.click();
-            document.body.removeChild(a);
-          })
-          .catch(err => console.error("Error fetching asset for download:", err));
+  // If the link should be loaded as a page:
+  if (
+    resolvedHref.endsWith('.html') ||
+    resolvedHref.endsWith('/') ||
+    resolvedHref.indexOf('.') === -1
+  ) {
+    // Simply call loadPageFromUrl which adds "/index.html" if needed.
+    loadPageFromUrl(resolvedHref);
+  } else {
+    // Otherwise, treat it as a file download.
+    const flashMsg = document.createElement('div');
+    flashMsg.innerText = 'Download started...';
+    flashMsg.style.position = 'fixed';
+    flashMsg.style.top = '50%';
+    flashMsg.style.left = '50%';
+    flashMsg.style.transform = 'translate(-50%, -50%)';
+    flashMsg.style.padding = '1rem 2rem';
+    flashMsg.style.backgroundColor = 'rgba(0, 0, 0, 0.8)';
+    flashMsg.style.color = '#fff';
+    flashMsg.style.fontSize = '1.5rem';
+    flashMsg.style.borderRadius = '8px';
+    flashMsg.style.zIndex = '9999';
+    document.getElementById('webViewContent').appendChild(flashMsg);
+    setTimeout(() => {
+      flashMsg.remove();
+      const modalEl = document.getElementById('webViewModal');
+      const modalInstance = bootstrap.Modal.getInstance(modalEl);
+      if (modalInstance) {
+        modalInstance.hide();
       }
-    });
+      document.getElementById('receiverProgress').scrollIntoView({ behavior: 'smooth' });
+    }, 3000);
+    // Trigger file download.
+    fetchAssetViaGET(resolvedHref)
+      .then(dataUrl => {
+        const a = document.createElement('a');
+        a.href = dataUrl;
+        a.download = resolvedHref;
+        document.body.appendChild(a);
+        a.click();
+        document.body.removeChild(a);
+      })
+      .catch(err => console.error("Error fetching asset for download:", err));
+  }
+});
+
+
   });
 }
 
 
 function loadPage(pageName, htmlContent) {
-  // Inject the HTML into the modal.
+  // Inject the HTML into the modal with assets processed.
   loadIndexWithAssetsSequentially(htmlContent);
   
   // Update the current page name.
@@ -3406,7 +3470,7 @@ function loadPage(pageName, htmlContent) {
     pageHistory = pageHistory.slice(0, historyIndex + 1);
   }
   
-  // Record the new page and update the history index.
+  // Record the new page in history and update the history index.
   pageHistory.push(pageName);
   historyIndex = pageHistory.length - 1;
   
@@ -3414,10 +3478,6 @@ function loadPage(pageName, htmlContent) {
   updateNavButtons();
 }
 
-function updateNavButtons() {
-  document.getElementById('navBackBtn').disabled = (historyIndex <= 0);
-  document.getElementById('navForwardBtn').disabled = (historyIndex >= pageHistory.length - 1);
-}
 
 // Add event listener for the Back button.
 document.getElementById('navBackBtn').addEventListener('click', () => {
@@ -3454,6 +3514,121 @@ document.getElementById('navForwardBtn').addEventListener('click', () => {
       .catch(err => console.error("Error loading page:", err));
   }
 });
+
+function showWebViewErrorOverlay(message) {
+  const modalEl = document.getElementById('webViewModal');
+  if (!modalEl) return;
+  console.log("showWebViewErrorOverlay called, modalEl:", modalEl);
+  
+  let overlay = modalEl.querySelector('.error-overlay');
+  if (!overlay) {
+    overlay = document.createElement('div');
+    overlay.className = 'error-overlay';
+    // Style the overlay as a small, centered box:
+    overlay.style.position = 'fixed';
+    overlay.style.width = '600px';
+    overlay.style.height = '150px';
+    overlay.style.top = '50%';
+    overlay.style.left = '50%';
+    overlay.style.transform = 'translate(-50%, -50%)';
+    overlay.style.backgroundColor = 'rgba(0, 0, 0, 0.7)';
+    overlay.style.color = '#fff';
+    overlay.style.display = 'flex';
+    overlay.style.alignItems = 'center';
+    overlay.style.justifyContent = 'center';
+    overlay.style.fontSize = '1.5rem';
+    overlay.style.zIndex = '1050';
+    modalEl.appendChild(overlay);
+    
+    // Add a click listener on the modal to hide the overlay when clicked outside the box:
+    modalEl.addEventListener('click', function modalClickListener(event) {
+      // If the click target is NOT within the overlay, hide the overlay.
+      if (!overlay.contains(event.target)) {
+        overlay.style.display = 'none';
+      }
+    });
+  }
+  
+  overlay.innerText = message;
+  overlay.style.display = 'flex';
+}
+
+// Helper function that loads a page from a given URL via GET.
+function loadPageFromUrl(url) {
+  // If the URL has a dot but does NOT end with ".html", then fire an alert.
+  if (url.indexOf('.') !== -1 && !url.endsWith('.html')) {
+    alert("File name must end in .html");
+    return;
+  }
+  
+  // If the URL has no dot at all OR it ends with a slash, then assume it's a directory.
+  // In that case, convert it to "<name>/index.html"
+  if (url.indexOf('.') === -1 || url.endsWith('/')) {
+    if (!url.endsWith('/')) {
+      url = url + '/index.html';
+    } else {
+      url = url + 'index.html';
+    }
+  }
+  
+  // Normalize the URL to a root-relative path using the URL constructor.
+  // This forces the URL to be resolved relative to the site root.
+  const normalizedUrl = new URL(url, window.location.origin).pathname;
+  
+  // Set the current page name to the normalized URL.
+  currentPageName = normalizedUrl;
+  document.getElementById('currentPageUrl').value = currentPageName;
+  
+  // Show spinner immediately.
+  document.getElementById('webViewContent').innerHTML =
+    '<div id="spinnerContainer"><div class="spinner"></div></div>';
+  
+  // Proceed to fetch and load the page using the normalized URL.
+  fetchAssetViaGET(normalizedUrl)
+    .then(dataUrl => fetch(dataUrl))
+    .then(response => response.text())
+    .then(htmlContent => {
+      loadPage(normalizedUrl, htmlContent);
+    })
+    .catch(err => {
+      document.getElementById('webViewContent').innerHTML =
+        "<p style='padding: 1rem;'>Error: " + err + "</p>";
+    });
+}
+
+
+
+// When the user presses Enter in the currentPageUrl textbox.
+document.getElementById('currentPageUrl').addEventListener('keydown', function(e) {
+  if (e.key === 'Enter') {
+    loadPageFromUrl(this.value);
+  }
+});
+
+// When the Go! button is clicked.
+document.getElementById('goBtn').addEventListener('click', function() {
+  const url = document.getElementById('currentPageUrl').value;
+  loadPageFromUrl(url);
+});
+
+
+// When the user presses Enter in the currentPageUrl textbox.
+document.getElementById('currentPageUrl').addEventListener('keydown', function(e) {
+  if (e.key === 'Enter') {
+    loadPageFromUrl(this.value);
+  }
+});
+
+// When the Go! button is clicked.
+document.getElementById('goBtn').addEventListener('click', function() {
+  const url = document.getElementById('currentPageUrl').value;
+  loadPageFromUrl(url);
+});
+
+function updateNavButtons() {
+  document.getElementById('navBackBtn').disabled = (historyIndex <= 0);
+  document.getElementById('navForwardBtn').disabled = (historyIndex >= pageHistory.length - 1);
+}
             </script>
             <footer style="text-align: center; margin-top: 20px;">
                 <a href="https://github.com/madpsy/kiss-tnc-file-transfer" target="_blank">Github Repo</a>
