@@ -3247,6 +3247,10 @@ function fetchAssetViaGET(assetPath) {
   // Normalize the asset path for cache comparison
   const normalizedAssetPath = normalizePath(assetPath);
 
+  // Log the initial asset path and normalized path
+  console.log("Initial asset path:", assetPath);
+  console.log("Normalized asset path:", normalizedAssetPath);
+
   // If the assetPath is relative and does not start with '//' (protocol-relative or absolute URL)
   if (!assetPath.match(/^(?:[a-z]+:)?\/\//i) && !assetPath.startsWith('/')) {
     const baseDir = currentPageName.substring(0, currentPageName.lastIndexOf('/') + 1);
@@ -3256,21 +3260,36 @@ function fetchAssetViaGET(assetPath) {
     }
   }
 
-  // Check if the asset is already cached using normalized file names
+  // Log the final asset path after resolving relative paths
+  console.log("Final resolved asset path:", assetPath);
+
+  // Normalize the final resolved path for cache lookup
+  const finalNormalizedAssetPath = normalizePath(assetPath);
+
+  // Check if the asset is already cached using the final normalized file names
   const cachedAsset = persistentReceivedFiles.find(f =>
-    normalizePath(f.fileName.trim()) === normalizedAssetPath
+    normalizePath(f.fileName.trim()) === finalNormalizedAssetPath
   );
+
+  // Log if the asset is found in the cache
+  if (cachedAsset) {
+    console.log("Asset found in cache:", cachedAsset.fileName);
+  } else {
+    console.log("Asset not found in cache.");
+  }
+
   if (cachedAsset && cachedAsset.dataUrl && !cachedAsset.dataUrl.includes("undefined")) {
     return Promise.resolve(cachedAsset.dataUrl);
   }
 
-  // Use the normalized asset path as the key for pending GET requests
-  if (pendingGETs[normalizedAssetPath]) {
-    return pendingGETs[normalizedAssetPath];
+  // Use the final normalized asset path as the key for pending GET requests
+  if (pendingGETs[finalNormalizedAssetPath]) {
+    console.log("Asset request already in progress for:", assetPath);
+    return pendingGETs[finalNormalizedAssetPath];
   }
 
   // Otherwise, create a new promise for the GET request.
-  pendingGETs[normalizedAssetPath] = new Promise((resolve, reject) => {
+  pendingGETs[finalNormalizedAssetPath] = new Promise((resolve, reject) => {
     console.log("Asset not cached; issuing GET command for:", assetPath);
     sendCmdWithRetry("GET " + assetPath)
       .then(() => {
@@ -3278,33 +3297,43 @@ function fetchAssetViaGET(assetPath) {
         const pollInterval = setInterval(() => {
           attempts++;
           const assetObj = persistentReceivedFiles.find(f =>
-            normalizePath(f.fileName.trim()) === normalizedAssetPath
+            normalizePath(f.fileName.trim()) === finalNormalizedAssetPath
           );
           if (assetObj && assetObj.dataUrl && !assetObj.dataUrl.includes("undefined")) {
             clearInterval(pollInterval);
-            delete pendingGETs[normalizedAssetPath];
+            delete pendingGETs[finalNormalizedAssetPath];
             console.log("Asset fetched:", assetPath);
             resolve(assetObj.dataUrl);
           } else if (attempts > 300) { // 300 * 200ms = 60 seconds timeout
             clearInterval(pollInterval);
-            delete pendingGETs[normalizedAssetPath];
+            delete pendingGETs[finalNormalizedAssetPath];
+            console.log("Asset fetch timed out for:", assetPath);
             reject("Asset not ready within timeout: " + assetPath);
           }
         }, 200);
       })
       .catch(err => {
-        delete pendingGETs[normalizedAssetPath];
+        delete pendingGETs[finalNormalizedAssetPath];
+        console.log("Error fetching asset:", assetPath, err);
         reject(err);
       });
   });
 
   // Attach a catch handler to display errors
-  pendingGETs[normalizedAssetPath].catch(err => {
+  pendingGETs[finalNormalizedAssetPath].catch(err => {
     updateStatus("Error loading asset " + assetPath + ": " + err);
   });
 
-  return pendingGETs[normalizedAssetPath];
+  return pendingGETs[finalNormalizedAssetPath];
 }
+
+
+
+
+
+
+
+
 
 
 // New function: parse the cached index.html, fetch its assets, then inject modified HTML into the modal.
@@ -3667,7 +3696,6 @@ function clearAllSentFiles() {
     updateSentFilesUI();
   }
 }
-
             </script>
             <footer style="text-align: center; margin-top: 20px;">
                 <a href="https://github.com/madpsy/kiss-tnc-file-transfer" target="_blank">Github Repo</a>
