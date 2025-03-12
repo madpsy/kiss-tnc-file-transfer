@@ -523,67 +523,68 @@ function getMaxRetries() {
                  * UI Update Functions
                  ***********************/
                 function updateReceivedFilesUI() {
-      const container = document.getElementById('receivedFiles');
-      // Filter out any file with the name "LIST.txt"
-      const filteredFiles = persistentReceivedFiles.filter(file => file.fileName.trim() !== "LIST.txt");
-      if (!filteredFiles.length) {
-        container.innerHTML = "<p>No files received yet.</p>";
-        return;
-      }
-      let html = `<table class="table table-striped">
-        <thead>
-          <tr>
-            <th>Date/Time</th>
-            <th>Sender</th>
-            <th>File Name</th>
-            <th>ID</th>
-            <th>Original</th>
-            <th>Compressed</th>
-            <th>Time (s)</th>
-            <th>Speed (B/s)</th>
-            <th>Duplicates</th>
-            <th>MD5</th>
-            <th></th>
-            <th></th>
-          </tr>
-        </thead>
-        <tbody>`;
-filteredFiles.forEach((file) => {
-  let checksumIcon = file.checksumMatch
-    ? '<span style="color:green;">&#10004;</span>'
-    : '<span style="color:red;">&#10008;</span>';
-  let elapsedSec = file.elapsed / 1000;
-  let speed = elapsedSec > 0 ? Math.floor((file.bytesReceived || file.size) / elapsedSec) : 0;
-  let dupPercent = file.totalPackets ? Math.round((file.duplicates / file.totalPackets) * 100) : "0";
+  const container = document.getElementById('receivedFiles');
+  // Filter out any file with the name "LIST.txt"
+  const filteredFiles = persistentReceivedFiles.filter(file => file.fileName.trim() !== "LIST.txt");
+  if (!filteredFiles.length) {
+    container.innerHTML = "<p>No files received yet.</p>";
+    return;
+  }
+  let html = `<table class="table table-striped">
+    <thead>
+      <tr>
+        <th>Date/Time</th>
+        <th>Sender</th>
+        <th>File Name</th>
+        <th>ID</th>
+        <th>Original</th>
+        <th>Compressed</th>
+        <th>Time (s)</th>
+        <th>Speed (B/s)</th>
+        <th>Duplicates</th>
+        <th>MD5</th>
+        <th></th>
+        <th></th>
+      </tr>
+    </thead>
+    <tbody>`;
+  filteredFiles.forEach((file) => {
+    let checksumIcon = file.checksumMatch
+      ? '<span style="color:green;">&#10004;</span>'
+      : '<span style="color:red;">&#10008;</span>';
+    let elapsedSec = file.elapsed / 1000;
+    let speed = elapsedSec > 0 ? Math.floor((file.bytesReceived || file.size) / elapsedSec) : 0;
+    let dupPercent = file.totalPackets ? Math.round((file.duplicates / file.totalPackets) * 100) : "0";
+    
+    // Only add a "View" button if the file extension is ".txt"
+    let actionButton;
+    if (file.fileName.toLowerCase().endsWith('.txt')) {
+      actionButton = `<button class="btn btn-success btn-sm" onclick="viewReceivedFile('${file.fileId}')">View</button>`;
+    } else {
+      actionButton = `<button class="btn btn-success btn-sm" onclick="downloadReceivedFile('${file.fileId}')">Download</button>`;
+    }
+    
+    html += `<tr>
+      <td>${new Date(file.timestamp).toLocaleString()}</td>
+      <td>${file.sender}</td>
+      <td>${file.fileName}</td>
+      <td>${file.fileId}</td>
+      <td>${file.originalSize} bytes</td>
+      <td>${file.compressedSize} bytes</td>
+      <td>${elapsedSec.toFixed(2)}</td>
+      <td>${speed}</td>
+      <td>${file.duplicates} (${dupPercent}%)</td>
+      <td>${checksumIcon}</td>
+      <td>${actionButton}</td>
+      <td><button class="btn btn-danger btn-sm" onclick="deleteReceivedFileById('${file.fileId}')">Remove</button></td>
+    </tr>`;
+  });
   
-  // Only add a "View" button if the file extension is ".txt"
-  // Choose a single action button: for .txt files use "View" and call viewReceivedFile; for others use "Download".
-let actionButton;
-if (file.fileName.toLowerCase().endsWith('.txt')) {
-  actionButton = `<button class="btn btn-success btn-sm" onclick="viewReceivedFile('${file.fileId}')">View</button>`;
-} else {
-  actionButton = `<button class="btn btn-success btn-sm" onclick="downloadReceivedFile('${file.fileId}')">Download</button>`;
+  html += `</tbody></table>
+    <button id="removeAllBtn" class="btn btn-danger mt-2" onclick="removeAllReceivedFiles()">Remove All</button>`;
+  container.innerHTML = html;
 }
 
-html += `<tr>
-  <td>${new Date(file.timestamp).toLocaleString()}</td>
-  <td>${file.sender}</td>
-  <td>${file.fileName}</td>
-  <td>${file.fileId}</td>
-  <td>${file.originalSize} bytes</td>
-  <td>${file.compressedSize} bytes</td>
-  <td>${elapsedSec.toFixed(2)}</td>
-  <td>${speed}</td>
-  <td>${file.duplicates} (${dupPercent}%)</td>
-  <td>${checksumIcon}</td>
-  <td>${actionButton}</td>
-  <td><button class="btn btn-danger btn-sm" onclick="deleteReceivedFileById('${file.fileId}')">Remove</button></td>
-</tr>`;
-});
-
-      html += `</tbody></table>`;
-      container.innerHTML = html;
-    }
     
     function deleteReceivedFileById(fileId) {
       persistentReceivedFiles = persistentReceivedFiles.filter(file => file.fileId !== fileId);
@@ -591,35 +592,47 @@ html += `<tr>
       updateReceivedFilesUI();
     }  
                 
-                function updateSentFilesUI() {
-                  const container = document.getElementById('sentFiles');
-                  if (!persistentSentFiles.length) {
-                    container.innerHTML = "<p>No files sent yet.</p>";
-                    return;
-                  }
-                  let html = `<table class="table table-striped"><thead>
-                    <tr><th>Date/Time</th><th>Receiver</th><th>File Name</th>
-                    <th>Original Size</th><th>Compressed Size</th>
-                    <th>Retries</th><th>Total Time (s)</th><th>Speed (Bytes/s)</th><th>Clear</th></tr>
-                    </thead><tbody>`;
-                  persistentSentFiles.forEach((stat, index) => {
-                    let totalTime = parseFloat(stat.totalTime);
-                    let speed = totalTime > 0 ? Math.floor(stat.bytesSent / totalTime) : 0;
-                    html += `<tr>
-                      <td>${new Date(stat.timestamp).toLocaleString()}</td>
-                      <td>${stat.receiver || ""}</td>
-                      <td>${stat.fileName}</td>
-                      <td>${stat.originalSize} bytes</td>
-                      <td>${stat.compressedSize} bytes</td>
-                      <td>${stat.totalRetries}</td>
-                      <td>${stat.totalTime}</td>
-                      <td>${speed}</td>
-                      <td><button class="btn btn-warning btn-sm" onclick="clearSentFile(${index})">Clear</button></td>
-                    </tr>`;
-                  });
-                  html += "</tbody></table>";
-                  container.innerHTML = html;
-                }
+function updateSentFilesUI() {
+  const container = document.getElementById('sentFiles');
+  if (!persistentSentFiles.length) {
+    container.innerHTML = "<p>No files sent yet.</p>";
+    return;
+  }
+  let html = `<table class="table table-striped">
+    <thead>
+      <tr>
+        <th>Date/Time</th>
+        <th>Receiver</th>
+        <th>File Name</th>
+        <th>Original Size</th>
+        <th>Compressed Size</th>
+        <th>Retries</th>
+        <th>Total Time (s)</th>
+        <th>Speed (Bytes/s)</th>
+        <th>Clear</th>
+      </tr>
+    </thead>
+    <tbody>`;
+  persistentSentFiles.forEach((stat, index) => {
+    let totalTime = parseFloat(stat.totalTime);
+    let speed = totalTime > 0 ? Math.floor(stat.bytesSent / totalTime) : 0;
+    html += `<tr>
+      <td>${new Date(stat.timestamp).toLocaleString()}</td>
+      <td>${stat.receiver || ""}</td>
+      <td>${stat.fileName}</td>
+      <td>${stat.originalSize} bytes</td>
+      <td>${stat.compressedSize} bytes</td>
+      <td>${stat.totalRetries}</td>
+      <td>${stat.totalTime}</td>
+      <td>${speed}</td>
+      <td><button class="btn btn-warning btn-sm" onclick="clearSentFile(${index})">Clear</button></td>
+    </tr>`;
+  });
+  html += `</tbody></table>
+    <button id="clearAllSentBtn" class="btn btn-warning mt-2" onclick="clearAllSentFiles()">Clear All</button>`;
+  container.innerHTML = html;
+}
+
                 
 function updateReceiverProgressUI() {
   const container = document.getElementById('receiverProgress');
@@ -3231,62 +3244,66 @@ function openWebViewModal() {
 }
 
 function fetchAssetViaGET(assetPath) {
+  // Normalize the asset path for cache comparison
+  const normalizedAssetPath = normalizePath(assetPath);
+
+  // If the assetPath is relative and does not start with '//' (protocol-relative or absolute URL)
   if (!assetPath.match(/^(?:[a-z]+:)?\/\//i) && !assetPath.startsWith('/')) {
     const baseDir = currentPageName.substring(0, currentPageName.lastIndexOf('/') + 1);
-    // Only prepend the baseDir if assetPath does not already start with it
+    // Prepend the base directory if needed
     if (!assetPath.startsWith(baseDir)) {
       assetPath = baseDir + assetPath;
     }
   }
-  // Check if the asset is already cached.
-  const cachedAsset = persistentReceivedFiles.find(
-    f => f.fileName.trim() === assetPath
+
+  // Check if the asset is already cached using normalized file names
+  const cachedAsset = persistentReceivedFiles.find(f =>
+    normalizePath(f.fileName.trim()) === normalizedAssetPath
   );
   if (cachedAsset && cachedAsset.dataUrl && !cachedAsset.dataUrl.includes("undefined")) {
     return Promise.resolve(cachedAsset.dataUrl);
   }
-  
-  // If a GET request is already pending, return its promise.
-  if (pendingGETs[assetPath]) {
-    return pendingGETs[assetPath];
+
+  // Use the normalized asset path as the key for pending GET requests
+  if (pendingGETs[normalizedAssetPath]) {
+    return pendingGETs[normalizedAssetPath];
   }
-  
+
   // Otherwise, create a new promise for the GET request.
-  pendingGETs[assetPath] = new Promise((resolve, reject) => {
+  pendingGETs[normalizedAssetPath] = new Promise((resolve, reject) => {
     console.log("Asset not cached; issuing GET command for:", assetPath);
     sendCmdWithRetry("GET " + assetPath)
       .then(() => {
         let attempts = 0;
         const pollInterval = setInterval(() => {
           attempts++;
-          const assetObj = persistentReceivedFiles.find(
-            f => f.fileName.trim() === assetPath
+          const assetObj = persistentReceivedFiles.find(f =>
+            normalizePath(f.fileName.trim()) === normalizedAssetPath
           );
           if (assetObj && assetObj.dataUrl && !assetObj.dataUrl.includes("undefined")) {
             clearInterval(pollInterval);
-            delete pendingGETs[assetPath];
+            delete pendingGETs[normalizedAssetPath];
             console.log("Asset fetched:", assetPath);
             resolve(assetObj.dataUrl);
-          } else if (attempts > 300) { // 300*200ms = 60 seconds timeout
+          } else if (attempts > 300) { // 300 * 200ms = 60 seconds timeout
             clearInterval(pollInterval);
-            delete pendingGETs[assetPath];
+            delete pendingGETs[normalizedAssetPath];
             reject("Asset not ready within timeout: " + assetPath);
           }
         }, 200);
       })
       .catch(err => {
-        delete pendingGETs[assetPath];
+        delete pendingGETs[normalizedAssetPath];
         reject(err);
       });
   });
-  
-  // Here we attach a catch handler to ensure that errors are shown to the user.
-  pendingGETs[assetPath].catch(err => {
+
+  // Attach a catch handler to display errors
+  pendingGETs[normalizedAssetPath].catch(err => {
     updateStatus("Error loading asset " + assetPath + ": " + err);
-    // Optionally, you could also display an alert or update a dedicated error section in your modal.
   });
-  
-  return pendingGETs[assetPath];
+
+  return pendingGETs[normalizedAssetPath];
 }
 
 
@@ -3629,6 +3646,28 @@ function updateNavButtons() {
   document.getElementById('navBackBtn').disabled = (historyIndex <= 0);
   document.getElementById('navForwardBtn').disabled = (historyIndex >= pageHistory.length - 1);
 }
+
+function normalizePath(path) {
+  // Remove any leading slash from the path.
+  return path.startsWith('/') ? path.slice(1) : path;
+}
+
+function removeAllReceivedFiles() {
+  if (confirm("Are you sure you want to remove all received files?")) {
+    persistentReceivedFiles = [];
+    saveReceivedFilesToLocalStorage(persistentReceivedFiles);
+    updateReceivedFilesUI();
+  }
+}
+
+function clearAllSentFiles() {
+  if (confirm("Are you sure you want to clear all sent files?")) {
+    persistentSentFiles = [];
+    saveSentFilesToLocalStorage(persistentSentFiles);
+    updateSentFilesUI();
+  }
+}
+
             </script>
             <footer style="text-align: center; margin-top: 20px;">
                 <a href="https://github.com/madpsy/kiss-tnc-file-transfer" target="_blank">Github Repo</a>
