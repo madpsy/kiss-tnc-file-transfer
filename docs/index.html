@@ -2523,57 +2523,47 @@ function parseRspPacket(payload) {
       });
     }
     
-        function openListFilesModal() {
-          // Clear previous command, response text, and CSV table.
-          document.getElementById('cmdSentList').innerText = "";
-          document.getElementById('rspResponseList').innerText = "";
-          document.getElementById('listTable').innerHTML = "";
-        
-          // Get a reference to the modal header and the modal title element.
-          const modalHeader = document.querySelector('#listFiles .modal-header');
-          const modalTitle = document.getElementById('listFilesLabel');
-          
-          // Check if the refresh button already exists.
-          let refreshBtn = document.getElementById('refreshListBtn');
-          if (!refreshBtn) {
-            // Create the Refresh button.
-            refreshBtn = document.createElement('button');
-            refreshBtn.id = 'refreshListBtn';
-            refreshBtn.className = 'btn btn-danger btn-sm ms-2';
-            refreshBtn.innerText = 'Refresh List';
-        refreshBtn.addEventListener('click', function() {
-          // Clear the cached list and the table, then fetch a new list.
-          this.style.display = 'none';
-          cachedListCSV = null;
-          document.getElementById('cmdSentList').innerText = "CMD: LIST"; // Set CMD text here
-          document.getElementById('listTable').innerHTML = '<p>Waiting for file list...</p>';
-          fetchListFiles();
-        });
-        
-            // Insert the button immediately after the modal title so it appears next to the header text.
-            modalTitle.insertAdjacentElement('afterend', refreshBtn);
-          }
-        
-          // Only show the refresh button if we have cached content.
-          if (cachedListCSV) {
-            refreshBtn.style.display = 'inline-block';
-          } else {
-            refreshBtn.style.display = 'none';
-          }
-        
-          // Show the modal.
-          const listFilesModal = new bootstrap.Modal(document.getElementById('listFiles'));
-          listFilesModal.show();
-        
-          // If a previous file list was received, reuse it; otherwise, fetch it.
-          if (cachedListCSV) {
-            processListFile(cachedListCSV);
-          } else {
-            document.getElementById('cmdSentList').innerText = "CMD: LIST";
-            document.getElementById('listTable').innerHTML = '<p>Waiting for file list...</p>';
-            fetchListFiles();
-          }
-        }
+function openListFilesModal() {
+  // Clear previous command, response text, and table.
+  document.getElementById('cmdSentList').innerText = "";
+  document.getElementById('rspResponseList').innerText = "";
+  document.getElementById('listTable').innerHTML = "";
+  
+  const modalTitle = document.getElementById('listFilesLabel');
+  
+  let refreshBtn = document.getElementById('refreshListBtn');
+  if (!refreshBtn) {
+    refreshBtn = document.createElement('button');
+    refreshBtn.id = 'refreshListBtn';
+    refreshBtn.className = 'btn btn-danger btn-sm ms-2';
+    refreshBtn.innerText = 'Refresh List';
+    refreshBtn.style.display = 'none'; // keep it hidden initially
+   refreshBtn.addEventListener('click', function() {
+     // Immediately hide the button while the refresh is in progress.
+     this.style.display = 'none';
+     cachedListCSV = null;
+     document.getElementById('cmdSentList').innerText = "CMD: LIST";
+     document.getElementById('listTable').innerHTML = '<p>Waiting for file list...</p>';
+     fetchListFiles();
+   });
+    modalTitle.insertAdjacentElement('afterend', refreshBtn);
+  }
+  
+  // Do not set refreshBtn.style.display here!
+  
+  const listFilesModal = new bootstrap.Modal(document.getElementById('listFiles'));
+  listFilesModal.show();
+  
+  if (cachedListCSV) {
+    processListFile(cachedListCSV);
+  } else {
+    document.getElementById('cmdSentList').innerText = "CMD: LIST";
+    document.getElementById('listTable').innerHTML = '<p>Waiting for file list...</p>';
+    fetchListFiles();
+  }
+}
+
+
         
         
     function processListFile(csvText) {
@@ -2623,6 +2613,10 @@ function parseRspPacket(payload) {
     
       // Combine search box and table in the modal's listTable container.
       document.getElementById('listTable').innerHTML = searchBoxHtml + tableHtml;
+      const refreshBtn = document.getElementById('refreshListBtn');
+      if (refreshBtn) {
+        refreshBtn.style.display = 'inline-block';
+      }
     
       // Add search functionality.
     document.getElementById('listSearchBox').addEventListener('keyup', function () {
@@ -3217,7 +3211,7 @@ function fetchAssetViaGET(assetPath) {
             delete pendingGETs[assetPath];
             console.log("Asset fetched:", assetPath);
             resolve(assetObj.dataUrl);
-          } else if (attempts > 150) { // 150 * 200ms = 30 seconds
+          } else if (attempts > 300) { // 300 * 200ms = 60 seconds
             clearInterval(pollInterval);
             delete pendingGETs[assetPath];
             reject("Asset not ready within timeout: " + assetPath);
@@ -3243,7 +3237,7 @@ async function loadIndexWithAssetsSequentially(htmlContent) {
   const doc = parser.parseFromString(htmlContent, 'text/html');
 
   // Select asset elements (images, scripts, stylesheets)
-  const assetElements = doc.querySelectorAll('img[src], script[src], link[rel="stylesheet"][href]');
+  const assetElements = doc.querySelectorAll('img[src], script[src], link[rel="stylesheet"][href], audio[src], source[src]');
   const totalAssets = assetElements.length;
   let loadedAssets = 0;
 
@@ -3257,6 +3251,8 @@ async function loadIndexWithAssetsSequentially(htmlContent) {
         el.setAttribute('src', dataUrl);
       } else if (tagName === 'link') {
         el.setAttribute('href', dataUrl);
+      } else if (tagName === 'audio' || (tagName === 'source' && el.getAttribute('type') === 'audio/mpeg')) {
+  	el.setAttribute('src', dataUrl);
       }
       loadedAssets++;
       // Optionally update progress here
