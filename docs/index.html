@@ -353,8 +353,8 @@
                         <!-- Navigation header -->
                         <div class="modal-header" style="display: flex; align-items: center; justify-content: flex-start;">
                             <button id="navBackBtn" class="btn btn-sm btn-custom-nav" style="margin-right: 5px;" title="Back">&#x2190;</button>
-			    <button id="navForwardBtn" class="btn btn-sm btn-custom-nav" style="margin-right: 5px;" title="Forward">&#x2192;</button>
-			    <button id="navHomeBtn" class="btn btn-sm btn-custom-nav" style="margin-right: 5px;" title="Home">&#x2302;</button>
+                            <button id="navForwardBtn" class="btn btn-sm btn-custom-nav" style="margin-right: 5px;" title="Forward">&#x2192;</button>
+                            <button id="navHomeBtn" class="btn btn-sm btn-custom-nav" style="margin-right: 5px;" title="Home">&#x2302;</button>
 
                             <div style="display: flex; align-items: center;">
                                 <button id="navRefreshBtn" class="btn btn-sm btn-custom-nav" style="margin-right: 10px;" title="Refresh">&#10227;</button>
@@ -454,7 +454,9 @@
 		let autoSaveFilesEnabled = true;
 		let pageHistory = [];	
 		let historyIndex = -1;
-               
+
+		const pendingGETs = {};                
+
                 /***********************
                  * Persistence Functions
                  ***********************/
@@ -1634,7 +1636,7 @@ readerText.onload = function(e) {
   // If the webViewModal is already open, load the HTML with its assets.
   const modalInstance = bootstrap.Modal.getInstance(document.getElementById('webViewModal'));
   if (modalInstance) {
-    loadIndexWithAssets(cachedIndexHTML);
+    loadIndexWithAssetsSequentially(cachedIndexHTML);
   }
 };
 
@@ -2281,17 +2283,24 @@ fileServerCheckbox.addEventListener('change', function() {
                   console.log(msg);
                 }
     		window.downloadReceivedFile = function(fileId) {
-    		  const file = persistentReceivedFiles.find(f =>
-			f.fileId === fileId && f.fileName.trim() !== "LIST.txt"
+  		const file = persistentReceivedFiles.find(f =>
+		    f.fileId === fileId && f.fileName.trim() !== "LIST.txt"
 		  );
-    		  if (!file) return;
-    		  const a = document.createElement('a');
-    		  a.href = file.dataUrl;
-    		  a.download = file.fileName;
-    		  document.body.appendChild(a);
-    		  a.click();
-    		  document.body.removeChild(a);
-    		};
+		  if (!file) return;
+		  const a = document.createElement('a');
+		  a.href = file.dataUrl;
+		  
+		  // Extract only the filename after the last slash, if any.
+		  let downloadFileName = file.fileName;
+		  if (downloadFileName.indexOf('/') !== -1) {
+		    downloadFileName = downloadFileName.substring(downloadFileName.lastIndexOf('/') + 1);
+		  }
+		  a.download = downloadFileName;
+		  
+		  document.body.appendChild(a);
+		  a.click();
+		  document.body.removeChild(a);
+		};
     
                 window.clearSentFile = function(index) {
                   persistentSentFiles.splice(index, 1);
@@ -2597,11 +2606,17 @@ function parseRspPacket(payload) {
         });
         // Use the file name from the first column (without quotes).
         const fileName = cols[0].replace(/"/g, '');
-        tableHtml += '<td>';
-        tableHtml += '<button class="btn btn-primary btn-sm" onclick="getFile(\'' + fileName + '\')">Get</button> ';
-        tableHtml += '<button class="btn btn-warning btn-sm me-2" onclick="renameFile(\'' + fileName + '\')">Rename</button> ';
-        tableHtml += '<button class="btn btn-danger btn-sm" onclick="deleteFile(\'' + fileName + '\')">Delete</button> ';
-        tableHtml += '</td>';
+	tableHtml += '<td>';
+	if (fileName.endsWith('/')) {
+	  // Render a placeholder span that takes up space but is invisible.
+	  tableHtml += '<span class="btn btn-primary btn-sm" style="visibility: hidden;">Get</span> ';
+	} else {
+	  // Render the actual Get button.
+	  tableHtml += '<button class="btn btn-primary btn-sm" onclick="getFile(\'' + fileName + '\')">Get</button> ';
+	}
+	tableHtml += '<button class="btn btn-warning btn-sm me-2" onclick="renameFile(\'' + fileName + '\')">Rename</button> ';
+	tableHtml += '<button class="btn btn-danger btn-sm" onclick="deleteFile(\'' + fileName + '\')">Delete</button> ';
+	tableHtml += '</td>';
         tableHtml += '</tr>';
       }
       tableHtml += '</tbody></table></div>';
@@ -2864,36 +2879,45 @@ function parseRspPacket(payload) {
         }
     
     
-    function deleteFile(fileName) {
-      const refreshBtn = document.getElementById('refreshListBtn');
-      if (refreshBtn) {
-        refreshBtn.style.display = 'none';
-      }
-      if (confirm("Are you sure you want to delete " + fileName + "?")) {
-        // Update the modal's command display.
-        document.getElementById('cmdSentList').innerText = "CMD: DEL " + fileName;
-        // Clear previous response and table.
-        document.getElementById('rspResponseList').innerText = "";
-        document.getElementById('listTable').innerHTML = "";
-        
-        // Send the DEL command.
-        sendCmdWithRetry("DEL " + fileName)
-          .then(rsp => {
-            const statusText = (rsp.status === 1) ? "Success" : (rsp.status === 0 ? "Failed" : "Unknown");
-            document.getElementById('rspResponseList').innerText = "RSP: " + statusText + " - " + rsp.message;
-            // If successful, show "Waiting for file list..." and then refresh.
-            if (rsp.status === 1) {
-              setTimeout(() => {
-                document.getElementById('listTable').innerHTML = '<p>Refreshing file list...</p>';
-                fetchListFiles();
-              }, 1000);
-            }
-          })
-          .catch(err => {
-            document.getElementById('rspResponseList').innerText = "Error: " + err;
-          });
-      }
-    }
+ function deleteFile(fileName) {
+  const refreshBtn = document.getElementById('refreshListBtn');
+  if (refreshBtn) {
+    refreshBtn.style.display = 'none';
+  }
+  
+  let confirmationMessage = "";
+  if (fileName.endsWith('/')) {
+    confirmationMessage = "Are you sure you want to delete the entire directory " + fileName + "?";
+  } else {
+    confirmationMessage = "Are you sure you want to delete " + fileName + "?";
+  }
+  
+  if (confirm(confirmationMessage)) {
+    // Update the modal's command display.
+    document.getElementById('cmdSentList').innerText = "CMD: DEL " + fileName;
+    // Clear previous response and table.
+    document.getElementById('rspResponseList').innerText = "";
+    document.getElementById('listTable').innerHTML = "";
+    
+    // Send the DEL command.
+    sendCmdWithRetry("DEL " + fileName)
+      .then(rsp => {
+        const statusText = (rsp.status === 1) ? "Success" : (rsp.status === 0 ? "Failed" : "Unknown");
+        document.getElementById('rspResponseList').innerText = "RSP: " + statusText + " - " + rsp.message;
+        // If successful, show "Waiting for file list..." and then refresh.
+        if (rsp.status === 1) {
+          setTimeout(() => {
+            document.getElementById('listTable').innerHTML = '<p>Refreshing file list...</p>';
+            fetchListFiles();
+          }, 1000);
+        }
+      })
+      .catch(err => {
+        document.getElementById('rspResponseList').innerText = "Error: " + err;
+      });
+  }
+}
+
     
     function renameFile(fileName) {
       const refreshBtn = document.getElementById('refreshListBtn');
@@ -2930,23 +2954,28 @@ function parseRspPacket(payload) {
     }
     
     
-    function updateListFilesButtonStatus() {
-      const sender = document.getElementById('senderCallsign').value.trim();
-      const receiver = document.getElementById('receiverCallsign').value.trim();
-      const listBtn = document.getElementById('listFilesBtn');
-      let connectionIsActive = false;
-      
-      if (document.getElementById('connectionType').value === 'websockets') {
-        connectionIsActive = (socket && socket.connected);
-      } else {
-        connectionIsActive = serialConnected;
-      }
-      
-      // Disable if callsigns are missing or if there's no active connection.
-      if (listBtn) {
-        listBtn.disabled = !(sender && receiver && connectionIsActive);
-      }
-    }
+function updateListFilesButtonStatus() {
+  const sender = document.getElementById('senderCallsign').value.trim();
+  const receiver = document.getElementById('receiverCallsign').value.trim();
+  const listBtn = document.getElementById('listFilesBtn');
+  const viewWebBtn = document.getElementById('viewWebBtn');
+  let connectionIsActive = false;
+  
+  if (document.getElementById('connectionType').value === 'websockets') {
+    connectionIsActive = (socket && socket.connected);
+  } else {
+    connectionIsActive = serialConnected;
+  }
+  
+  // Disable the buttons if either callsign is empty or no active connection
+  if (listBtn) {
+    listBtn.disabled = !(sender && receiver && connectionIsActive);
+  }
+  if (viewWebBtn) {
+    viewWebBtn.disabled = !(sender && receiver && connectionIsActive);
+  }
+}
+
     
     function generateTwoCharID() {
       const chars = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789';
@@ -3155,101 +3184,94 @@ function openWebViewModal() {
 
 // New function: fetch an asset via your GET command and return a data URL.
 function fetchAssetViaGET(assetPath) {
-  console.log("Fetching asset:", assetPath);
-  return new Promise((resolve, reject) => {
-    // Helper: Check if file exists and its dataUrl is valid.
-    function isFileReady() {
-      const fileObj = persistentReceivedFiles.find(f => f.fileName.trim() === assetPath);
-      return fileObj && fileObj.dataUrl && !fileObj.dataUrl.includes("undefined");
-    }
-    
-    // If file is not found at first, trigger the GET command.
-    if (!persistentReceivedFiles.find(f => f.fileName.trim() === assetPath)) {
-      console.log("Asset not found; issuing GET command for:", assetPath);
-      sendCmdWithRetry("GET " + assetPath)
-        .then(() => {
-          console.log("GET command issued for asset:", assetPath);
-        })
-        .catch(err => {
-          console.error("Error issuing GET for asset:", assetPath, err);
-        });
-    }
-    
-    // Poll persistentReceivedFiles every 200ms for up to 30 seconds.
-    let attempts = 0;
-    const interval = setInterval(() => {
-      attempts++;
-      if (isFileReady()) {
-        clearInterval(interval);
-        const fileObj = persistentReceivedFiles.find(f => f.fileName.trim() === assetPath);
-        console.log("Asset found and ready:", assetPath, fileObj);
-        resolve(fileObj.dataUrl);
-      } else if (attempts > 150) { // 150 * 200ms = 30 seconds
-        clearInterval(interval);
-        reject("Asset not ready within timeout: " + assetPath);
-      }
-    }, 200);
+  // First, check if the asset is already in your cache (persistentReceivedFiles)
+  const cachedAsset = persistentReceivedFiles.find(
+    f => f.fileName.trim() === assetPath
+  );
+  if (cachedAsset && cachedAsset.dataUrl && !cachedAsset.dataUrl.includes("undefined")) {
+    // Asset is cached, so resolve immediately.
+    return Promise.resolve(cachedAsset.dataUrl);
+  }
+  
+  // If a GET request is already in progress for this asset, return its promise.
+  if (pendingGETs[assetPath]) {
+    return pendingGETs[assetPath];
+  }
+  
+  // Otherwise, create a new promise for the GET request.
+  pendingGETs[assetPath] = new Promise((resolve, reject) => {
+    console.log("Asset not cached; issuing GET command for:", assetPath);
+    // Issue the GET command using your existing command mechanism.
+    sendCmdWithRetry("GET " + assetPath)
+      .then(() => {
+        // Poll for the asset to appear in persistentReceivedFiles.
+        let attempts = 0;
+        const pollInterval = setInterval(() => {
+          attempts++;
+          const assetObj = persistentReceivedFiles.find(
+            f => f.fileName.trim() === assetPath
+          );
+          if (assetObj && assetObj.dataUrl && !assetObj.dataUrl.includes("undefined")) {
+            clearInterval(pollInterval);
+            // Remove from pending map.
+            delete pendingGETs[assetPath];
+            console.log("Asset fetched:", assetPath);
+            resolve(assetObj.dataUrl);
+          } else if (attempts > 150) { // 150 * 200ms = 30 seconds
+            clearInterval(pollInterval);
+            delete pendingGETs[assetPath];
+            reject("Asset not ready within timeout: " + assetPath);
+          }
+        }, 200);
+      })
+      .catch(err => {
+        delete pendingGETs[assetPath];
+        reject(err);
+      });
   });
+  
+  return pendingGETs[assetPath];
 }
-
-
-
 
 // New function: parse the cached index.html, fetch its assets, then inject modified HTML into the modal.
 // Global variable to track the current page name.
 currentPageName = "index.html";
 
 // Function to load HTML content with assets.
-function loadIndexWithAssets(htmlContent) {
+async function loadIndexWithAssetsSequentially(htmlContent) {
   const parser = new DOMParser();
   const doc = parser.parseFromString(htmlContent, 'text/html');
 
-  // Select all asset elements that need to be fetched.
+  // Select asset elements (images, scripts, stylesheets)
   const assetElements = doc.querySelectorAll('img[src], script[src], link[rel="stylesheet"][href]');
   const totalAssets = assetElements.length;
   let loadedAssets = 0;
 
-  function updateProgress(assetName) {
-    loadedAssets++;
-    const percent = Math.round((loadedAssets / totalAssets) * 100);
-  }
-
-  // Map asset elements to promises that fetch their data URLs.
-  const fetchPromises = Array.from(assetElements).map(el => {
+  // Sequentially fetch each asset
+  for (const el of assetElements) {
     const tagName = el.tagName.toLowerCase();
     const assetUrl = tagName === 'link' ? el.getAttribute('href') : el.getAttribute('src');
-    return fetchAssetViaGET(assetUrl).then(dataUrl => {
+    try {
+      const dataUrl = await fetchAssetViaGET(assetUrl);
       if (tagName === 'img' || tagName === 'script') {
         el.setAttribute('src', dataUrl);
       } else if (tagName === 'link') {
         el.setAttribute('href', dataUrl);
       }
-      updateProgress(assetUrl);
-    }).catch(err => {
+      loadedAssets++;
+      // Optionally update progress here
+    } catch (err) {
       console.error("Error fetching asset:", assetUrl, err);
-      updateProgress(assetUrl);
-    });
-  });
-
-  // Show spinner if there are assets to load.
-  if (totalAssets > 0) {
-    document.getElementById('webViewContent').innerHTML = '<div id="spinnerContainer"><div class="spinner"></div></div>';
+      loadedAssets++;
+    }
   }
 
-  // When all asset promises complete, inject the modified HTML and hide the spinner.
-  Promise.all(fetchPromises)
-    .then(() => {
-      // Remove spinner before injecting the content.
-      document.getElementById('webViewContent').innerHTML = doc.documentElement.outerHTML;
-      document.getElementById('currentPageUrl').value = currentPageName;
-      setupModalLinks();
-      console.log("Assets loaded and HTML injected for " + currentPageName);
-    })
-    .catch(err => {
-      console.error("Error fetching assets:", err);
-      document.getElementById('webViewContent').innerHTML = htmlContent;
-    });
+  // Inject the modified HTML into the modal
+  document.getElementById('webViewContent').innerHTML = doc.documentElement.outerHTML;
+  document.getElementById('currentPageUrl').value = currentPageName;
+  setupModalLinks();
 }
+
 
 
 
@@ -3282,7 +3304,7 @@ document.getElementById('navRefreshBtn').addEventListener('click', () => {
       .then(dataUrl => fetch(dataUrl))
       .then(response => response.text())
       .then(htmlContent => {
-        loadIndexWithAssets(htmlContent);
+        loadIndexWithAssetsSequentially(htmlContent);
       })
       .catch(err => console.error("Error refreshing page:", err));
   }
@@ -3325,7 +3347,15 @@ function setupModalLinks() {
         flashMsg.style.borderRadius = '8px';
         flashMsg.style.zIndex = '9999';
         document.getElementById('webViewContent').appendChild(flashMsg);
-        setTimeout(() => flashMsg.remove(), 3000);
+	setTimeout(() => {
+	  flashMsg.remove();
+	  const modalEl = document.getElementById('webViewModal');
+	  const modalInstance = bootstrap.Modal.getInstance(modalEl);
+	  if (modalInstance) {
+	    modalInstance.hide();
+	  }
+	  document.getElementById('receiverProgress').scrollIntoView({ behavior: 'smooth' });
+	}, 3000);
 
         // Trigger download without modifying modal content.
         fetchAssetViaGET(href)
@@ -3346,7 +3376,7 @@ function setupModalLinks() {
 
 function loadPage(pageName, htmlContent) {
   // Inject the HTML into the modal.
-  loadIndexWithAssets(htmlContent);
+  loadIndexWithAssetsSequentially(htmlContent);
   
   // Update the current page name.
   currentPageName = pageName;
@@ -3381,7 +3411,7 @@ document.getElementById('navBackBtn').addEventListener('click', () => {
       .then(htmlContent => {
         currentPageName = prevPage;
         document.getElementById('currentPageUrl').value = currentPageName;
-        loadIndexWithAssets(htmlContent);
+        loadIndexWithAssetsSequentially(htmlContent);
         updateNavButtons();
       })
       .catch(err => console.error("Error loading page:", err));
@@ -3399,7 +3429,7 @@ document.getElementById('navForwardBtn').addEventListener('click', () => {
       .then(htmlContent => {
         currentPageName = nextPage;
         document.getElementById('currentPageUrl').value = currentPageName;
-        loadIndexWithAssets(htmlContent);
+        loadIndexWithAssetsSequentially(htmlContent);
         updateNavButtons();
       })
       .catch(err => console.error("Error loading page:", err));

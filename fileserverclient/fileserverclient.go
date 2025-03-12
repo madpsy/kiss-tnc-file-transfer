@@ -817,6 +817,20 @@ func handleCommand(commandLine string, args *Arguments, conn KISSConnection, b *
 		}
 	}
 
+	// For MKD command, ensure a directory name is provided.
+	if strings.ToUpper(tokens[0]) == "MKD" {
+		idx := strings.Index(commandLine, " ")
+		if idx == -1 {
+			log.Printf("MKD command requires a directory name")
+			return 1
+		}
+		dirName := strings.TrimSpace(commandLine[idx:])
+		if dirName == "" {
+			log.Printf("MKD command requires a directory name")
+			return 1
+		}
+	}
+
 	// Build and send the command.
 	packet, cmdID := buildCommandPacket(args.MyCallsign, args.FileServerCallsign, commandLine)
 	frame := buildKISSFrame(packet)
@@ -856,6 +870,7 @@ func handleCommand(commandLine string, args *Arguments, conn KISSConnection, b *
 	}
 	cmdType := strings.ToUpper(tokens[0])
 	if cmdType != "LIST" && cmdType != "GET" && cmdType != "PUT" {
+		// MKD (and any other non-transfer command) ends here.
 		return 0
 	}
 
@@ -868,7 +883,7 @@ func handleCommand(commandLine string, args *Arguments, conn KISSConnection, b *
 			log.Printf("GET command requires a filename")
 			return 1
 		}
-		expectedFile = strings.Join(tokens[1:], " ")
+		expectedFile = filepath.Base(strings.Join(tokens[1:], " "))
 	} else if cmdType == "PUT" {
 		idx := strings.Index(commandLine, " ")
 		if idx == -1 {

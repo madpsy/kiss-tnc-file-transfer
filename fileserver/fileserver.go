@@ -228,30 +228,6 @@ type TCPKISSConnection struct {
 	lock sync.Mutex
 }
 
-
-func resetState() {
-    // Reset the timestamp so that the inactivity monitor starts fresh.
-    lastDataTime = time.Now()
-
-    // Clear the response cache.
-    rspCacheLock.Lock()
-    rspCache = make(map[string]cachedResponse)
-    rspCacheLock.Unlock()
-
-    // Clear any in-progress command tracking.
-    processingCommandsLock.Lock()
-    processingCommands = make(map[string]chan struct{})
-    processingCommandsLock.Unlock()
-
-    // Clear active transfers.
-    activeTransfersLock.Lock()
-    activeTransfers = make(map[string]string)
-    activeTransfersLock.Unlock()
-
-    // Optionally, reinitialize the broadcaster.
-    broadcaster = NewBroadcaster()
-}
-
 func newTCPKISSConnection(host string, port int) (*TCPKISSConnection, error) {
 	addr := fmt.Sprintf("%s:%d", host, port)
 	conn, err := net.Dial("tcp", addr)
@@ -336,7 +312,6 @@ func (s *SerialKISSConnection) Close() error {
 
 // --- KISS Frame Functions ---
 
-// createRSPPacket builds the RSP packet with an AX.25 header.
 func createRSPPacket(destCallsign, srcCallsign, cmdID string, status int, msg string) []byte {
 	destAddr := encodeAX25Address(destCallsign, false)
 	srcAddr := encodeAX25Address(srcCallsign, true)
@@ -346,7 +321,6 @@ func createRSPPacket(destCallsign, srcCallsign, cmdID string, status int, msg st
 	return append(header, infoField...)
 }
 
-// unescapeData reverses KISS escaping.
 func unescapeData(data []byte) []byte {
 	var out bytes.Buffer
 	for i := 0; i < len(data); {
@@ -369,7 +343,6 @@ func unescapeData(data []byte) []byte {
 	return out.Bytes()
 }
 
-// escapeData applies KISS escaping.
 func escapeData(data []byte) []byte {
 	var out bytes.Buffer
 	for _, b := range data {
@@ -386,7 +359,6 @@ func escapeData(data []byte) []byte {
 	return out.Bytes()
 }
 
-// sendResponse wraps the payload in a KISS frame and writes it.
 func sendResponse(responsePayload []byte) error {
 	conn := getConn()
 	escaped := escapeData(responsePayload)
@@ -397,7 +369,6 @@ func sendResponse(responsePayload []byte) error {
 	return err
 }
 
-// sendResponseWithDetails builds, logs, sends, and caches the response.
 func sendResponseWithDetails(sender, cmdID, command string, status int, msg string) ([]byte, error) {
 	conn := getConn()
 	rspPacket := createRSPPacket(sender, serverCallsign, cmdID, status, msg)
@@ -418,7 +389,6 @@ func sendResponseWithDetails(sender, cmdID, command string, status int, msg stri
 	return frame, err
 }
 
-// extractKISSFrames extracts complete KISS frames from a buffer.
 func extractKISSFrames(data []byte) ([][]byte, []byte) {
 	var frames [][]byte
 	for {
@@ -438,7 +408,6 @@ func extractKISSFrames(data []byte) ([][]byte, []byte) {
 	return frames, data
 }
 
-// encodeAX25Address supports SSIDs.
 func encodeAX25Address(callsign string, isLast bool) []byte {
 	parts := strings.Split(callsign, "-")
 	base := strings.ToUpper(strings.TrimSpace(parts[0]))
@@ -462,7 +431,6 @@ func encodeAX25Address(callsign string, isLast bool) []byte {
 	return addr
 }
 
-// decodeAX25Address decodes a 7-byte AX.25 address field.
 func decodeAX25Address(addr []byte) string {
 	if len(addr) < 7 {
 		return ""
@@ -479,7 +447,6 @@ func decodeAX25Address(addr []byte) string {
 	return base
 }
 
-// parseCommandPacket extracts the command from a packet.
 func parseCommandPacket(packet []byte) (sender, cmdID, command string, ok bool) {
 	if len(packet) < 16 {
 		return "", "", "", false
@@ -506,7 +473,6 @@ func parseCommandPacket(packet []byte) (sender, cmdID, command string, ok bool) 
 	return sender, cmdID, command, true
 }
 
-// createResponsePacket builds the response payload.
 func createResponsePacket(cmdID string, status int, msg string) []byte {
 	responseText := fmt.Sprintf("%s:RSP:%d:%s", cmdID, status, msg)
 	return []byte(responseText)
@@ -551,28 +517,75 @@ func callsignAllowedForAdmin(cs string) bool {
 	return false
 }
 
-func listFiles(dir string) (string, error) {
-	entries, err := ioutil.ReadDir(dir)
-	if err != nil {
-		return "", err
-	}
-	var files []os.FileInfo
-	for _, entry := range entries {
-		if !entry.IsDir() && !strings.HasPrefix(entry.Name(), ".") {
-			files = append(files, entry)
-		}
-	}
-	sort.Slice(files, func(i, j int) bool {
-		return strings.ToLower(files[i].Name()) < strings.ToLower(files[j].Name())
-	})
-	var output strings.Builder
-	output.WriteString("File Name,Modified Date,Size\n")
-	for _, file := range files {
-		modTime := file.ModTime().Format("2006-01-02 15:04:05")
-		output.WriteString(fmt.Sprintf("\"%s\",\"%s\",%d\n", file.Name(), modTime, file.Size()))
-	}
-	return output.String(), nil
+// Modified listFiles: list directories (with trailing "/") and files.
+func listFiles(root string) (string, error) {
+    // Define a struct to hold file information.
+    type fileEntry struct {
+        relPath string
+        modTime time.Time
+        size    int64
+        isDir   bool
+    }
+
+    var entries []fileEntry
+
+    // Walk the directory tree starting at root.
+    err := filepath.Walk(root, func(path string, info os.FileInfo, err error) error {
+        if err != nil {
+            return err
+        }
+        // Skip the root directory itself.
+        if path == root {
+            return nil
+        }
+        // Skip hidden files or directories.
+       	base := filepath.Base(path)
+        if strings.HasPrefix(base, ".") {
+            if info.IsDir() {
+                return filepath.SkipDir
+            }
+            return nil
+        }
+        // Compute the relative path from the root.
+        relPath, err := filepath.Rel(root, path)
+        if err != nil {
+            return err
+        }
+        entries = append(entries, fileEntry{
+            relPath: relPath,
+            modTime: info.ModTime(),
+            size:    info.Size(),
+            isDir:   info.IsDir(),
+        })
+        return nil
+    })
+    if err != nil {
+        return "", err
+    }
+
+    // Sort the entries by relative path, case-insensitive.
+    sort.Slice(entries, func(i, j int) bool {
+        return strings.ToLower(entries[i].relPath) < strings.ToLower(entries[j].relPath)
+    })
+
+    var output strings.Builder
+    output.WriteString("Name,Modified Date,Size\n")
+    for _, entry := range entries {
+        name := entry.relPath
+        if entry.isDir {
+            name += string(os.PathSeparator)
+        }
+        modTimeStr := entry.modTime.Format("2006-01-02 15:04:05")
+        sizeStr := ""
+        if !entry.isDir {
+            sizeStr = fmt.Sprintf("%d", entry.size)
+        }
+        output.WriteString(fmt.Sprintf("\"%s\",\"%s\",\"%s\"\n", name, modTimeStr, sizeStr))
+    }
+    return output.String(), nil
 }
+
+
 
 // --- Broadcaster for Command Frames ---
 
@@ -611,10 +624,6 @@ func (b *Broadcaster) Broadcast(data []byte) {
 	}
 }
 
-// --- Reader and Monitor for the Control Connection ---
-//
-// Modified startKISSReader: if no data is received (empty slice), sleep for 50ms
-// before retrying. This helps avoid a tight busy loop.
 func startKISSReader(conn KISSConnection, b *Broadcaster) {
 	for {
 		data, err := conn.RecvData(100 * time.Millisecond)
@@ -644,7 +653,6 @@ func monitorInactivity(timeout time.Duration) {
 	}
 }
 
-// doReconnect handles reconnection of the control channel.
 func doReconnect() {
 	reconnectMutex.Lock()
 	if reconnecting {
@@ -684,7 +692,6 @@ func doReconnect() {
 	reconnectMutex.Unlock()
 }
 
-// doFileReconnect handles reconnection of the file transfer connection.
 func doFileReconnect() {
 	fileReconnectMux.Lock()
 	if fileReconnecting {
@@ -720,42 +727,37 @@ func doFileReconnect() {
 	fileReconnectMux.Unlock()
 }
 
-// --- Transparent Listener and Handler for File Transfers ---
-
 func handleTransparentConnection(remoteConn net.Conn, b *Broadcaster) {
-    defer remoteConn.Close()
-    log.Printf("Accepted transparent connection from %s", remoteConn.RemoteAddr())
+	defer remoteConn.Close()
+	log.Printf("Accepted transparent connection from %s", remoteConn.RemoteAddr())
 
-    // Instead of looping forever, do a single io.Copy and exit if no data is transferred.
-    go func() {
-        currentConn := getFileConn()
-        if currentConn == nil {
-            return
-        }
-        n, err := io.Copy(currentConn, remoteConn)
-        if err != nil {
-            if !strings.Contains(err.Error(), "use of closed network connection") {
-                log.Printf("Error copying from transparent client to file transfer connection: %v", err)
-            }
-            go doFileReconnect()
-            return
-        }
-        if n == 0 {
-            // No bytes were transferred; exit to avoid a busy loop.
-            return
-        }
-    }()
+	go func() {
+		currentConn := getFileConn()
+		if currentConn == nil {
+			return
+		}
+		n, err := io.Copy(currentConn, remoteConn)
+		if err != nil {
+			if !strings.Contains(err.Error(), "use of closed network connection") {
+				log.Printf("Error copying from transparent client to file transfer connection: %v", err)
+			}
+			go doFileReconnect()
+			return
+		}
+		if n == 0 {
+			return
+		}
+	}()
 
-    sub := b.Subscribe()
-    defer b.Unsubscribe(sub)
-    for data := range sub {
-        _, err := remoteConn.Write(data)
-        if err != nil {
-            return
-        }
-    }
+	sub := b.Subscribe()
+	defer b.Unsubscribe(sub)
+	for data := range sub {
+		_, err := remoteConn.Write(data)
+		if err != nil {
+			return
+		}
+	}
 }
-
 
 func startTransparentListener(port int, b *Broadcaster) {
 	addr := fmt.Sprintf(":%d", port)
@@ -774,8 +776,6 @@ func startTransparentListener(port int, b *Broadcaster) {
 		go handleTransparentConnection(remoteConn, b)
 	}
 }
-
-// --- Invoking the Sender and Receiver Binaries ---
 
 func invokeSenderBinary(args *Arguments, receiverCallsign, fileName, inputData, cmdID string) {
 	if v, exists := runningSender.Load(receiverCallsign); exists {
@@ -951,8 +951,6 @@ func invokeReceiverBinary(args *Arguments, senderCallsign, fileName, cmdID, base
 	return nil
 }
 
-// --- Periodic ID Packet Functions ---
-
 func createIDPacket() []byte {
 	dest := encodeAX25Address("BEACON", false)
 	src := encodeAX25Address(serverCallsign, true)
@@ -975,7 +973,19 @@ func sendIDPacket() {
 	}
 }
 
-// --- main() Function ---
+func resetState() {
+	lastDataTime = time.Now()
+	rspCacheLock.Lock()
+	rspCache = make(map[string]cachedResponse)
+	rspCacheLock.Unlock()
+	processingCommandsLock.Lock()
+	processingCommands = make(map[string]chan struct{})
+	processingCommandsLock.Unlock()
+	activeTransfersLock.Lock()
+	activeTransfers = make(map[string]string)
+	activeTransfersLock.Unlock()
+	broadcaster = NewBroadcaster()
+}
 
 func main() {
 	args := parseArguments()
@@ -1007,7 +1017,6 @@ func main() {
 	log.Printf("Sender binary set to: %s", args.SenderBinary)
 	log.Printf("Receiver binary set to: %s", args.ReceiverBinary)
 
-	// Populate allowed GET callsigns.
 	if args.GetCallsigns != "" {
 		for _, cs := range strings.Split(args.GetCallsigns, ",") {
 			cs = strings.ToUpper(strings.TrimSpace(cs))
@@ -1020,7 +1029,6 @@ func main() {
 		log.Printf("No GET callsign filtering enabled.")
 	}
 
-	// Populate allowed PUT callsigns.
 	if args.PutCallsigns != "" {
 		for _, cs := range strings.Split(args.PutCallsigns, ",") {
 			cs = strings.ToUpper(strings.TrimSpace(cs))
@@ -1033,7 +1041,6 @@ func main() {
 		log.Printf("No PUT callsign filtering enabled.")
 	}
 
-	// Populate allowed ADMIN callsigns.
 	if args.AdminCallsigns != "" {
 		for _, cs := range strings.Split(args.AdminCallsigns, ",") {
 			cs = strings.ToUpper(strings.TrimSpace(cs))
@@ -1046,7 +1053,6 @@ func main() {
 		log.Printf("No ADMIN callsign filtering enabled; admin commands will be denied.")
 	}
 
-	// --- Establish Two Separate Connections ---
 	var conn, fConn KISSConnection
 	var err error
 	if strings.ToLower(args.Connection) == "tcp" {
@@ -1068,8 +1074,8 @@ func main() {
 			log.Fatalf("File transfer connection error: %v", err)
 		}
 	}
-	setConn(conn)      // Control channel
-	setFileConn(fConn) // File transfer channel
+	setConn(conn)
+	setFileConn(fConn)
 	defer conn.Close()
 	defer fConn.Close()
 
@@ -1170,55 +1176,78 @@ func main() {
 			}
 
 			if strings.HasPrefix(upperCmd, "GET ") {
-				if globalArgs.PerCallsignDir == "" && !callsignAllowedForGet(sender) {
-					log.Printf("Dropping GET command from sender %s: not allowed.", sender)
-					activeTransfersLock.Lock()
-					delete(activeTransfers, sender)
-					activeTransfersLock.Unlock()
-					_, _ = sendResponseWithDetails(sender, cmdID, command, 0, "CALLSIGN NOT ALLOWED")
-					continue
-				}
-				activeTransfersLock.Lock()
-				if _, exists := activeTransfers[sender]; !exists && len(activeTransfers) >= globalArgs.MaxConcurrency {
-					activeTransfersLock.Unlock()
-					sendResponseWithDetails(sender, cmdID, command, 0, "TRANSFER ALREADY IN PROGRESS. PLEASE WAIT.")
-					continue
-				}
-				activeTransfers[sender] = cmdID
-				activeTransfersLock.Unlock()
-
-				fileName := strings.TrimSpace(command[4:])
-				if len(fileName) > maxFileNameLen {
-					log.Printf("GET command from sender %s: file name '%s' too long", sender, fileName)
-					_, _ = sendResponseWithDetails(sender, cmdID, command, 0, "FILE NAME TOO LONG")
-					continue
-				}
-				if isFilenameDisallowed(fileName) {
-					log.Printf("GET command from sender %s: access to file '%s' is forbidden", sender, fileName)
-					_, _ = sendResponseWithDetails(sender, cmdID, command, 0, "FILE NAME NOT ALLOWED")
-					continue
-				}
-				var dir string
-				if globalArgs.PerCallsignDir != "" {
-					dir = baseDir
-				} else {
-					dir = absServeDir
-				}
-				requestedPath := filepath.Join(dir, fileName)
-				cleanPath := filepath.Clean(requestedPath)
-				if !strings.HasPrefix(cleanPath, dir) {
-					log.Printf("GET command from sender %s: attempted directory traversal in '%s'", sender, fileName)
-					_, _ = sendResponseWithDetails(sender, cmdID, command, 0, "INVALID FILE PATH")
-					continue
-				}
-				content, err := ioutil.ReadFile(cleanPath)
-				if err != nil {
-					log.Printf("GET command from sender %s: requested file '%s' does not exist in directory %s", sender, fileName, dir)
-					_, _ = sendResponseWithDetails(sender, cmdID, command, 0, "CANNOT FIND/READ FILE")
-					continue
-				}
-				_, _ = sendResponseWithDetails(sender, cmdID, command, 1, "GET OK")
-				go invokeSenderBinary(args, sender, fileName, string(content), cmdID)
+			    if globalArgs.PerCallsignDir == "" && !callsignAllowedForGet(sender) {
+			        log.Printf("Dropping GET command from sender %s: not allowed.", sender)
+			        activeTransfersLock.Lock()
+			        delete(activeTransfers, sender)
+			        activeTransfersLock.Unlock()
+			        _, _ = sendResponseWithDetails(sender, cmdID, command, 0, "CALLSIGN NOT ALLOWED")
+			        continue
+			    }
+			    activeTransfersLock.Lock()
+			    if _, exists := activeTransfers[sender]; !exists && len(activeTransfers) >= globalArgs.MaxConcurrency {
+			        activeTransfersLock.Unlock()
+			        sendResponseWithDetails(sender, cmdID, command, 0, "TRANSFER ALREADY IN PROGRESS. PLEASE WAIT.")
+			        continue
+			    }
+			    activeTransfers[sender] = cmdID
+			    activeTransfersLock.Unlock()
+			
+			    fileName := strings.TrimSpace(command[4:])
+			    if len(fileName) > maxFileNameLen {
+			        log.Printf("GET command from sender %s: file name '%s' too long", sender, fileName)
+			        _, _ = sendResponseWithDetails(sender, cmdID, command, 0, "FILE NAME TOO LONG")
+			        continue
+			    }
+			    if isFilenameDisallowed(fileName) {
+			        log.Printf("GET command from sender %s: access to file '%s' is forbidden", sender, fileName)
+			        _, _ = sendResponseWithDetails(sender, cmdID, command, 0, "FILE NAME NOT ALLOWED")
+			        continue
+			    }
+			    var dir string
+			    if globalArgs.PerCallsignDir != "" {
+			        dir = baseDir
+			    } else {
+			        dir = absServeDir
+			    }
+			    requestedPath := filepath.Join(dir, fileName)
+			    cleanPath := filepath.Clean(requestedPath)
+			    if !strings.HasPrefix(cleanPath, dir) {
+			        log.Printf("GET command from sender %s: attempted directory traversal in '%s'", sender, fileName)
+			        _, _ = sendResponseWithDetails(sender, cmdID, command, 0, "INVALID FILE PATH")
+			        continue
+			    }
+			
+			    var content []byte
+			    if strings.EqualFold(fileName, "index.html") {
+			        // Special-case for index.html
+			        content, err = ioutil.ReadFile(cleanPath)
+			        if err != nil {
+			            // If index.html doesn't exist, use default content
+			            content = []byte("<html><body><h3>No site configured here yet. Upload index.html to get started.</h3></body></html>")
+			        }
+			    } else {
+			        // Regular file: first check that it exists and is not a directory.
+			        info, err := os.Stat(cleanPath)
+			        if err != nil {
+			            log.Printf("GET command from sender %s: error stating '%s': %v", sender, fileName, err)
+			            _, _ = sendResponseWithDetails(sender, cmdID, command, 0, "CANNOT FIND/READ FILE")
+			            continue
+			        }
+			        if info.IsDir() {
+			            log.Printf("GET command from sender %s: '%s' is a directory", sender, fileName)
+			            _, _ = sendResponseWithDetails(sender, cmdID, command, 0, "CANNOT GET DIRECTORY")
+			            continue
+			        }
+			        content, err = ioutil.ReadFile(cleanPath)
+			        if err != nil {
+			            log.Printf("GET command from sender %s: error reading '%s': %v", sender, fileName, err)
+			            _, _ = sendResponseWithDetails(sender, cmdID, command, 0, "CANNOT FIND/READ FILE")
+			            continue
+			        }
+			    }
+			    _, _ = sendResponseWithDetails(sender, cmdID, command, 1, "GET OK")
+			    go invokeSenderBinary(globalArgs, sender, fileName, string(content), cmdID)
 			} else if strings.HasPrefix(upperCmd, "LIST") {
 				if globalArgs.PerCallsignDir != "" {
 					baseDir = filepath.Join(absPerCallsignDir, sender)
@@ -1268,6 +1297,12 @@ func main() {
 				} else {
 					dir = absSaveDir
 				}
+				// Check if the target directory exists.
+				if _, err := os.Stat(dir); os.IsNotExist(err) {
+					log.Printf("PUT command from sender %s: target directory '%s' does not exist", sender, dir)
+					_, _ = sendResponseWithDetails(sender, cmdID, command, 0, "DIRECTORY DOES NOT EXIST")
+					continue
+				}
 				savePath := filepath.Join(dir, fileName)
 				cleanSavePath := filepath.Clean(savePath)
 				if !strings.HasPrefix(cleanSavePath, dir) {
@@ -1313,16 +1348,27 @@ func main() {
 					continue
 				}
 				if _, err := os.Stat(cleanPath); os.IsNotExist(err) {
-					log.Printf("DEL command from sender %s: file '%s' does not exist", sender, fileName)
+					log.Printf("DEL command from sender %s: file/directory '%s' does not exist", sender, fileName)
 					_, _ = sendResponseWithDetails(sender, cmdID, command, 0, "FILE DOES NOT EXIST")
 					continue
 				}
-				err := os.Remove(cleanPath)
+				// If it's a directory, remove it recursively; otherwise, remove the file.
+				info, err := os.Stat(cleanPath)
 				if err != nil {
-					log.Printf("DEL command from sender %s: error deleting file '%s': %v", sender, fileName, err)
+					log.Printf("DEL command from sender %s: error stating '%s': %v", sender, fileName, err)
+					_, _ = sendResponseWithDetails(sender, cmdID, command, 0, "DEL FAILED")
+					continue
+				}
+				if info.IsDir() {
+					err = os.RemoveAll(cleanPath)
+				} else {
+					err = os.Remove(cleanPath)
+				}
+				if err != nil {
+					log.Printf("DEL command from sender %s: error deleting '%s': %v", sender, fileName, err)
 					_, _ = sendResponseWithDetails(sender, cmdID, command, 0, "DEL FAILED")
 				} else {
-					log.Printf("DEL command from sender %s: file '%s' deleted successfully", sender, fileName)
+					log.Printf("DEL command from sender %s: '%s' deleted successfully", sender, fileName)
 					_, _ = sendResponseWithDetails(sender, cmdID, command, 1, "DEL OK")
 				}
 			} else if strings.HasPrefix(upperCmd, "REN ") {
@@ -1346,7 +1392,7 @@ func main() {
 					continue
 				}
 				if isFilenameDisallowed(currentFile) || isFilenameDisallowed(newFile) {
-					log.Printf("REN command from sender %s: renaming of file '%s' or '%s' is forbidden", sender, currentFile, newFile)
+					log.Printf("REN command from sender %s: renaming of '%s' or '%s' is forbidden", sender, currentFile, newFile)
 					_, _ = sendResponseWithDetails(sender, cmdID, command, 0, "FILE NAME NOT ALLOWED")
 					continue
 				}
@@ -1361,31 +1407,89 @@ func main() {
 				cleanCurrent := filepath.Clean(currentPath)
 				cleanNew := filepath.Clean(newPath)
 				if !strings.HasPrefix(cleanCurrent, dir) || !strings.HasPrefix(cleanNew, dir) {
-					log.Printf("REN command from sender %s: attempted directory traversal with filenames '%s' or '%s'", sender, currentFile, newFile)
+					log.Printf("REN command from sender %s: attempted directory traversal with '%s' or '%s'", sender, currentFile, newFile)
 					_, _ = sendResponseWithDetails(sender, cmdID, command, 0, "INVALID FILE PATH")
 					continue
 				}
 				if _, err := os.Stat(cleanCurrent); os.IsNotExist(err) {
-					log.Printf("REN command from sender %s: current file '%s' does not exist", sender, currentFile)
+					log.Printf("REN command from sender %s: '%s' does not exist", sender, currentFile)
 					_, _ = sendResponseWithDetails(sender, cmdID, command, 0, "CURRENT FILE DOES NOT EXIST")
 					continue
 				}
 				if _, err := os.Stat(cleanNew); err == nil {
-					log.Printf("REN command from sender %s: new file '%s' already exists", sender, newFile)
+					log.Printf("REN command from sender %s: '%s' already exists", sender, newFile)
 					_, _ = sendResponseWithDetails(sender, cmdID, command, 0, "NEW FILE ALREADY EXISTS")
 					continue
 				}
 				err := os.Rename(cleanCurrent, cleanNew)
 				if err != nil {
-					log.Printf("REN command from sender %s: error renaming file from '%s' to '%s': %v", sender, currentFile, newFile, err)
+					log.Printf("REN command from sender %s: error renaming '%s' to '%s': %v", sender, currentFile, newFile, err)
 					_, _ = sendResponseWithDetails(sender, cmdID, command, 0, "REN FAILED")
 				} else {
-					log.Printf("REN command from sender %s: file renamed from '%s' to '%s' successfully", sender, currentFile, newFile)
+					log.Printf("REN command from sender %s: '%s' renamed to '%s' successfully", sender, currentFile, newFile)
 					_, _ = sendResponseWithDetails(sender, cmdID, command, 1, "REN OK")
+				}
+			} else if strings.HasPrefix(upperCmd, "MKD ") {
+				// New command: Make Directory (MKD)
+				if globalArgs.PerCallsignDir == "" && !callsignAllowedForAdmin(sender) {
+					log.Printf("MKD command from sender %s not allowed.", sender)
+					_, _ = sendResponseWithDetails(sender, cmdID, command, 0, "CALLSIGN NOT ALLOWED")
+					continue
+				}
+				dirName := strings.TrimSpace(command[4:])
+				// Check each component of the directory name (split by "/")
+				parts := strings.Split(dirName, "/")
+				invalid := false
+				for _, part := range parts {
+					if part == "" {
+						continue
+					}
+					if len(part) > 15 {
+						log.Printf("MKD command from sender %s: directory component '%s' exceeds 15 characters", sender, part)
+						_, _ = sendResponseWithDetails(sender, cmdID, command, 0, "DIRECTORY NAME COMPONENT TOO LONG")
+						invalid = true
+						break
+					}
+				}
+				if invalid {
+					continue
+				}
+				var base string
+				if globalArgs.PerCallsignDir != "" {
+					base = baseDir
+				} else {
+					base = absServeDir
+				}
+				targetPath := filepath.Join(base, dirName)
+				cleanPath := filepath.Clean(targetPath)
+				if !strings.HasPrefix(cleanPath, base) {
+					log.Printf("MKD command from sender %s: attempted directory traversal in '%s'", sender, dirName)
+					_, _ = sendResponseWithDetails(sender, cmdID, command, 0, "INVALID DIRECTORY PATH")
+					continue
+				}
+				// If a file (not directory) exists with the same name, return error.
+				if info, err := os.Stat(cleanPath); err == nil {
+					if !info.IsDir() {
+						log.Printf("MKD command from sender %s: a file named '%s' already exists", sender, dirName)
+						_, _ = sendResponseWithDetails(sender, cmdID, command, 0, "FILE ALREADY EXISTS")
+						continue
+					} else {
+						log.Printf("MKD command from sender %s: directory '%s' already exists", sender, dirName)
+						_, _ = sendResponseWithDetails(sender, cmdID, command, 0, "DIRECTORY ALREADY EXISTS")
+						continue
+					}
+				}
+				// Create the directory (supporting multiple depths)
+				if err := os.MkdirAll(cleanPath, 0755); err != nil {
+					log.Printf("MKD command from sender %s: error creating directory '%s': %v", sender, dirName, err)
+					_, _ = sendResponseWithDetails(sender, cmdID, command, 0, "MKD FAILED")
+				} else {
+					log.Printf("MKD command from sender %s: directory '%s' created successfully", sender, dirName)
+					_, _ = sendResponseWithDetails(sender, cmdID, command, 1, "MKD OK")
 				}
 			} else {
 				log.Printf("Unrecognized command from sender %s: %s", sender, command)
-				_, _ = sendResponseWithDetails(sender, cmdID, command, 0, "AVAILABLE: LIST, GET [FILE], PUT [FILE], DEL [FILE], REN [CUR]|[NEW]")
+				_, _ = sendResponseWithDetails(sender, cmdID, command, 0, "AVAILABLE: LIST, GET [FILE], PUT [FILE], DEL [FILE/DIR], REN [CUR]|[NEW], MKD [DIR]")
 			}
 		}
 	}
