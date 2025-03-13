@@ -18,6 +18,7 @@ import (
 	"strings"
 	"sync"
 	"time"
+	"regexp"
 )
 
 // --- Global Constants and Variables ---
@@ -73,6 +74,9 @@ var absSaveDir string
 // Global maps for tracking running sender/receiver processes.
 var runningSender sync.Map
 var runningReceiver sync.Map
+
+var allowedDirName = regexp.MustCompile(`^[A-Za-z0-9._()\-]+$`)
+var allowedFileName = regexp.MustCompile(`^[A-Za-z0-9._()/\-]+$`)
 
 // --- Duplicate Response Cache ---
 type cachedResponse struct {
@@ -1286,6 +1290,11 @@ func main() {
 			        _, _ = sendResponseWithDetails(sender, cmdID, command, 0, "FILE NAME TOO LONG")
 			        continue
 			    }
+			    if !allowedFileName.MatchString(fileName) {
+				log.Printf("PUT command from sender %s: file name '%s' contains invalid characters", sender, fileName)
+				_, _ = sendResponseWithDetails(sender, cmdID, command, 0, "INVALID FILE NAME CHARACTERS")
+				continue
+			    }
 			    if isFilenameDisallowed(fileName) {
 			        log.Printf("PUT command from sender %s: access to file '%s' is forbidden", sender, fileName)
 			        _, _ = sendResponseWithDetails(sender, cmdID, command, 0, "FILE NAME NOT ALLOWED")
@@ -1456,6 +1465,12 @@ func main() {
 					if len(part) > 15 {
 						log.Printf("MKD command from sender %s: directory component '%s' exceeds 15 characters", sender, part)
 						_, _ = sendResponseWithDetails(sender, cmdID, command, 0, "DIRECTORY NAME COMPONENT TOO LONG")
+						invalid = true
+						break
+					}
+					if !allowedDirName.MatchString(part) {
+						log.Printf("MKD command from sender %s: directory component '%s' contains invalid characters", sender, part)
+						_, _ = sendResponseWithDetails(sender, cmdID, command, 0, "INVALID DIRECTORY NAME CHARACTERS")
 						invalid = true
 						break
 					}
