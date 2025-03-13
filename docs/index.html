@@ -182,6 +182,13 @@
             <!-- Container where the List button will be added dynamically -->
             <span id="listButtonContainer"></span>
         </div>
+	<div class="mb-3" id="pathSection" style="display: none;">
+	  <label for="pathInput" class="form-label">Path for Send File</label>
+	  <div class="input-group">
+	    <input type="text" id="pathInput" class="form-control" placeholder="Optional directory to Send File">
+	    <button id="createDirectoryBtn" class="btn btn-primary ms-1">Create Directory</button>
+	  </div>
+	</div>
         <div class="mb-3">
             <label for="fileInput" class="form-label">File to Send</label> <input type="file" id="fileInput" class="form-control">
         </div>
@@ -2083,6 +2090,14 @@ function sendPacket(seq, overrideBurstTo) {
                   });
         
                 const fileServerCheckbox = document.getElementById('isFileServer');
+		const pathSection = document.getElementById('pathSection');
+
+		  if (fileServerCheckbox.checked) {
+   			 pathSection.style.display = 'block';
+		  } else {
+			    pathSection.style.display = 'none';
+		  }
+
                 const listButtonContainer = document.getElementById('listButtonContainer');
 	if (document.getElementById('connectionType').value === 'serial') {
 	   document.getElementById('serialSettings').style.display = 'block';
@@ -2141,10 +2156,39 @@ fileServerCheckbox.addEventListener('change', function() {
     viewWebBtn.innerText = "View Web";
     viewWebBtn.addEventListener('click', openWebViewModal);
     listButtonContainer.appendChild(viewWebBtn);
+
+    pathSection.style.display = 'block';
     
     updateListFilesButtonStatus();
+  } else {
+	pathSection.style.display = 'none';
   }
 });
+
+document.getElementById('createDirectoryBtn').addEventListener('click', function() {
+    const pathValue = document.getElementById('pathInput').value.trim();
+    if (!pathValue) {
+      alert("Please enter a directory path.");
+      return;
+    }
+    // Open the CMD/RSP modal.
+    const cmdModal = openCmdRspModal();
+    document.getElementById('cmdSentCmdRsp').innerText = "CMD: MKD " + pathValue;
+    document.getElementById('rspResponseCmdRsp').innerText = "";
+    
+    // Send the MKD command using your existing sendCmdWithRetry logic.
+    sendCmdWithRetry("MKD " + pathValue)
+      .then(rsp => {
+        document.getElementById('rspResponseCmdRsp').innerText =
+          "RSP: " + (rsp.status === 1 ? "Success" : "Failure") + " - " + rsp.message;
+        setTimeout(() => {
+          closeCmdRspModal();
+        }, 1000);
+      })
+      .catch(err => {
+        document.getElementById('rspResponseCmdRsp').innerText = "Error: " + err;
+      });
+  });
 
         
                   const autoCheckbox = document.getElementById('autoBurstCheckbox');
@@ -2239,77 +2283,59 @@ fileServerCheckbox.addEventListener('change', function() {
       }
     });
     
+
         document.getElementById('sendFileBtn').addEventListener('click', () => {
-          // Reset burst counters.
-          currentDynamicBurstIndex = 2;
-          currentBurstSizeDynamic = dynamicBurstSizes[currentDynamicBurstIndex];
-          consecutiveSuccessCount = 0;
-          
-          if (fileTransferInProgress) {
-            alert("A file transfer is already in progress.");
-            return;
-          }
-          
-          document.getElementById('sendFileBtn').disabled = true;
-          
-          // Validate inputs.
-          const inputs = validateFileTransferInputs();
-          if (!inputs) {
-            document.getElementById('sendFileBtn').disabled = false;
-            return;
-          }
-          sender = inputs.sender;
-          receiver = inputs.receiver;
-          const file = inputs.file;
-          
-          // Get additional options.
-          const compress = document.getElementById('compressCheckbox').checked;
-          const encodingMethod = document.getElementById('encodingMethod').value;
-          
-          // Set up burst settings.
-          configureBurstSettings();
-          
-          // Branch based on whether "Is file server?" is checked.
-          if (document.getElementById('isFileServer').checked) {
-            // Open the dedicated CMD/RSP modal.
-            const cmdModal = openCmdRspModal();
-            document.getElementById('cmdSentCmdRsp').innerText = "CMD: PUT " + file.name;
-            document.getElementById('rspResponseCmdRsp').innerText = "";
-        
-            
-            // Send the PUT command and wait for a response.
-            sendCmdWithRetry("PUT " + file.name)
-              .then(rsp => {
-                document.getElementById('rspResponseCmdRsp').innerText =
-                  "RSP: " + (rsp.status === 1 ? "Success" : "Failure") + " - " + rsp.message;
-                if (rsp.status === 1) {
-      // Use the command's cmdID as the file ID.
-      fileId = rsp.cmdID;
-      // After 1 second, close the modal, scroll to the bottom, and proceed.
-      setTimeout(() => {
-  closeCmdRspModal();
-  document.getElementById('senderProgress').scrollIntoView({ behavior: 'smooth' });
-  startTransfer(fileId);
-  prepareFileTransferData(file, compress, encodingMethod, fileId)
-    .then(data => {
-      initiateFileTransfer(data, file, sender, receiver, fileId);
-    })
-    .catch(err => {
-      updateStatus("Error reading file: " + err);
-      document.getElementById('sendFileBtn').disabled = false;
-    });
-}, 1000);
-                } else {
-                  document.getElementById('sendFileBtn').disabled = false;
-                }
-              })
-              .catch(err => {
-                document.getElementById('rspResponseCmdRsp').innerText = "Error: " + err;
-                document.getElementById('sendFileBtn').disabled = false;
-              });
-          } else {
-            // Normal file transfer: generate a file ID, start transfer, and prepare the file data.
-            fileId = generateTwoCharID();
+  // Reset burst counters, etc.
+  if (fileTransferInProgress) {
+    alert("A file transfer is already in progress.");
+    return;
+  }
+  document.getElementById('sendFileBtn').disabled = true;
+
+  // Validate inputs.
+  const inputs = validateFileTransferInputs();
+  if (!inputs) {
+    document.getElementById('sendFileBtn').disabled = false;
+    return;
+  }
+  sender = inputs.sender;
+  receiver = inputs.receiver;
+  const file = inputs.file;
+
+  // Get additional options.
+  const compress = document.getElementById('compressCheckbox').checked;
+  const encodingMethod = document.getElementById('encodingMethod').value;
+
+  // Get the path value (if any) from the new input.
+  const pathValue = document.getElementById('pathInput').value.trim();
+  let finalFileName = file.name;
+  if (pathValue !== "") {
+    // Ensure a trailing slash is present.
+    if (!pathValue.endsWith('/')) {
+      finalFileName = pathValue + "/" + file.name;
+    } else {
+      finalFileName = pathValue + file.name;
+    }
+  }
+
+  // Set up burst settings.
+  configureBurstSettings();
+
+  if (document.getElementById('isFileServer').checked) {
+    // File server mode: use the modified file name in the PUT command.
+    const cmdModal = openCmdRspModal();
+    document.getElementById('cmdSentCmdRsp').innerText = "CMD: PUT " + finalFileName;
+    document.getElementById('rspResponseCmdRsp').innerText = "";
+
+    sendCmdWithRetry("PUT " + finalFileName)
+      .then(rsp => {
+        document.getElementById('rspResponseCmdRsp').innerText =
+          "RSP: " + (rsp.status === 1 ? "Success" : "Failure") + " - " + rsp.message;
+        if (rsp.status === 1) {
+          fileId = rsp.cmdID;
+          setTimeout(() => {
+            closeCmdRspModal();
+            document.getElementById('senderProgress').scrollIntoView({ behavior: 'smooth' });
             startTransfer(fileId);
             prepareFileTransferData(file, compress, encodingMethod, fileId)
               .then(data => {
@@ -2319,9 +2345,30 @@ fileServerCheckbox.addEventListener('change', function() {
                 updateStatus("Error reading file: " + err);
                 document.getElementById('sendFileBtn').disabled = false;
               });
-          }
-        });
-        
+          }, 1000);
+        } else {
+          document.getElementById('sendFileBtn').disabled = false;
+        }
+      })
+      .catch(err => {
+        document.getElementById('rspResponseCmdRsp').innerText = "Error: " + err;
+        document.getElementById('sendFileBtn').disabled = false;
+      });
+  } else {
+    // Normal file transfer: send file as usual.
+    fileId = generateTwoCharID();
+    startTransfer(fileId);
+    prepareFileTransferData(file, compress, encodingMethod, fileId)
+      .then(data => {
+        initiateFileTransfer(data, file, sender, receiver, fileId);
+      })
+      .catch(err => {
+        updateStatus("Error reading file: " + err);
+        document.getElementById('sendFileBtn').disabled = false;
+      });
+  }
+});
+
         
         
         
