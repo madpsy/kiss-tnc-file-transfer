@@ -330,14 +330,14 @@
                             <div class="mb-3">
                                 <label for="textFileName" class="form-label">Filename</label>
                                 <div class="input-group">
- 				 <input type="text" id="textFileName" class="form-control" placeholder="Enter file name and select extension">
-				  <select id="textFileExtension" class="form-select" style="max-width: 100px;">
+                                    <input type="text" id="textFileName" class="form-control" placeholder="Enter file name and select extension">
+                                    <select id="textFileExtension" class="form-select" style="max-width: 100px;">
 				    <option value=".txt" selected>.txt</option>
 				    <option value=".html">.html</option>
 				    <option value=".js">.js</option>
 				    <option value=".css">.css</option>
 				  </select>
-				</div>
+                                </div>
 
                             </div>
                             <div class="mb-3">
@@ -3276,74 +3276,62 @@ function fetchAssetViaGET(assetPath) {
   // Normalize the asset path for cache comparison
   const normalizedAssetPath = normalizePath(assetPath);
 
-  // Log the initial asset path and normalized path
-  console.log("Initial asset path:", assetPath);
-  console.log("Normalized asset path:", normalizedAssetPath);
-
-  // If the assetPath is relative and does not start with '//' (protocol-relative or absolute URL)
+  // Resolve relative asset paths
   if (!assetPath.match(/^(?:[a-z]+:)?\/\//i) && !assetPath.startsWith('/')) {
     const baseDir = currentPageName.substring(0, currentPageName.lastIndexOf('/') + 1);
-    // Prepend the base directory if needed
     if (!assetPath.startsWith(baseDir)) {
       assetPath = baseDir + assetPath;
     }
   }
 
-  // Log the final asset path after resolving relative paths
-  console.log("Final resolved asset path:", assetPath);
-
   // Normalize the final resolved path for cache lookup
   const finalNormalizedAssetPath = normalizePath(assetPath);
 
-  // Check if the asset is already cached using the final normalized file names
-  const cachedAsset = persistentReceivedFiles.find(f =>
+  // Get all cached assets that match the normalized file name
+  const matchingAssets = persistentReceivedFiles.filter(f =>
     normalizePath(f.fileName.trim()) === finalNormalizedAssetPath
   );
 
-  // Log if the asset is found in the cache
-  if (cachedAsset) {
-    console.log("Asset found in cache:", cachedAsset.fileName);
-  } else {
-    console.log("Asset not found in cache.");
-  }
+  // Filter valid assets (ones with a defined dataUrl) and sort them by timestamp (most recent first)
+  const validAssets = matchingAssets.filter(asset => asset.dataUrl && !asset.dataUrl.includes("undefined"));
+  const cachedAsset = validAssets.sort((a, b) => b.timestamp - a.timestamp)[0];
 
-  if (cachedAsset && cachedAsset.dataUrl && !cachedAsset.dataUrl.includes("undefined")) {
+  if (cachedAsset) {
+    console.log("Using cached asset:", cachedAsset.fileName, "with timestamp:", cachedAsset.timestamp);
     return Promise.resolve(cachedAsset.dataUrl);
   }
 
-  // Use the final normalized asset path as the key for pending GET requests
+  // If there's already a pending GET for this asset, return that promise.
   if (pendingGETs[finalNormalizedAssetPath]) {
-    console.log("Asset request already in progress for:", assetPath);
     return pendingGETs[finalNormalizedAssetPath];
   }
 
   // Otherwise, create a new promise for the GET request.
   pendingGETs[finalNormalizedAssetPath] = new Promise((resolve, reject) => {
-    console.log("Asset not cached; issuing GET command for:", assetPath);
     sendCmdWithRetry("GET " + assetPath)
       .then(() => {
         let attempts = 0;
         const pollInterval = setInterval(() => {
           attempts++;
-          const assetObj = persistentReceivedFiles.find(f =>
+          const newMatchingAssets = persistentReceivedFiles.filter(f =>
             normalizePath(f.fileName.trim()) === finalNormalizedAssetPath
           );
-          if (assetObj && assetObj.dataUrl && !assetObj.dataUrl.includes("undefined")) {
+          const newValidAssets = newMatchingAssets.filter(asset => asset.dataUrl && !asset.dataUrl.includes("undefined"));
+          const assetObj = newValidAssets.sort((a, b) => b.timestamp - a.timestamp)[0];
+          if (assetObj) {
             clearInterval(pollInterval);
             delete pendingGETs[finalNormalizedAssetPath];
-            console.log("Asset fetched:", assetPath);
+            console.log("Fetched asset:", assetObj.fileName, "with timestamp:", assetObj.timestamp);
             resolve(assetObj.dataUrl);
           } else if (attempts > 300) { // 300 * 200ms = 60 seconds timeout
             clearInterval(pollInterval);
             delete pendingGETs[finalNormalizedAssetPath];
-            console.log("Asset fetch timed out for:", assetPath);
             reject("Asset not ready within timeout: " + assetPath);
           }
         }, 200);
       })
       .catch(err => {
         delete pendingGETs[finalNormalizedAssetPath];
-        console.log("Error fetching asset:", assetPath, err);
         reject(err);
       });
   });
@@ -3355,15 +3343,6 @@ function fetchAssetViaGET(assetPath) {
 
   return pendingGETs[finalNormalizedAssetPath];
 }
-
-
-
-
-
-
-
-
-
 
 // New function: parse the cached index.html, fetch its assets, then inject modified HTML into the modal.
 // Global variable to track the current page name.
