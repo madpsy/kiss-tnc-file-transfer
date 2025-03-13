@@ -1,0 +1,1268 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <title>KISS Web Viewer</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <!-- Bootstrap CSS -->
+  <link href="bootstrap.min.css" rel="stylesheet">
+  <!-- Required libraries -->
+  <script src="socket.io.min.js"></script>
+  <script src="crypto-js.min.js"></script>
+  <script src="pako.min.js"></script>
+  <script src="bootstrap.bundle.min.js"></script>
+  <style>
+    body { padding: 20px; }
+    #status { margin-top: 1rem; font-weight: bold; }
+    .progress { height: 20px; margin-bottom: 10px; }
+    .spinner {
+      border: 8px solid #f3f3f3;
+      border-top: 8px solid #3498db;
+      border-radius: 50%;
+      width: 60px;
+      height: 60px;
+      animation: spin 2s linear infinite;
+      margin: 2rem auto;
+    }
+    @keyframes spin { 0% { transform: rotate(0deg); } 100% { transform: rotate(360deg); } }
+    /* Modal navigation styling */
+    .modal-header button { margin-right: 5px; }
+    .modal-header input { width: 450px; }
+
+.modal-header {
+  display: flex;
+  align-items: center;
+  justify-content: flex-start; /* Align items to the left */
+}
+
+.modal-header button,
+.modal-header input,
+.modal-header .btn {
+  flex: 0 0 auto; /* Prevent the elements from stretching */
+}
+
+
+/* Adjust modal dialog so it’s centered vertically and has a margin */
+.modal-dialog {
+  max-width: calc(100% - 40px); /* Horizontal margin: 20px on each side */
+  max-height: calc(100vh - 40px); /* Vertical margin: 20px on top and bottom */
+  margin: 20px auto;            /* Center the modal vertically and horizontally */
+}
+
+/* Make sure the modal content doesn’t exceed the max height */
+.modal-content {
+  max-height: 100%;
+}
+
+/* Allow the modal body to scroll vertically if its content is too tall */
+.modal-body {
+  height: auto;
+  overflow-y: auto;
+}
+
+
+
+
+  </style>
+</head>
+<body>
+  <div class="container">
+    <h1>KISS Web Viewer <span id="connectionStatusDot"></span></h1>
+    
+    <!-- Connection Type -->
+    <div class="mb-3">
+      <label for="connectionType" class="form-label">Connection Type</label>
+      <select id="connectionType" class="form-select">
+        <option value="websockets" selected>Websockets</option>
+        <option value="serial">Serial</option>
+      </select>
+    </div>
+    
+    <!-- Serial Settings (only visible when Serial is selected) -->
+    <div id="serialSettings" style="display: none; margin-bottom: 1rem;">
+      <div class="mb-3">
+        <label for="baudRate" class="form-label">Baud Rate</label>
+        <select id="baudRate" class="form-select">
+          <option value="9600">9600</option>
+          <option value="14400">14400</option>
+          <option value="19200">19200</option>
+          <option value="38400">38400</option>
+          <option value="57600">57600</option>
+          <option value="115200" selected>115200</option>
+        </select>
+      </div>
+      <button id="serialConnectBtn" class="btn btn-primary">Serial Connect</button>
+      <button id="serialDisconnectBtn" class="btn btn-secondary" style="display: none;">Disconnect Serial</button>
+    </div>
+    
+    <!-- Callsign Inputs -->
+    <div class="mb-3">
+      <label for="senderCallsign" class="form-label">Your Callsign</label>
+      <input type="text" id="senderCallsign" class="form-control" placeholder="Enter your callsign">
+    </div>
+    <div class="mb-3">
+      <label for="receiverCallsign" class="form-label">Web Server Callsign</label>
+      <input type="text" id="receiverCallsign" class="form-control" placeholder="Enter remote callsign">
+    </div>
+    <!-- Hidden options (always true) -->
+    <input type="checkbox" id="restrictCallsign" checked style="display:none;">
+    <input type="checkbox" id="isFileServer" checked style="display:none;">
+    
+    <!-- View Web Connect Button -->
+    <div class="mb-3">
+      <button id="viewWebConnectBtn" class="btn btn-info">Connect</button>
+    </div>
+    
+    <!-- Status -->
+    <div id="status"></div>
+    
+    <!-- Receiver Progress -->
+    <hr>
+    <h2>Receiver Progress</h2>
+    <div id="receiverProgress">
+      <p>No active transfers.</p>
+    </div>
+    
+    <!-- Received Files -->
+    <hr>
+    <h2>Received Files</h2>
+    <div id="receivedFiles">
+      <p>No files received yet.</p>
+    </div>
+    
+    <!-- View Web Modal -->
+    <div class="modal fade" id="webViewModal" tabindex="-1" aria-labelledby="webViewModalLabel" aria-hidden="true">
+      <div class="modal-dialog modal-lg">
+        <div class="modal-content">
+          <!-- Navigation Header -->
+          <div class="modal-header" style="display: flex; align-items: center;">
+            <button id="navBackBtn" class="btn btn-sm" title="Back">&#x2190;</button>
+            <button id="navForwardBtn" class="btn btn-sm" title="Forward">&#x2192;</button>
+            <button id="navHomeBtn" class="btn btn-sm" title="Home">&#x2302;</button>
+            <div style="display: flex; align-items: center;">
+              <button id="navRefreshBtn" class="btn btn-sm" title="Refresh">&#10227;</button>
+              <input type="text" id="currentPageUrl" class="form-control" placeholder="Current page">
+              <button id="goBtn" class="btn btn-success btn-sm" style="margin-left: 5px;">Go!</button>
+            </div>
+          </div>
+          <!-- Modal Body -->
+          <div class="modal-body p-0" id="webViewContent" style="min-height: 500px; overflow:auto;">
+            <div id="spinnerContainer">
+              <div class="spinner"></div>
+            </div>
+          </div>
+          <div class="modal-footer" style="display: flex; justify-content: space-between;">
+            <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Close</button>
+          </div>
+        </div>
+      </div>
+    </div>
+    
+    <footer style="text-align: center; margin-top: 20px;">
+      <a href="https://github.com/madpsy/kiss-tnc-file-transfer" target="_blank">Github Repo</a>
+    </footer>
+  </div>
+  
+  <script>
+    /***********************
+     * Global Variables & Persistence
+     ***********************/
+    let socket = null;
+    let serialPort = null, serialWriter = null, serialReader = null, stopReading = false;
+    let serialConnected = false;
+    let kissBuffer = new Uint8Array(0);
+    let activeTransfers = {};  // Key: "sender_callsign_fileId"
+    let persistentReceivedFiles = loadReceivedFilesFromLocalStorage();
+    let pendingCmdResponses = {};
+    let pendingGETs = {};
+    let cachedIndexHTML = null;
+    let currentPageName = "index.html";
+    let pageHistory = [];
+    let historyIndex = -1;
+    
+    /***********************
+     * KISS Framing Functions
+     ***********************/
+    function escapeKissData(data) {
+      let output = [];
+      for (let i = 0; i < data.length; i++) {
+        let byte = data[i];
+        if (byte === 0xC0) output.push(0xDB, 0xDC);
+        else if (byte === 0xDB) output.push(0xDB, 0xDD);
+        else output.push(byte);
+      }
+      return new Uint8Array(output);
+    }
+    function unescapeKissData(data) {
+      let output = [];
+      for (let i = 0; i < data.length; i++) {
+        if (data[i] === 0xDB && i+1 < data.length) {
+          if (data[i+1] === 0xDC) { output.push(0xC0); i++; continue; }
+          else if (data[i+1] === 0xDD) { output.push(0xDB); i++; continue; }
+        }
+        output.push(data[i]);
+      }
+      return new Uint8Array(output);
+    }
+    function buildKissFrame(packet) {
+      const escaped = escapeKissData(packet);
+      const KISS_FLAG = 0xC0, KISS_CMD_DATA = 0x00;
+      let frame = new Uint8Array(1 + 1 + escaped.length + 1);
+      frame[0] = KISS_FLAG;
+      frame[1] = KISS_CMD_DATA;
+      frame.set(escaped, 2);
+      frame[frame.length - 1] = KISS_FLAG;
+      return frame;
+    }
+    function concatUint8Arrays(a, b) {
+      let c = new Uint8Array(a.length + b.length);
+      c.set(a, 0);
+      c.set(b, a.length);
+      return c;
+    }
+    
+    /***********************
+     * Persistence Functions
+     ***********************/
+    function saveReceivedFilesToLocalStorage(files) {
+      try { localStorage.setItem("receivedFiles", JSON.stringify(files)); }
+      catch (e) { console.error("Error saving received files:", e); }
+    }
+    function loadReceivedFilesFromLocalStorage() {
+      const data = localStorage.getItem("receivedFiles");
+      if (data) {
+        try { return JSON.parse(data); }
+        catch (e) { console.error("Error parsing received files:", e); }
+      }
+      return [];
+    }
+    
+    /***********************
+     * UI Update Functions
+     ***********************/
+    function updateReceiverProgressUI() {
+      const container = document.getElementById('receiverProgress');
+      if (Object.keys(activeTransfers).length === 0) {
+        container.innerHTML = "<p>No active transfers.</p>";
+        return;
+      }
+      let html = "";
+      const now = Date.now();
+      for (let key in activeTransfers) {
+        let transfer = activeTransfers[key];
+        const total = transfer.totalChunks || 1;
+        const contiguous = (function(){
+          let n = 1;
+          while(transfer.received[n]) n++;
+          return n - 1;
+        })();
+        let burstBlue = 0, burstOrange = 0;
+        if (transfer.currentBurstTo && transfer.currentBurstTo > contiguous) {
+          const burstWindow = transfer.currentBurstTo - contiguous;
+          for (let seq = contiguous + 1; seq <= transfer.currentBurstTo; seq++) {
+            if (transfer.received[seq]) burstBlue++;
+          }
+          burstOrange = burstWindow - burstBlue;
+        }
+        const blueTotal = contiguous + burstBlue;
+        const bluePercent = Math.floor((blueTotal/total)*100);
+        const orangePercent = Math.floor((burstOrange/total)*100);
+        let progressBarHTML = `
+          <div class="progress mb-2" style="height: 20px;">
+            <div class="progress-bar bg-primary" role="progressbar" style="width: ${bluePercent}%;">${bluePercent>0?bluePercent+'%':''}</div>
+            <div class="progress-bar bg-warning" role="progressbar" style="width: ${orangePercent}%;">${orangePercent>0?orangePercent+'%':''}</div>
+          </div>`;
+        const elapsed = (now - transfer.startTime)/1000;
+        const bytesReceived = transfer.rawBytesReceived || 0;
+        const expectedBytes = transfer.header ? transfer.header.compressedSize : 0;
+        const rate = elapsed>0 ? Math.floor(bytesReceived/elapsed) : 0;
+        let eta = "N/A";
+        if(rate>0 && expectedBytes) eta = ((expectedBytes - bytesReceived)/rate).toFixed(2)+" s";
+        let statsLine = `Elapsed: ${elapsed.toFixed(2)} s; ETA: ${eta} (${rate} B/s)`;
+        html += `
+          <div class="mb-2 border p-2">
+            <h5>From ${key.split("_")[0]} – ${transfer.header?transfer.header.fileName:"Unknown"} (ID: ${transfer.header?transfer.header.fileId:"N/A"})</h5>
+            <h5>${blueTotal} of ${total} packets received</h5>
+            ${progressBarHTML}
+            <p>${statsLine}</p>
+            <button class="btn btn-danger btn-sm" onclick="cancelReceiverTransfer('${key}')">Cancel</button>
+          </div>`;
+      }
+      container.innerHTML = html;
+    }
+    
+      function updateReceivedFilesUI() {
+    const container = document.getElementById('receivedFiles');
+    if (!persistentReceivedFiles.length) {
+      container.innerHTML = "<p>No files received yet.</p>";
+      return;
+    }
+    let html = `<table class="table table-striped">
+      <thead>
+        <tr>
+          <th>Date/Time</th>
+          <th>Sender</th>
+          <th>File Name</th>
+          <th>ID</th>
+          <th>Original</th>
+          <th>Compressed</th>
+          <th>Time (s)</th>
+          <th>Speed (B/s)</th>
+          <th>MD5</th>
+          <th>Action</th>
+        </tr>
+      </thead>
+      <tbody>`;
+    persistentReceivedFiles.forEach(file => {
+      let elapsed = file.elapsed/1000;
+      let speed = elapsed > 0 ? Math.floor(file.size/elapsed) : 0;
+      let md5icon = file.checksumMatch ? '<span style="color:green;">&#10004;</span>' : '<span style="color:red;">&#10008;</span>';
+      html += `<tr>
+        <td>${new Date(file.timestamp).toLocaleString()}</td>
+        <td>${file.sender}</td>
+        <td>${file.fileName}</td>
+        <td>${file.fileId}</td>
+        <td>${file.originalSize} bytes</td>
+        <td>${file.compressedSize} bytes</td>
+        <td>${elapsed.toFixed(2)}</td>
+        <td>${speed}</td>
+        <td>${md5icon}</td>
+	<td>
+	  <div class="d-flex">
+	    <button class="btn btn-success btn-sm me-2" onclick="downloadReceivedFileById('${file.fileId}')">Download</button>
+	    <button class="btn btn-danger btn-sm" onclick="deleteReceivedFileById('${file.fileId}')">Remove</button>
+	  </div>
+	</td>
+
+      </tr>`;
+    });
+    html += `</tbody></table>
+      <button class="btn btn-danger mt-2" onclick="removeAllReceivedFiles()">Remove All</button>`;
+    container.innerHTML = html;
+  }
+    
+    function deleteReceivedFileById(fileId) {
+      persistentReceivedFiles = persistentReceivedFiles.filter(f => f.fileId !== fileId);
+      saveReceivedFilesToLocalStorage(persistentReceivedFiles);
+      updateReceivedFilesUI();
+    }
+    
+    function removeAllReceivedFiles() {
+      if(confirm("Are you sure you want to remove all received files?")) {
+        persistentReceivedFiles = [];
+        saveReceivedFilesToLocalStorage(persistentReceivedFiles);
+        updateReceivedFilesUI();
+      }
+    }
+    
+    // cancelReceiverTransfer is defined.
+    function cancelReceiverTransfer(key) {
+      let transfer = activeTransfers[key];
+      if(!transfer) return;
+      if(transfer.ackTimer) { clearTimeout(transfer.ackTimer); transfer.ackTimer = null; }
+      updateStatus("Receiver transfer " + key + " canceled.");
+      delete activeTransfers[key];
+      updateReceiverProgressUI();
+    }
+    
+    /***********************
+     * Connection & Serial/WebSocket Logic
+     ***********************/
+    function updateConnectionIndicator() {
+      const dot = document.getElementById('connectionStatusDot');
+      if(socket) dot.style.backgroundColor = socket.connected ? 'green' : 'red';
+      else dot.style.backgroundColor = serialConnected ? 'green' : 'red';
+    }
+    function initializeWebSocket() {
+      if(socket) return;
+      socket = io('/');
+      socket.on('connect', () => { console.log("Websocket connected:", socket.id); updateConnectionIndicator(); });
+      socket.on('disconnect', () => { console.log("Websocket disconnected."); updateConnectionIndicator(); });
+      socket.on('raw_kiss_frame', packet => { processRawPacket(packet); });
+      updateConnectionIndicator();
+    }
+    async function readSerial() {
+      while(serialPort && serialPort.readable && !stopReading) {
+        serialReader = serialPort.readable.getReader();
+        try {
+          while(true) {
+            if(stopReading) break;
+            const { value, done } = await serialReader.read();
+            if(done) break;
+            if(value) {
+              kissBuffer = concatUint8Arrays(kissBuffer, value);
+              let startIndex = kissBuffer.indexOf(0xC0);
+              while(startIndex !== -1) {
+                let endIndex = kissBuffer.indexOf(0xC0, startIndex+1);
+                if(endIndex === -1) break;
+                const frame = kissBuffer.slice(startIndex, endIndex+1);
+                processRawPacket(frame);
+                kissBuffer = kissBuffer.slice(endIndex+1);
+                startIndex = kissBuffer.indexOf(0xC0);
+              }
+            }
+          }
+        } catch(error) {
+          console.error("Error reading serial port:", error);
+        } finally {
+          if(serialReader && serialReader.releaseLock) { serialReader.releaseLock(); serialReader = null; }
+        }
+      }
+    }
+    document.getElementById('connectionType').addEventListener('change', function() {
+      const type = this.value;
+      if(type === 'serial') {
+        document.getElementById('serialSettings').style.display = 'block';
+        if(socket) { socket.disconnect(); socket = null; }
+      } else {
+        document.getElementById('serialSettings').style.display = 'none';
+        initializeWebSocket();
+      }
+      updateConnectionIndicator();
+    });
+    document.getElementById('serialConnectBtn').addEventListener('click', async () => {
+      if("serial" in navigator) {
+        try {
+          serialPort = await navigator.serial.requestPort();
+          const baudRate = parseInt(document.getElementById('baudRate').value, 10);
+          await serialPort.open({ baudRate });
+          serialConnected = true;
+          serialWriter = serialPort.writable.getWriter();
+          readSerial();
+          updateStatus("Serial port connected at " + baudRate);
+          updateConnectionIndicator();
+          document.getElementById('serialConnectBtn').style.display = 'none';
+          document.getElementById('serialDisconnectBtn').style.display = 'inline-block';
+        } catch(error) {
+          console.error("Error opening serial port:", error);
+          alert("Failed to open serial port: " + error);
+          serialConnected = false;
+          updateConnectionIndicator();
+        }
+      } else {
+        alert("Web Serial API not supported. Use Chrome.");
+        serialConnected = false;
+        updateConnectionIndicator();
+      }
+    });
+    document.getElementById('serialDisconnectBtn').addEventListener('click', async () => {
+      if(serialPort) {
+        try {
+          stopReading = true;
+          if(serialReader) {
+            await serialReader.cancel().catch(err => console.warn("Cancel error:", err));
+            if(serialReader.releaseLock) serialReader.releaseLock();
+            serialReader = null;
+          }
+          if(serialWriter) { serialWriter.releaseLock(); serialWriter = null; }
+          await serialPort.close();
+          serialPort = null;
+          serialConnected = false;
+          updateConnectionIndicator();
+          document.getElementById('serialConnectBtn').style.display = 'inline-block';
+          document.getElementById('serialDisconnectBtn').style.display = 'none';
+          stopReading = false;
+        } catch(err) {
+          console.error("Error closing serial port:", err);
+        }
+      }
+    });
+    document.getElementById('viewWebConnectBtn').addEventListener('click', () => {
+      openWebViewModal();
+    });
+    
+    /***********************
+     * ACK Functions & Retry Loop for Receiver
+     ***********************/
+    function sendAckFromReceiver(sender, fileId, ackStr) {
+      const localCall = document.getElementById('senderCallsign').value.trim();
+      const info = fileId + ':' + "ACK" + ':' + ackStr;
+      const encoder = new TextEncoder();
+      const infoBytes = encoder.encode(info);
+      const ax25Header = buildAX25Header(localCall, sender);
+      const ackPacket = new Uint8Array(ax25Header.length + infoBytes.length);
+      ackPacket.set(ax25Header, 0);
+      ackPacket.set(infoBytes, ax25Header.length);
+      const frame = buildKissFrame(ackPacket);
+      if(document.getElementById('connectionType').value === 'websockets') {
+        if(socket) socket.emit('raw_kiss_frame', frame);
+      } else if(document.getElementById('connectionType').value === 'serial' && serialWriter) {
+        serialWriter.write(frame).catch(err => console.error("Error writing ACK:", err));
+      }
+    }
+    function sendCumulativeAck(transfer, sender) {
+      let cont = 1;
+      while(transfer.received[cont]) cont++;
+      let highest = cont - 1;
+      let ackStr = highest > 1 ? "0001-" + highest.toString(16).padStart(4, '0') : "0001";
+      console.log("Sending cumulative ACK:", ackStr);
+      sendAckFromReceiver(sender, transfer.header.fileId, ackStr);
+      transfer.lastAcked = highest;
+    }
+    function ackRetry(transfer, sender, transferKey) {
+      if(transfer.finalHandshakeReceived) return;
+      if(transfer.ackRetryCount >= transfer.maxAckRetries) {
+        console.log("Receiver: ACK retry max reached for transfer", transfer.header.fileId);
+        updateStatus("Receiver: Transfer aborted due to ACK timeout for file " + transfer.header.fileId);
+        delete activeTransfers[transferKey];
+        updateReceiverProgressUI();
+        return;
+      }
+      transfer.ackRetryCount++;
+      let nextDelay = transfer.ackDelay * Math.pow(1.5, transfer.ackRetryCount);
+      transfer.ackTimer = setTimeout(() => {
+        if(transfer.finalHandshakeReceived) return;
+        console.log("Receiver: ACK retry attempt #" + transfer.ackRetryCount + " for file " + transfer.header.fileId);
+        sendCumulativeAck(transfer, sender);
+        ackRetry(transfer, sender, transferKey);
+      }, nextDelay);
+    }
+    
+    /***********************
+     * Process Raw Packet & RSP Handling
+     ***********************/
+function processRawPacket(packet) {
+  let packetBytes;
+  if (typeof packet === 'string') 
+    packetBytes = new TextEncoder().encode(packet);
+  else if (packet instanceof ArrayBuffer) 
+    packetBytes = new Uint8Array(packet);
+  else if (packet instanceof Uint8Array) 
+    packetBytes = packet;
+  else { 
+    console.log("Unrecognized packet type"); 
+    return; 
+  }
+  if (packetBytes[0] !== 0xC0 || packetBytes[packetBytes.length - 1] !== 0xC0) {
+    console.error("Invalid KISS frame: missing framing bytes.");
+    return;
+  }
+  const ax25Frame = packetBytes.slice(2, packetBytes.length - 1);
+  if (ax25Frame.length < 16) return;
+  const header = ax25Frame.slice(0, 16);
+  const infoField = ax25Frame.slice(16);
+  
+  // FIN-ACK branch.
+  let infoText = new TextDecoder().decode(infoField);
+  if (infoText.indexOf(":ACK:FIN-ACK") !== -1) {
+    let parts = infoText.split(":");
+    if (parts.length < 3) return;
+    let fileIdFromAck = parts[0].trim();
+    let localCall = document.getElementById('senderCallsign').value.trim();
+    for (let key in activeTransfers) {
+      let transfer = activeTransfers[key];
+      if (transfer.header && transfer.header.fileId === fileIdFromAck) {
+        if (!transfer.waitingForFinAck) {
+          console.log("Receiver: FIN-ACK received but not waiting for it. Ignoring.");
+          return;
+        }
+        console.log("Receiver: FIN-ACK received for file", fileIdFromAck);
+        transfer.finalHandshakeReceived = true;
+        delete activeTransfers[key];
+        updateReceiverProgressUI();
+        return;
+      }
+    }
+    console.log("Receiver: FIN-ACK received, but no active transfer matches fileId", fileIdFromAck);
+    return;
+  }
+  
+  // RSP branch for GET command.
+  if (infoText.split(":")[1] && infoText.split(":")[1].toUpperCase() === "RSP") {
+    const rsp = parseRspPacket(infoField);
+    if (rsp.ok && pendingCmdResponses[rsp.cmdID]) {
+      pendingCmdResponses[rsp.cmdID].resolve(rsp);
+      delete pendingCmdResponses[rsp.cmdID];
+    } else {
+      console.warn("RSP for unknown CMD ID or error:", rsp.error);
+    }
+    return;
+  }
+  
+  // Decode AX.25 addresses.
+  const senderStr = decodeAX25Address(header.slice(7, 14));
+  const receiverStr = decodeAX25Address(header.slice(0, 7));
+  const allowed = document.getElementById('receiverCallsign').value.trim().toUpperCase();
+  if (senderStr !== allowed) { 
+    console.log(`Ignoring packet from ${senderStr} not matching ${allowed}`);
+    return;
+  }
+  const localCall = document.getElementById('senderCallsign').value.trim();
+  if (receiverStr !== localCall) { 
+    console.log("Packet not intended for me (receiver:", receiverStr, ", local:", localCall,")");
+    return;
+  }
+  
+  let parts = infoText.split(":");
+  if (parts.length < 2) { 
+    console.log("Invalid packet format."); 
+    return;
+  }
+  let packetFileId = parts[0].trim();
+  let seqBurst = parts[1].trim();
+  let seq, burstTo;
+  if (seqBurst.indexOf("/") !== -1) {
+    // Header packet.
+    seq = 1;
+    if (seqBurst.length < 8) { 
+      console.log("Header packet format invalid."); 
+      return;
+    }
+    burstTo = parseInt(seqBurst.substring(4, 8), 16);
+  } else {
+    // Data packet.
+    if (seqBurst.length !== 8) { 
+      console.log("Data packet format invalid."); 
+      return;
+    }
+    seq = parseInt(seqBurst.substring(0, 4), 16);
+    burstTo = parseInt(seqBurst.substring(4, 8), 16);
+  }
+  let offset = (seq === 1) ? 17 : 12;
+  let payloadChunk = unescapeKissData(infoField.slice(offset));
+  const transferKey = senderStr + "_" + packetFileId;
+  
+  // Header branch: start new transfer.
+  if (seq === 1 && !activeTransfers[transferKey]) {
+    console.log("Starting new transfer from", senderStr, "file ID", packetFileId);
+    let headerPayloadText = new TextDecoder().decode(payloadChunk);
+    let headerParts = headerPayloadText.split("|");
+    // headerParts: [ timeoutSeconds, timeoutRetries, fileName, originalSize, compressedSize, md5, fileId, encodingMethod, compression, expectedTotal ]
+    let timeoutSeconds = parseFloat(headerParts[0]);
+    let timeoutRetries = parseInt(headerParts[1], 10) || 5;
+    let headerTimeout = (timeoutSeconds * 1000) + 1500;
+    activeTransfers[transferKey] = {
+      totalChunks: parseInt(headerParts[9], 10),
+      received: {},
+      startTime: Date.now(),
+      lastAcked: 1,
+      rawBytesReceived: 0,
+      ackTimer: null,
+      ackRetryCount: 0,
+      ackDelay: headerTimeout,
+      maxAckRetries: timeoutRetries,
+      waitingForFinAck: false,
+      finalHandshakeReceived: false,
+      downloadTriggered: false,
+      header: {
+        fileName: headerParts[2],
+        originalSize: parseInt(headerParts[3], 10),
+        compressedSize: parseInt(headerParts[4], 10),
+        md5: headerParts[5],
+        fileId: packetFileId,
+        encodingMethod: parseInt(headerParts[7], 10),
+        compression: (headerParts[8] === "1"),
+        expectedTotal: parseInt(headerParts[9], 10)
+      }
+    };
+    activeTransfers[transferKey].received[1] = true;
+    console.log("Received header for", packetFileId, activeTransfers[transferKey].header);
+    sendAckFromReceiver(senderStr, packetFileId, "0001");
+    return;
+  }
+  
+  let transfer = activeTransfers[transferKey];
+  if (!transfer) { 
+    console.log("No active transfer for", transferKey); 
+    return;
+  }
+  transfer.rawBytesReceived = (transfer.rawBytesReceived || 0) + infoField.length;
+  if (!transfer.currentBurstTo || burstTo > transfer.currentBurstTo) { 
+    transfer.currentBurstTo = burstTo; 
+  }
+  if (!transfer.received[seq]) { 
+    transfer.received[seq] = payloadChunk; 
+  } else { 
+    console.log("Duplicate packet", seq); 
+    return;
+  }
+  
+  // Compute contiguous highest packet.
+  let cont = 1;
+  while (transfer.received[cont]) { cont++; }
+  let highestContig = cont - 1;
+  
+  // *** Reset ACK retry counter if we've advanced.
+  if (highestContig > transfer.lastAcked) {
+    transfer.ackRetryCount = 0;
+  }
+  
+  // Decide when to send ACK.
+  if (highestContig >= transfer.currentBurstTo) {
+    if (transfer.ackTimer) { clearTimeout(transfer.ackTimer); transfer.ackTimer = null; }
+    sendCumulativeAck(transfer, senderStr);
+    ackRetry(transfer, senderStr, transferKey);
+  } else {
+    if (!transfer.ackTimer) {
+      transfer.ackTimer = setTimeout(() => {
+        sendCumulativeAck(transfer, senderStr);
+        transfer.ackTimer = null;
+      }, transfer.ackDelay);
+    }
+  }
+  
+  // Check if all packets have been received.
+  if (!transfer.downloadTriggered && Object.keys(transfer.received).length === transfer.totalChunks) {
+    transfer.downloadTriggered = true;
+    console.log("All packets received for", transferKey, "- reassembling file...");
+    let chunks = [];
+    for (let i = 2; i <= transfer.totalChunks; i++) {
+      if (!transfer.received[i]) { 
+        console.error("Missing packet", i); 
+        return; 
+      }
+      chunks.push(transfer.received[i]);
+    }
+    let totalLength = chunks.reduce((acc, c) => acc + c.length, 0);
+    let fullCompressed = new Uint8Array(totalLength);
+    let off = 0;
+    chunks.forEach(chunk => { fullCompressed.set(chunk, off); off += chunk.length; });
+    let decompressed;
+    if (transfer.header.compression) {
+      try { 
+        decompressed = pako.inflate(fullCompressed); 
+      } catch (err) { 
+        console.error("Error decompressing file:", err); 
+        return; 
+      }
+    } else {
+      decompressed = fullCompressed;
+    }
+    const blob = new Blob([decompressed]);
+    // If the file is "index.html", cache it as text for the web view.
+    if (transfer.header.fileName.trim() === "index.html") {
+  const readerText = new FileReader();
+  readerText.onload = function(e) {
+    cachedIndexHTML = e.target.result;
+    // Save to localStorage
+    localStorage.setItem('cachedIndexHTML', cachedIndexHTML);
+    console.log("index.html cached for web view in localStorage.");
+    const modalInstance = bootstrap.Modal.getInstance(document.getElementById('webViewModal'));
+    if (modalInstance) {
+      loadIndexWithAssetsSequentially(cachedIndexHTML);
+    }
+  };
+  readerText.onerror = function(e) { console.error("Error reading index.html:", e); };
+  readerText.readAsText(blob);
+  transfer.isIndexFile = true;
+  console.log("Processing index.html file; caching content for web view.");
+} else {
+      const reader = new FileReader();
+      reader.onload = function(e) {
+        let fileObj = {
+          sender: senderStr,
+          fileName: transfer.header.fileName,
+          originalSize: transfer.header.originalSize,
+          compressedSize: transfer.header.compressedSize,
+          size: blob.size,
+          elapsed: Date.now() - transfer.startTime,
+          checksumMatch: (CryptoJS.MD5(CryptoJS.lib.WordArray.create(decompressed)).toString() === transfer.header.md5),
+          fileId: transfer.header.fileId,
+          dataUrl: e.target.result,
+          timestamp: Date.now()
+        };
+        persistentReceivedFiles.push(fileObj);
+        saveReceivedFilesToLocalStorage(persistentReceivedFiles);
+        updateReceivedFilesUI();
+      };
+      reader.onerror = function(e) { console.error("Error reading Blob:", e); };
+      reader.readAsDataURL(blob);
+      console.log("Receiver: Entire file complete for", transferKey, ". Waiting for FIN-ACK.");
+    }
+    transfer.waitingForFinAck = true;
+  }
+}
+
+    
+    /***********************
+     * AX.25 Header Helpers
+     ***********************/
+    function encodeAX25Address(callsign, isLast) {
+      let call = callsign.toUpperCase();
+      let ssid = 0;
+      if(call.includes('-')) { let parts = call.split('-'); call = parts[0]; ssid = parseInt(parts[1],10) || 0; }
+      call = call.padEnd(6, ' ').slice(0,6);
+      let addr = new Uint8Array(7);
+      for(let i=0;i<6;i++){ addr[i] = call.charCodeAt(i) << 1; }
+      addr[6] = ((ssid & 0x0F) << 1) | 0x60;
+      if(isLast) addr[6] |= 0x01;
+      return addr;
+    }
+    function decodeAX25Address(addr) {
+      let cs = "";
+      for(let i=0;i<6;i++){ cs += String.fromCharCode(addr[i] >> 1); }
+      cs = cs.trim();
+      let ssid = (addr[6] >> 1) & 0x0F;
+      if(ssid > 0) cs += "-" + ssid;
+      return cs;
+    }
+    function buildAX25Header(source, destination) {
+      const destAddr = encodeAX25Address(destination, false);
+      const srcAddr = encodeAX25Address(source, true);
+      const control = new Uint8Array([0x03]);
+      const pid = new Uint8Array([0xF0]);
+      let header = new Uint8Array(7+7+1+1);
+      header.set(destAddr,0);
+      header.set(srcAddr,7);
+      header.set(control,14);
+      header.set(pid,15);
+      return header;
+    }
+    
+    /***********************
+     * CMD/RSP (GET only) Functions
+     ***********************/
+    function buildCmdPacket(myCall, fsCall, commandText) {
+      const header = buildAX25Header(myCall, fsCall);
+      const cmdID = generateTwoCharID();
+      let infoStr = `${cmdID}:CMD:${commandText}`;
+      const encoder = new TextEncoder();
+      const infoBytes = encoder.encode(infoStr);
+      let packet = new Uint8Array(header.length + infoBytes.length);
+      packet.set(header,0);
+      packet.set(infoBytes, header.length);
+      return { packet, cmdID };
+    }
+    function parseRspPacket(payload) {
+      const str = new TextDecoder().decode(payload).trim();
+      const parts = str.split(":", 4);
+      if(parts.length < 4) return { ok:false, error:"Incomplete RSP packet" };
+      const cmdID = parts[0];
+      if(parts[1].toUpperCase() !== "RSP") return { ok:false, error:"Not an RSP packet" };
+      const status = parseInt(parts[2],10);
+      if(isNaN(status)) return { ok:false, error:"Invalid status" };
+      const message = parts[3];
+      return { ok:true, cmdID, status, message };
+    }
+    function sendCmdWithRetry(commandText, maxRetries) {
+      maxRetries = maxRetries !== undefined ? maxRetries : 3;
+      return new Promise((resolve, reject) => {
+        let attempts = 0;
+        const myCall = document.getElementById('senderCallsign').value.trim();
+        const fsCall = document.getElementById('receiverCallsign').value.trim();
+        const { packet, cmdID } = buildCmdPacket(myCall, fsCall, commandText);
+        const sendPacketCmd = () => {
+          attempts++;
+          console.log(`Sending CMD attempt ${attempts}: ${commandText}`);
+          pendingCmdResponses[cmdID] = { resolve, reject, timestamp: Date.now() };
+          const frame = buildKissFrame(packet);
+          if(document.getElementById('connectionType').value === 'serial') {
+            if(serialConnected) serialWriter.write(frame).catch(err => reject(err));
+            else reject("Serial not connected.");
+          } else {
+            if(socket) socket.emit('raw_kiss_frame', frame);
+            else reject("Websocket not connected.");
+          }
+        };
+        const attemptSend = () => {
+          sendPacketCmd();
+          const timeoutMS = 5000;
+          setTimeout(() => {
+            if(pendingCmdResponses[cmdID]) {
+              if(attempts < maxRetries) {
+                console.log(`No RSP. Retrying CMD "${commandText}" (attempt ${attempts+1}/${maxRetries})`);
+                attemptSend();
+              } else {
+                delete pendingCmdResponses[cmdID];
+                reject(`No RSP after ${attempts} attempts.`);
+              }
+            }
+          }, timeoutMS);
+        };
+        attemptSend();
+      });
+    }
+    function generateTwoCharID() {
+      const chars = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789';
+      return chars.charAt(Math.floor(Math.random()*chars.length)) +
+             chars.charAt(Math.floor(Math.random()*chars.length));
+    }
+    
+    /***********************
+     * View Web Modal & Asset Fetching
+     ***********************/
+function openWebViewModal() {
+  currentPageName = "index.html";
+  document.getElementById('currentPageUrl').value = currentPageName;
+  const contentEl = document.getElementById('webViewContent');
+  contentEl.innerHTML = '<div id="spinnerContainer"><div class="spinner"></div></div>';
+  (new bootstrap.Modal(document.getElementById('webViewModal'))).show();
+
+  // Attempt to retrieve the cached index.html from localStorage.
+  let cachedIndex = localStorage.getItem('cachedIndexHTML');
+  if (cachedIndex) {
+    cachedIndexHTML = cachedIndex;
+    loadPage("index.html", cachedIndexHTML);
+  } else {
+    // Fallback: fetch via GET command if not cached.
+    sendCmdWithRetry("GET index.html")
+      .then(rsp => {
+        // If the GET command returns a failure status (0), show an overlay with the error message.
+        if (rsp.status === 0) {
+          showOverlay(rsp.message);
+          return; // Stop further processing.
+        }
+        console.log("GET index.html sent.");
+        let checkInterval = setInterval(() => {
+          if (cachedIndexHTML) { 
+            clearInterval(checkInterval); 
+            loadPage("index.html", cachedIndexHTML); 
+          }
+        }, 200);
+      })
+      .catch(err => { 
+        contentEl.innerHTML = "<p style='padding:1rem;'>Error: " + err + "</p>"; 
+      });
+  }
+}
+
+
+  function fetchAssetViaGET(assetPath, ignoreCache = false) {
+  let assetToFetch = assetPath;
+  if (!assetPath.match(/^(?:[a-z]+:)?\/\//i) && !assetPath.startsWith('/')) {
+    const baseDir = currentPageName.substring(0, currentPageName.lastIndexOf('/') + 1);
+    if (!assetPath.startsWith(baseDir)) assetToFetch = baseDir + assetPath;
+  }
+  const normalizedAssetPath = normalizePath(assetToFetch);
+
+  // If not ignoring cache, check persistentReceivedFiles
+  if (!ignoreCache) {
+    const matchingAssets = persistentReceivedFiles.filter(f =>
+      normalizePath(f.fileName.trim()) === normalizedAssetPath
+    );
+    const validAssets = matchingAssets.filter(a => a.dataUrl && !a.dataUrl.includes("undefined"));
+    const cachedAsset = validAssets.sort((a, b) => b.timestamp - a.timestamp)[0];
+    if (cachedAsset) {
+      console.log("Using cached asset:", cachedAsset.fileName, "with timestamp:", cachedAsset.timestamp);
+      return Promise.resolve(cachedAsset.dataUrl);
+    }
+  }
+
+  // Also, if there's already a pending GET for this asset, return that.
+  if (pendingGETs[normalizedAssetPath]) return pendingGETs[normalizedAssetPath];
+
+  // Otherwise, send the GET command as usual.
+  pendingGETs[normalizedAssetPath] = new Promise((resolve, reject) => {
+    sendCmdWithRetry("GET " + assetToFetch)
+      .then(rsp => {
+        if (rsp.status === 0) {
+          showOverlay(rsp.message);
+          reject("GET command failed: " + rsp.message);
+          return;
+        }
+        let attempts = 0;
+        const pollInterval = setInterval(() => {
+          attempts++;
+          const newMatchingAssets = persistentReceivedFiles.filter(f =>
+            normalizePath(f.fileName.trim()) === normalizedAssetPath
+          );
+          const newValidAssets = newMatchingAssets.filter(a => a.dataUrl && !a.dataUrl.includes("undefined"));
+          const assetObj = newValidAssets.sort((a, b) => b.timestamp - a.timestamp)[0];
+          if (assetObj) {
+            clearInterval(pollInterval);
+            delete pendingGETs[normalizedAssetPath];
+            console.log("Fetched asset:", assetObj.fileName, "with timestamp:", assetObj.timestamp);
+            resolve(assetObj.dataUrl);
+          } else if (attempts > 300) {
+            clearInterval(pollInterval);
+            delete pendingGETs[normalizedAssetPath];
+            reject("Asset not ready within timeout: " + assetToFetch);
+          }
+        }, 200);
+      })
+      .catch(err => {
+        delete pendingGETs[normalizedAssetPath];
+        reject(err);
+      });
+  });
+  pendingGETs[normalizedAssetPath].catch(err => {
+    updateStatus("Error loading asset " + assetToFetch + ": " + err);
+  });
+  return pendingGETs[normalizedAssetPath];
+}
+
+
+    function loadIndexWithAssetsSequentially(htmlContent) {
+      const parser = new DOMParser();
+      const doc = parser.parseFromString(htmlContent, 'text/html');
+      const assetEls = doc.querySelectorAll('img[src], script[src], link[rel="stylesheet"][href], audio[src], source[src]');
+      (async () => {
+        for (const el of assetEls) {
+          const tag = el.tagName.toLowerCase();
+          const url = tag === 'link' ? el.getAttribute('href') : el.getAttribute('src');
+          try {
+            const dataUrl = await fetchAssetViaGET(url);
+            if(tag === 'img' || tag === 'script') el.setAttribute('src', dataUrl);
+            else if(tag === 'link') el.setAttribute('href', dataUrl);
+            else if(tag === 'audio' || (tag === 'source' && el.getAttribute('type') === 'audio/mpeg')) el.setAttribute('src', dataUrl);
+          } catch(err) { console.error("Error fetching asset:", url, err); }
+        }
+        document.getElementById('webViewContent').innerHTML = doc.documentElement.outerHTML;
+        document.getElementById('currentPageUrl').value = currentPageName;
+        setupModalLinks();
+      })();
+    }
+    function loadPage(pageName, htmlContent) {
+      loadIndexWithAssetsSequentially(htmlContent);
+      currentPageName = pageName;
+      document.getElementById('currentPageUrl').value = currentPageName;
+      if(historyIndex < pageHistory.length - 1) pageHistory = pageHistory.slice(0, historyIndex+1);
+      pageHistory.push(pageName);
+      historyIndex = pageHistory.length - 1;
+      updateNavButtons();
+    }
+    function resolveRelativeURL(url, currentPage) {
+      if(/^(?:[a-z]+:)?\/\//i.test(url) || url.startsWith('/')) return url;
+      let idx = currentPage.lastIndexOf('/');
+      let base = (idx !== -1) ? currentPage.substring(0, idx+1) : '';
+      return base + url;
+    }
+function setupModalLinks() {
+  const modalContent = document.getElementById('webViewContent');
+  const links = modalContent.querySelectorAll('a[href]');
+  links.forEach(link => {
+link.addEventListener('click', function(e) {
+  e.preventDefault();
+  const origHref = this.getAttribute('href');
+  const resolved = resolveRelativeURL(origHref, currentPageName);
+  document.getElementById('currentPageUrl').value = resolved;
+
+  // If the link points to a non-HTML asset:
+  if (!(resolved.endsWith('.html') || resolved.endsWith('/') || resolved.indexOf('.') === -1)) {
+    // Create and show the overlay immediately
+    const flashMsg = document.createElement('div');
+    flashMsg.innerText = 'Download started...';
+    flashMsg.style.position = 'fixed';
+    flashMsg.style.top = '50%';
+    flashMsg.style.left = '50%';
+    flashMsg.style.transform = 'translate(-50%, -50%)';
+    flashMsg.style.padding = '1rem 2rem';
+    flashMsg.style.backgroundColor = 'rgba(0, 0, 0, 0.8)';
+    flashMsg.style.color = '#fff';
+    flashMsg.style.fontSize = '1.5rem';
+    flashMsg.style.borderRadius = '8px';
+    flashMsg.style.zIndex = '9999';
+    document.body.appendChild(flashMsg);
+
+    // Schedule overlay removal and modal close after 3 seconds
+    setTimeout(() => {
+      flashMsg.remove();
+      const modalEl = document.getElementById('webViewModal');
+      let modalInstance = bootstrap.Modal.getInstance(modalEl);
+      if (!modalInstance) {
+        modalInstance = new bootstrap.Modal(modalEl);
+      }
+      modalInstance.hide();
+      document.getElementById('receiverProgress').scrollIntoView({ behavior: 'smooth' });
+    }, 3000);
+
+    // Start fetching the asset asynchronously (download will trigger when ready)
+    fetchAssetViaGET(resolved)
+      .then(dataUrl => {
+        // Trigger the download once the asset is available
+        const a = document.createElement('a');
+        a.href = dataUrl;
+        a.download = resolved.split('/').pop();
+        document.body.appendChild(a);
+        a.click();
+        document.body.removeChild(a);
+      })
+      .catch(err => console.error("Error fetching asset for download:", err));
+  } else {
+    // Handle HTML links normally (load in the modal)
+    loadPageFromUrl(resolved);
+  }
+});
+
+
+
+  });
+}
+
+    function loadPageFromUrl(url) {
+      if(url.indexOf('.') !== -1 && !url.endsWith('.html')) { alert("File name must end in .html"); return; }
+      if(url.indexOf('.') === -1 || url.endsWith('/')) { url = url.endsWith('/') ? url + 'index.html' : url + '/index.html'; }
+      const normalizedUrl = new URL(url, window.location.origin).pathname;
+      currentPageName = normalizedUrl;
+      document.getElementById('currentPageUrl').value = currentPageName;
+      document.getElementById('webViewContent').innerHTML = '<div id="spinnerContainer"><div class="spinner"></div></div>';
+      fetchAssetViaGET(normalizedUrl)
+        .then(dataUrl => fetch(dataUrl))
+        .then(response => response.text())
+        .then(htmlContent => { loadPage(normalizedUrl, htmlContent); })
+        .catch(err => { document.getElementById('webViewContent').innerHTML = "<p style='padding:1rem;'>Error: " + err + "</p>"; });
+    }
+document.getElementById('navHomeBtn').addEventListener('click', () => {
+  const home = "index.html";
+  currentPageName = home;
+  document.getElementById('currentPageUrl').value = home;
+  
+  // If cached index.html exists, load it directly.
+  if (cachedIndexHTML) {
+    loadPage(home, cachedIndexHTML);
+  } else {
+    document.getElementById('webViewContent').innerHTML = '<div id="spinnerContainer"><div class="spinner"></div></div>';
+    fetchAssetViaGET(home)
+      .then(dataUrl => fetch(dataUrl))
+      .then(response => response.text())
+      .then(htmlContent => { loadPage(home, htmlContent); })
+      .catch(err => console.error("Error loading home page:", err));
+  }
+});
+
+document.getElementById('navRefreshBtn').addEventListener('click', () => {
+  if (currentPageName) {
+    // If the current page is index.html, remove its cached version.
+    if (normalizePath(currentPageName) === "index.html") {
+      localStorage.removeItem('cachedIndexHTML');
+      cachedIndexHTML = null;
+    }
+    // Also remove any matching entry from persistentReceivedFiles.
+    persistentReceivedFiles = persistentReceivedFiles.filter(f => normalizePath(f.fileName.trim()) !== normalizePath(currentPageName));
+    
+    document.getElementById('webViewContent').innerHTML = '<div id="spinnerContainer"><div class="spinner"></div></div>';
+    
+    // Call fetchAssetViaGET with ignoreCache true.
+    fetchAssetViaGET(currentPageName, true)
+      .then(dataUrl => fetch(dataUrl))
+      .then(response => response.text())
+      .then(htmlContent => { loadPage(currentPageName, htmlContent); })
+      .catch(err => console.error("Error refreshing page:", err));
+  }
+});
+
+
+document.getElementById('navBackBtn').addEventListener('click', () => {
+  if(historyIndex > 0) {
+    historyIndex--;
+    const prev = pageHistory[historyIndex];
+    fetchAssetViaGET(prev)
+      .then(dataUrl => fetch(dataUrl))
+      .then(response => response.text())
+      .then(htmlContent => { 
+         currentPageName = prev; 
+         document.getElementById('currentPageUrl').value = currentPageName; 
+         loadIndexWithAssetsSequentially(htmlContent); 
+         updateNavButtons(); 
+      })
+      .catch(err => {
+         console.error("Error loading page:", err);
+         showOverlay("Error loading page: " + err);
+      });
+  }
+});
+
+document.getElementById('navForwardBtn').addEventListener('click', () => {
+  if(historyIndex < pageHistory.length - 1) {
+    historyIndex++;
+    const next = pageHistory[historyIndex];
+    fetchAssetViaGET(next)
+      .then(dataUrl => fetch(dataUrl))
+      .then(response => response.text())
+      .then(htmlContent => { 
+         currentPageName = next; 
+         document.getElementById('currentPageUrl').value = currentPageName; 
+         loadIndexWithAssetsSequentially(htmlContent); 
+         updateNavButtons(); 
+      })
+      .catch(err => {
+         console.error("Error loading page:", err);
+         showOverlay("Error loading page: " + err);
+      });
+  }
+});
+
+    document.getElementById('currentPageUrl').addEventListener('keydown', function(e) {
+      if(e.key === 'Enter') loadPageFromUrl(this.value);
+    });
+    document.getElementById('goBtn').addEventListener('click', () => {
+      const url = document.getElementById('currentPageUrl').value;
+      loadPageFromUrl(url);
+    });
+    function updateNavButtons() {
+      document.getElementById('navBackBtn').disabled = (historyIndex <= 0);
+      document.getElementById('navForwardBtn').disabled = (historyIndex >= pageHistory.length - 1);
+    }
+    function normalizePath(path) {
+      return path.startsWith('/') ? path.slice(1) : path;
+    }
+    
+    /***********************
+     * Periodic UI Updates & Initialization
+     ***********************/
+    setInterval(() => { updateReceiverProgressUI(); }, 1000);
+    document.getElementById('senderCallsign').addEventListener('input', function() { this.value = this.value.toUpperCase(); });
+    document.getElementById('receiverCallsign').addEventListener('input', function() { this.value = this.value.toUpperCase(); });
+    window.updateStatus = function(msg) { document.getElementById('status').innerText = msg; console.log(msg); };
+    
+    // Initialize default connection (websockets if selected)
+    if(document.getElementById('connectionType').value === 'websockets') {
+      initializeWebSocket();
+    }
+
+    window.addEventListener('load', () => {
+      updateReceivedFilesUI();
+    });
+function downloadReceivedFileById(fileId) {
+  const file = persistentReceivedFiles.find(f => f.fileId === fileId);
+  if (!file) {
+    console.error("File not found:", fileId);
+    return;
+  }
+  // Extract just the filename (basename) from the full path.
+  const filename = file.fileName.split('/').pop();
+  
+  // Create an anchor element and trigger download.
+  const a = document.createElement('a');
+  a.href = file.dataUrl;
+  a.download = filename;
+  document.body.appendChild(a);
+  a.click();
+  document.body.removeChild(a);
+}
+
+function showOverlay(message) {
+  const flashMsg = document.createElement('div');
+  flashMsg.innerText = message;
+  flashMsg.style.position = 'fixed';
+  flashMsg.style.top = '50%';
+  flashMsg.style.left = '50%';
+  flashMsg.style.transform = 'translate(-50%, -50%)';
+  flashMsg.style.padding = '1rem 2rem';
+  flashMsg.style.backgroundColor = 'rgba(0, 0, 0, 0.8)';
+  flashMsg.style.color = '#fff';
+  flashMsg.style.fontSize = '1.5rem';
+  flashMsg.style.borderRadius = '8px';
+  flashMsg.style.zIndex = '9999';
+  document.body.appendChild(flashMsg);
+  setTimeout(() => {
+    flashMsg.remove();
+  }, 3000);
+}
+
+document.addEventListener('DOMContentLoaded', function() {
+  const senderInput = document.getElementById('senderCallsign');
+  const receiverInput = document.getElementById('receiverCallsign');
+  const connectBtn = document.getElementById('viewWebConnectBtn');
+
+  function updateConnectButtonState() {
+    if (senderInput.value.trim() !== "" && receiverInput.value.trim() !== "") {
+      connectBtn.disabled = false;
+    } else {
+      connectBtn.disabled = true;
+    }
+  }
+
+  // Attach event listeners for user input.
+  senderInput.addEventListener('input', updateConnectButtonState);
+  receiverInput.addEventListener('input', updateConnectButtonState);
+
+  // Call the function after a short delay to account for autofill.
+  setTimeout(updateConnectButtonState, 100);
+});
+
+
+
+  </script>
+</body>
+</html>
