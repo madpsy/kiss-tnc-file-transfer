@@ -1263,60 +1263,69 @@ func main() {
 				_, _ = sendResponseWithDetails(sender, cmdID, command, 1, "LIST OK")
 				go invokeSenderBinary(args, sender, "LIST.txt", listing, cmdID)
 			} else if strings.HasPrefix(upperCmd, "PUT ") {
-				if globalArgs.PerCallsignDir == "" && !callsignAllowedForPut(sender) {
-					log.Printf("PUT command from sender %s not allowed.", sender)
-					activeTransfersLock.Lock()
-					delete(activeTransfers, sender)
-					activeTransfersLock.Unlock()
-					_, _ = sendResponseWithDetails(sender, cmdID, command, 0, "CALLSIGN NOT ALLOWED")
-					continue
-				}
-				activeTransfersLock.Lock()
-				if _, exists := activeTransfers[sender]; !exists && len(activeTransfers) >= globalArgs.MaxConcurrency {
-					activeTransfersLock.Unlock()
-					sendResponseWithDetails(sender, cmdID, command, 0, "TRANSFER ALREADY IN PROGRESS. PLEASE WAIT.")
-					continue
-				}
-				activeTransfers[sender] = cmdID
-				activeTransfersLock.Unlock()
-
-				fileName := strings.TrimSpace(command[4:])
-				if len(fileName) > maxFileNameLen {
-					log.Printf("PUT command from sender %s: file name '%s' too long", sender, fileName)
-					_, _ = sendResponseWithDetails(sender, cmdID, command, 0, "FILE NAME TOO LONG")
-					continue
-				}
-				if isFilenameDisallowed(fileName) {
-					log.Printf("PUT command from sender %s: access to file '%s' is forbidden", sender, fileName)
-					_, _ = sendResponseWithDetails(sender, cmdID, command, 0, "FILE NAME NOT ALLOWED")
-					continue
-				}
-				var dir string
-				if globalArgs.PerCallsignDir != "" {
-					dir = baseDir
-				} else {
-					dir = absSaveDir
-				}
-				// Check if the target directory exists.
-				if _, err := os.Stat(dir); os.IsNotExist(err) {
-					log.Printf("PUT command from sender %s: target directory '%s' does not exist", sender, dir)
-					_, _ = sendResponseWithDetails(sender, cmdID, command, 0, "DIRECTORY DOES NOT EXIST")
-					continue
-				}
-				savePath := filepath.Join(dir, fileName)
-				cleanSavePath := filepath.Clean(savePath)
-				if !strings.HasPrefix(cleanSavePath, dir) {
-					log.Printf("PUT command from sender %s: attempted directory traversal in '%s'", sender, fileName)
-					_, _ = sendResponseWithDetails(sender, cmdID, command, 0, "INVALID FILE PATH")
-					continue
-				}
-				err := invokeReceiverBinary(args, sender, fileName, cmdID, dir)
-				if err != nil {
-					log.Printf("PUT command from sender %s: receiver binary error: %v", sender, err)
-					_, _ = sendResponseWithDetails(sender, cmdID, command, 0, "PUT FAILED: CANNOT START RECEIVER")
-				} else {
-					_, _ = sendResponseWithDetails(sender, cmdID, command, 1, "PUT OK - WAITING FOR FILE")
-				}
+  			  if globalArgs.PerCallsignDir == "" && !callsignAllowedForPut(sender) {
+			        log.Printf("PUT command from sender %s not allowed.", sender)
+			        activeTransfersLock.Lock()
+			        delete(activeTransfers, sender)
+			        activeTransfersLock.Unlock()
+			        _, _ = sendResponseWithDetails(sender, cmdID, command, 0, "CALLSIGN NOT ALLOWED")
+			        continue
+			    }
+			    activeTransfersLock.Lock()
+			    if _, exists := activeTransfers[sender]; !exists && len(activeTransfers) >= globalArgs.MaxConcurrency {
+			        activeTransfersLock.Unlock()
+			        sendResponseWithDetails(sender, cmdID, command, 0, "TRANSFER ALREADY IN PROGRESS. PLEASE WAIT.")
+			        continue
+			    }
+			    activeTransfers[sender] = cmdID
+			    activeTransfersLock.Unlock()
+			
+			    fileName := strings.TrimSpace(command[4:])
+			    if len(fileName) > maxFileNameLen {
+			        log.Printf("PUT command from sender %s: file name '%s' too long", sender, fileName)
+			        _, _ = sendResponseWithDetails(sender, cmdID, command, 0, "FILE NAME TOO LONG")
+			        continue
+			    }
+			    if isFilenameDisallowed(fileName) {
+			        log.Printf("PUT command from sender %s: access to file '%s' is forbidden", sender, fileName)
+			        _, _ = sendResponseWithDetails(sender, cmdID, command, 0, "FILE NAME NOT ALLOWED")
+			        continue
+			    }
+			    var dir string
+			    if globalArgs.PerCallsignDir != "" {
+			        dir = baseDir
+			    } else {
+			        dir = absSaveDir
+			    }
+			    // Check if the base target directory exists.
+			    if _, err := os.Stat(dir); os.IsNotExist(err) {
+			        log.Printf("PUT command from sender %s: target directory '%s' does not exist", sender, dir)
+			        _, _ = sendResponseWithDetails(sender, cmdID, command, 0, "DIRECTORY DOES NOT EXIST")
+			        continue
+			    }
+			    savePath := filepath.Join(dir, fileName)
+			    cleanSavePath := filepath.Clean(savePath)
+			    if !strings.HasPrefix(cleanSavePath, dir) {
+			        log.Printf("PUT command from sender %s: attempted directory traversal in '%s'", sender, fileName)
+			        _, _ = sendResponseWithDetails(sender, cmdID, command, 0, "INVALID FILE PATH")
+			        continue
+			    }
+			    // NEW: If the fileName includes directory components, ensure that the target directory exists.
+			    if strings.Contains(fileName, string(os.PathSeparator)) {
+			        targetDir := filepath.Dir(cleanSavePath)
+			        if _, err := os.Stat(targetDir); os.IsNotExist(err) {
+			            log.Printf("PUT command from sender %s: directory '%s' does not exist", sender, targetDir)
+			            _, _ = sendResponseWithDetails(sender, cmdID, command, 0, "DIRECTORY NOT FOUND. CREATE PATH FIRST.")
+			            continue
+			        }
+			    }
+			    err := invokeReceiverBinary(args, sender, fileName, cmdID, dir)
+			    if err != nil {
+			        log.Printf("PUT command from sender %s: receiver binary error: %v", sender, err)
+			        _, _ = sendResponseWithDetails(sender, cmdID, command, 0, "PUT FAILED: CANNOT START RECEIVER")
+			    } else {
+			        _, _ = sendResponseWithDetails(sender, cmdID, command, 1, "PUT OK - WAITING FOR FILE")
+			    }
 			} else if strings.HasPrefix(upperCmd, "DEL ") {
 				if globalArgs.PerCallsignDir == "" && !callsignAllowedForAdmin(sender) {
 					log.Printf("Admin command DEL from sender %s not allowed.", sender)
