@@ -330,9 +330,15 @@
                             <div class="mb-3">
                                 <label for="textFileName" class="form-label">Filename</label>
                                 <div class="input-group">
-                                    <input type="text" id="textFileName" class="form-control" placeholder="Enter filename">
-                                    <span class="input-group-text">.txt</span>
-                                </div>
+ 				 <input type="text" id="textFileName" class="form-control" placeholder="Enter file name and select extension">
+				  <select id="textFileExtension" class="form-select" style="max-width: 100px;">
+				    <option value=".txt" selected>.txt</option>
+				    <option value=".html">.html</option>
+				    <option value=".js">.js</option>
+				    <option value=".css">.css</option>
+				  </select>
+				</div>
+
                             </div>
                             <div class="mb-3">
                                 <label for="textFileContent" class="form-label">Content</label>
@@ -557,12 +563,17 @@ function getMaxRetries() {
     let dupPercent = file.totalPackets ? Math.round((file.duplicates / file.totalPackets) * 100) : "0";
     
     // Only add a "View" button if the file extension is ".txt"
+
+    const editableExtensions = ['.txt', '.html', '.js', '.css'];
+    const lowerName = file.fileName.toLowerCase();
     let actionButton;
-    if (file.fileName.toLowerCase().endsWith('.txt')) {
+    if (editableExtensions.some(ext => lowerName.endsWith(ext))) {
+      // For these files, show an "Edit" button.
       actionButton = `<button class="btn btn-success btn-sm" onclick="viewReceivedFile('${file.fileId}')">View</button>`;
     } else {
+      // For other file types, continue showing a "Download" button.
       actionButton = `<button class="btn btn-success btn-sm" onclick="downloadReceivedFile('${file.fileId}')">Download</button>`;
-    }
+     }
     
     html += `<tr>
       <td>${new Date(file.timestamp).toLocaleString()}</td>
@@ -3049,24 +3060,32 @@ function updateListFilesButtonStatus() {
     }
 
 window.viewReceivedFile = function(fileId) {
+  // Close the web view modal if it's open.
   const webModalEl = document.getElementById('webViewModal');
   const webModalInstance = bootstrap.Modal.getInstance(webModalEl);
   if (webModalInstance) {
     webModalInstance.hide();
   }
+
+  // Find the file based on fileId.
   const file = persistentReceivedFiles.find(f => f.fileId === fileId);
   if (!file) return;
-  
-  // Ensure it's a text file.
-  if (!file.fileName.toLowerCase().endsWith('.txt')) {
-    alert("The selected file is not a text file.");
+
+  // Define allowed editable extensions.
+  const allowedExtensions = ['.txt', '.html', '.js', '.css'];
+  const lowerName = file.fileName.toLowerCase();
+
+  // Check if the file's extension is among the allowed ones.
+  const isEditable = allowedExtensions.some(ext => lowerName.endsWith(ext));
+  if (!isEditable) {
+    alert("The selected file is not an editable text file.");
     return;
   }
-  
+
   // Store the file for later editing.
   currentViewedFile = file;
-  
-  // Fetch the text content from the dataUrl.
+
+  // Fetch and display the file content.
   fetch(file.dataUrl)
     .then(response => response.text())
     .then(text => {
@@ -3087,45 +3106,44 @@ document.getElementById('createTextFileBtn').addEventListener('click', function(
 
 // When the modal's Send File button is clicked, create a text file and send it.
 document.getElementById('modalSendFileBtn').addEventListener('click', function() {
-    const senderInput = document.getElementById('senderCallsign').value.trim();
-    const receiverInput = document.getElementById('receiverCallsign').value.trim();
-    const fileNameInput = document.getElementById('textFileName').value.trim();
-    const fileContent = document.getElementById('textFileContent').value;
-    
-    if (!senderInput || !receiverInput || !fileNameInput || !fileContent) {
-        alert("Provide filename and content.");
-        return;
-    }
-    
-    // Append .txt if not already present.
-    let finalFileName = fileNameInput;
-    if (!finalFileName.toLowerCase().endsWith('.txt')) {
-       finalFileName += '.txt';
-    }
-    
-    // Create a File object from the content.
-    const file = new File([fileContent], finalFileName, { type: 'text/plain' });
-    
-    if (fileTransferInProgress) {
-        alert("A file transfer is already in progress.");
-        return;
-    }
-    
-    // Disable the main Send File button.
-    document.getElementById('sendFileBtn').disabled = true;
-    
-    // Set global sender and receiver.
-    sender = senderInput;
-    receiver = receiverInput;
-    
-    // Get options from UI.
-    const compress = document.getElementById('compressCheckbox').checked;
-    const encodingMethod = document.getElementById('encodingMethod').value;
-    
-    // Configure burst settings (reuse your existing function).
-    configureBurstSettings();
-    
-    // Branch based on whether File Server mode is enabled.
+  console.log("Send button clicked in the create file modal.");
+  const senderInput = document.getElementById('senderCallsign').value.trim();
+  const receiverInput = document.getElementById('receiverCallsign').value.trim();
+  const fileNameInput = document.getElementById('textFileName').value.trim();
+  const extension = document.getElementById('textFileExtension').value;
+  const fileContent = document.getElementById('textFileContent').value;
+  
+  if (!senderInput || !receiverInput || !fileNameInput || !fileContent) {
+    alert("Provide filename and content.");
+    return;
+  }
+  
+  // Ensure the final file name ends with the chosen extension.
+  let finalFileName = fileNameInput;
+  if (!finalFileName.toLowerCase().endsWith(extension.toLowerCase())) {
+    finalFileName += extension;
+  }
+  
+  // Create a File object from the content.
+  const file = new File([fileContent], finalFileName, { type: 'text/plain' });
+  
+  // (Your existing file transfer logic follows here...)
+  
+  // For example:
+  if (fileTransferInProgress) {
+    alert("A file transfer is already in progress.");
+    return;
+  }
+  
+  document.getElementById('sendFileBtn').disabled = true;
+  sender = senderInput;
+  receiver = receiverInput;
+  const compress = document.getElementById('compressCheckbox').checked;
+  const encodingMethod = document.getElementById('encodingMethod').value;
+  
+  configureBurstSettings();
+  
+  // Branch based on file server mode.
     if (document.getElementById('isFileServer').checked) {
         const cmdModal = openCmdRspModal();
         document.getElementById('cmdSentCmdRsp').innerText = "CMD: PUT " + finalFileName;
@@ -3158,27 +3176,27 @@ document.getElementById('modalSendFileBtn').addEventListener('click', function()
              document.getElementById('rspResponseCmdRsp').innerText = "Error: " + err;
              document.getElementById('sendFileBtn').disabled = false;
           });
-    } else {
-        // Normal file transfer branch.
-        fileId = generateTwoCharID();
-        startTransfer(fileId);
-        prepareFileTransferData(file, compress, encodingMethod, fileId)
-          .then(data => {
-              initiateFileTransfer(data, file, sender, receiver, fileId);
-          })
-          .catch(err => {
-              updateStatus("Error reading file: " + err);
-              document.getElementById('sendFileBtn').disabled = false;
-          });
-    }
-    
-    // Hide the modal once the file transfer is initiated.
-    const modalEl = document.getElementById('createTextFileModal');
-    const modalInstance = bootstrap.Modal.getInstance(modalEl);
-    if (modalInstance) {
-        modalInstance.hide();
-    }
+  } else {
+    fileId = generateTwoCharID();
+    startTransfer(fileId);
+    prepareFileTransferData(file, compress, encodingMethod, fileId)
+      .then(data => {
+          initiateFileTransfer(data, file, sender, receiver, fileId);
+      })
+      .catch(err => {
+          updateStatus("Error reading file: " + err);
+          document.getElementById('sendFileBtn').disabled = false;
+      });
+  }
+  
+  // Hide the modal once the file transfer is initiated.
+  const modalEl = document.getElementById('createTextFileModal');
+  const modalInstance = bootstrap.Modal.getInstance(modalEl);
+  if (modalInstance) {
+      modalInstance.hide();
+  }
 });
+
 
 document.getElementById('clearTextFileBtn').addEventListener('click', function() {
   document.getElementById('textFileName').value = '';
@@ -3194,22 +3212,33 @@ document.getElementById('editFileBtn').addEventListener('click', function() {
     return;
   }
   
-  // Pre-populate the create text file modal fields.
-  let fileName = currentViewedFile.fileName.replace(/\.txt$/i, '');
-  document.getElementById('textFileName').value = fileName;
+  // Extract the file name and extension.
+  let fileName = currentViewedFile.fileName;
+  const dotIndex = fileName.lastIndexOf('.');
+  let baseName = fileName;
+  let ext = '.txt'; // default value
+  if (dotIndex !== -1) {
+    baseName = fileName.substring(0, dotIndex);
+    ext = fileName.substring(dotIndex);
+  }
+  
+  // Set the filename input and the dropdown value.
+  document.getElementById('textFileName').value = baseName;
+  document.getElementById('textFileExtension').value = ext;
   document.getElementById('textFileContent').value = fileContent;
   
-  // Close the current (view) modal.
+  // Close the current view modal.
   const viewModalEl = document.getElementById('fileViewModal');
   const viewModalInstance = bootstrap.Modal.getInstance(viewModalEl);
   if (viewModalInstance) {
     viewModalInstance.hide();
   }
   
-  // Open the create text file modal.
+  // Open the create file modal.
   const createModal = new bootstrap.Modal(document.getElementById('createTextFileModal'));
   createModal.show();
 });
+
 
 function openWebViewModal() {
   currentPageName = "index.html";
