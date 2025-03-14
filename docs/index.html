@@ -385,11 +385,15 @@
                                 <div class="spinner"></div>
                             </div>
                         </div>
-                        <!-- New: Loading bar at the bottom -->
                         <div class="modal-footer" style="display: flex; justify-content: space-between; align-items: center;">
-                            <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Close</button>
-                        </div>
-
+  				<button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Close</button>
+				  <div id="modalDownloadProgress" style="display: flex; align-items: center;">
+				   <span id="modalDownloadFilename" style="margin-right: 10px; font-weight: bold;"></span>
+				   <div class="progress" style="width: 200px; margin-bottom: 0;">
+			             <div class="progress-bar bg-primary" id="modalDownloadProgressBar" role="progressbar" style="width: 0%;">0%</div>
+			         </div>
+			    </div>
+			</div>
                     </div>
                 </div>
             </div>
@@ -2381,10 +2385,13 @@ document.getElementById('createDirectoryBtn').addEventListener('click', function
                     document.getElementById('burstSlider').disabled = this.checked;
                   });
                 
-                  setInterval(() => {
-                    updateSenderProgressUI();
-                    updateReceiverProgressUI();
-                  }, 1000);
+		setInterval(() => { 
+		  updateReceiverProgressUI();
+		  // If the web view modal is open, update its progress bar too.
+		  if (document.getElementById('webViewModal').classList.contains('show')) {
+		    updateModalProgressBar();
+		  }
+		}, 1000);
                 });
                 
                 function updateStatus(msg) {
@@ -3751,6 +3758,62 @@ function clearAllSentFiles() {
     updateSentFilesUI();
   }
 }
+function updateModalProgressBar() {
+  const modalProgressBar = document.getElementById('modalDownloadProgressBar');
+  const modalFilename = document.getElementById('modalDownloadFilename');
+  
+  console.log("updateModalProgressBar called");
+  console.log("currentPageName:", currentPageName);
+  
+  // Log all active transfer file names
+  let currentTransfer = null;
+  for (let key in activeTransfers) {
+    if (activeTransfers[key].header) {
+      console.log(`activeTransfers[${key}].header.fileName: "${activeTransfers[key].header.fileName}"`);
+      if (activeTransfers[key].header.fileName.trim() === currentPageName) {
+        currentTransfer = activeTransfers[key];
+        break;
+      }
+    }
+  }
+  
+  // If no active transfer exactly matches currentPageName,
+  // then fall back to the first active transfer (this will catch assets being fetched).
+  if (!currentTransfer) {
+    console.log("No active transfer found matching currentPageName. Falling back to first active transfer if any.");
+    for (let key in activeTransfers) {
+      if (activeTransfers[key].header) {
+        currentTransfer = activeTransfers[key];
+        break;
+      }
+    }
+  }
+  
+  if (!currentTransfer) {
+    console.log("No active transfers available. Resetting modal progress bar.");
+    modalProgressBar.style.width = "0%";
+    modalProgressBar.innerText = "0%";
+    modalFilename.innerText = "";
+    return;
+  }
+  
+  // Update the modal to show the file being fetched.
+  modalFilename.innerText = currentTransfer.header.fileName;
+  
+  // Calculate progress using the number of contiguous packets received.
+  const total = currentTransfer.totalChunks || 1;
+  let contiguous = 1;
+  while (currentTransfer.received[contiguous]) contiguous++;
+  contiguous--; // highest contiguous packet
+  
+  const percent = Math.floor((contiguous / total) * 100);
+  modalProgressBar.style.width = percent + "%";
+  modalProgressBar.innerText = percent > 0 ? percent + "%" : "0%";
+  
+  console.log(`Modal progress for "${currentTransfer.header.fileName}": ${percent}% (${contiguous}/${total})`);
+}
+
+
             </script>
             <footer style="text-align: center; margin-top: 20px;">
                 <a href="https://github.com/madpsy/kiss-tnc-file-transfer" target="_blank">Github Repo</a>

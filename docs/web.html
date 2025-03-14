@@ -151,9 +151,15 @@
               <div class="spinner"></div>
             </div>
           </div>
-          <div class="modal-footer" style="display: flex; justify-content: space-between;">
-            <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Close</button>
-          </div>
+          <div class="modal-footer" style="display: flex; justify-content: space-between; align-items: center;">
+  	    <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Close</button>
+	    <div id="downloadProgress" style="display: flex; align-items: center;">
+	     <span id="downloadFilename" style="margin-right: 10px; font-weight: bold;"></span>
+	     <div class="progress" style="width: 200px; margin-bottom: 0;">
+	       <div class="progress-bar bg-primary" id="downloadProgressBar" role="progressbar" style="width: 0%;">0%</div>
+	     </div>
+	  </div>
+	</div>
         </div>
       </div>
     </div>
@@ -1190,7 +1196,13 @@ document.getElementById('navForwardBtn').addEventListener('click', () => {
     /***********************
      * Periodic UI Updates & Initialization
      ***********************/
-    setInterval(() => { updateReceiverProgressUI(); }, 1000);
+setInterval(() => { 
+  updateReceiverProgressUI();
+  // If the web view modal is open, update its progress bar too.
+  if (document.getElementById('webViewModal').classList.contains('show')) {
+    updateModalProgressBar();
+  }
+}, 1000);
     document.getElementById('senderCallsign').addEventListener('input', function() { this.value = this.value.toUpperCase(); });
     document.getElementById('receiverCallsign').addEventListener('input', function() { this.value = this.value.toUpperCase(); });
     window.updateStatus = function(msg) { document.getElementById('status').innerText = msg; console.log(msg); };
@@ -1256,6 +1268,62 @@ document.addEventListener('DOMContentLoaded', function() {
   // Call the function after a short delay to account for autofill.
   setTimeout(updateConnectButtonState, 100);
 });
+
+function updateModalProgressBar() {
+  const modalProgressBar = document.getElementById('downloadProgressBar');
+  const modalFilename = document.getElementById('downloadFilename');
+  
+  console.log("updateModalProgressBar called");
+  console.log("currentPageName:", currentPageName);
+  
+  // Log all active transfer file names
+  let currentTransfer = null;
+  for (let key in activeTransfers) {
+    if (activeTransfers[key].header) {
+      console.log(`activeTransfers[${key}].header.fileName: "${activeTransfers[key].header.fileName}"`);
+      if (activeTransfers[key].header.fileName.trim() === currentPageName) {
+        currentTransfer = activeTransfers[key];
+        break;
+      }
+    }
+  }
+  
+  // If no active transfer exactly matches currentPageName,
+  // then fall back to the first active transfer (this will catch assets being fetched).
+  if (!currentTransfer) {
+    console.log("No active transfer found matching currentPageName. Falling back to first active transfer if any.");
+    for (let key in activeTransfers) {
+      if (activeTransfers[key].header) {
+        currentTransfer = activeTransfers[key];
+        break;
+      }
+    }
+  }
+  
+  if (!currentTransfer) {
+    console.log("No active transfers available. Resetting modal progress bar.");
+    modalProgressBar.style.width = "0%";
+    modalProgressBar.innerText = "0%";
+    modalFilename.innerText = "";
+    return;
+  }
+  
+  // Update the modal to show the file being fetched.
+  modalFilename.innerText = currentTransfer.header.fileName;
+  
+  // Calculate progress using the number of contiguous packets received.
+  const total = currentTransfer.totalChunks || 1;
+  let contiguous = 1;
+  while (currentTransfer.received[contiguous]) contiguous++;
+  contiguous--; // highest contiguous packet
+  
+  const percent = Math.floor((contiguous / total) * 100);
+  modalProgressBar.style.width = percent + "%";
+  modalProgressBar.innerText = percent > 0 ? percent + "%" : "0%";
+  
+  console.log(`Modal progress for "${currentTransfer.header.fileName}": ${percent}% (${contiguous}/${total})`);
+}
+
 
 
 
