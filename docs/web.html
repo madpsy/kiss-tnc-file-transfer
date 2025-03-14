@@ -12,64 +12,116 @@
     <script src="crypto-js.min.js"></script>
     <script src="pako.min.js"></script>
     <script src="bootstrap.bundle.min.js"></script>
-    <style>
-        body { padding: 20px; }
-        #status { margin-top: 1rem; font-weight: bold; }
-        .progress { height: 20px; margin-bottom: 10px; }
-        .spinner {
-          border: 8px solid #f3f3f3;
-          border-top: 8px solid #3498db;
-          border-radius: 50%;
-          width: 60px;
-          height: 60px;
-          animation: spin 2s linear infinite;
-          margin: 2rem auto;
-        }
-        @keyframes spin { 0% { transform: rotate(0deg); } 100% { transform: rotate(360deg); } }
-        /* Modal navigation styling */
-        .modal-header button { margin-right: 5px; }
-        .modal-header input { width: 450px; }
-    
-    #connectionStatusDot {
-      display: inline-block;
-      width: 12px;
-      height: 12px;
-      border-radius: 50%;
-      background-color: red; /* default color */
-      margin-left: 10px;
-    }
-    
-    .modal-header {
-      display: flex;
-      align-items: center;
-      justify-content: flex-start; /* Align items to the left */
-    }
-    
-    .modal-header button,
-    .modal-header input,
-    .modal-header .btn {
-      flex: 0 0 auto; /* Prevent the elements from stretching */
-    }
-    
-    
-    /* Adjust modal dialog so it’s centered vertically and has a margin */
+<style>
+  body {
+    padding: 20px;
+  }
+
+  #status {
+    margin-top: 1rem;
+    font-weight: bold;
+  }
+
+  .progress {
+    height: 20px;
+    margin-bottom: 10px;
+  }
+
+  .spinner {
+    border: 8px solid #f3f3f3;
+    border-top: 8px solid #3498db;
+    border-radius: 50%;
+    width: 60px;
+    height: 60px;
+    animation: spin 2s linear infinite;
+    margin: 2rem auto;
+  }
+
+  @keyframes spin {
+    0% { transform: rotate(0deg); }
+    100% { transform: rotate(360deg); }
+  }
+
+  /* Modal navigation styling */
+  .modal-header button {
+    margin-right: 5px;
+  }
+
+  .modal-header input {
+    width: 100%;
+    max-width: 450px;
+  }
+
+  #connectionStatusDot {
+    display: inline-block;
+    width: 12px;
+    height: 12px;
+    border-radius: 50%;
+    background-color: red; /* default color */
+    margin-left: 10px;
+  }
+
+  .modal-header {
+    display: flex;
+    align-items: center;
+    justify-content: flex-start; /* Align items to the left */
+  }
+
+  .modal-header button,
+  .modal-header input,
+  .modal-header .btn {
+    flex: 0 0 auto; /* Prevent the elements from stretching */
+  }
+
+  /* Adjust modal dialog so it’s centered vertically and has a margin */
+  .modal-dialog {
+    max-width: calc(100% - 40px); /* Horizontal margin: 20px on each side */
+    max-height: calc(100vh - 40px); /* Vertical margin: 20px on top and bottom */
+    margin: 20px auto;            /* Center the modal vertically and horizontally */
+  }
+
+  /* Responsive adjustments for small screens */
+  @media (max-width: 576px) {
     .modal-dialog {
-      max-width: calc(100% - 40px); /* Horizontal margin: 20px on each side */
-      max-height: calc(100vh - 40px); /* Vertical margin: 20px on top and bottom */
-      margin: 20px auto;            /* Center the modal vertically and horizontally */
+      margin: 10px auto; /* Ensure left/right margins are auto to center the modal */
+      width: calc(100% - 20px);
     }
-    
-    /* Make sure the modal content doesn’t exceed the max height */
-    .modal-content {
-      max-height: 100%;
-    }
-    
-    /* Allow the modal body to scroll vertically if its content is too tall */
-    .modal-body {
-      height: auto;
-      overflow-y: auto;
-    }
-    </style>
+  }
+
+  /* Make sure the modal content doesn’t exceed the max height */
+  .modal-content {
+    max-height: 100%;
+    box-sizing: border-box;
+    overflow-x: hidden;
+  }
+
+  /* Allow the modal body to scroll vertically if its content is too tall */
+  .modal-body {
+    height: auto;
+    overflow-y: auto;
+    box-sizing: border-box;
+    overflow-x: hidden;
+  }
+
+  /* Prevent content (images, iframes, etc.) from overflowing */
+  .modal-body img,
+  .modal-body iframe {
+    max-width: 100%;
+    height: auto;
+  }
+
+  /* Ensure the received files section doesn't cause horizontal overflow */
+  #receivedFiles {
+    overflow-x: auto;
+  }
+  
+  #receivedFiles table {
+    width: 100%;
+    max-width: 100%;
+  }
+</style>
+
+
 </head>
 
 <body>
@@ -142,16 +194,22 @@
             <div class="modal-dialog modal-lg">
                 <div class="modal-content">
                     <!-- Navigation Header -->
-                    <div class="modal-header" style="display: flex; align-items: center;">
-                        <button id="navBackBtn" class="btn btn-sm" title="Back">&#x2190;</button>
-                        <button id="navForwardBtn" class="btn btn-sm" title="Forward">&#x2192;</button>
-                        <button id="navHomeBtn" class="btn btn-sm" title="Home">&#x2302;</button>
-                        <div style="display: flex; align-items: center;">
-                            <button id="navRefreshBtn" class="btn btn-sm" title="Refresh">&#10227;</button>
-                            <input type="text" id="currentPageUrl" class="form-control" placeholder="Current page">
-                            <button id="goBtn" class="btn btn-success btn-sm" style="margin-left: 5px;">Go!</button>
-                        </div>
-                    </div>
+                    <!-- Modal Header -->
+<div class="modal-header" style="display: flex; align-items: center;">
+  <div style="display: flex; align-items: center;">
+    <button id="navBackBtn" class="btn btn-sm" title="Back">&#x2190;</button>
+    <button id="navForwardBtn" class="btn btn-sm" title="Forward">&#x2192;</button>
+    <button id="navHomeBtn" class="btn btn-sm" title="Home">&#x2302;</button>
+    <div style="display: flex; align-items: center;">
+      <button id="navRefreshBtn" class="btn btn-sm" title="Refresh">&#10227;</button>
+      <input type="text" id="currentPageUrl" class="form-control" placeholder="Current page">
+      <button id="goBtn" class="btn btn-success btn-sm" style="margin-left: 5px;">Go!</button>
+    </div>
+  </div>
+  <!-- New X button in the top right to close the modal -->
+  <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close" style="margin-left: auto;"></button>
+</div>
+
                     <!-- Modal Body -->
                     <div class="modal-body p-0" id="webViewContent" style="min-height: 500px; overflow:auto;">
                         <div id="spinnerContainer">
@@ -1226,19 +1284,22 @@
           updateReceivedFilesUI();
         });
       function downloadReceivedFileById(fileId) {
-        const file = persistentReceivedFiles.find(f => f.fileId === fileId);
-        if (!file) {
-          console.error("File not found:", fileId);
-          return;
-        }
+  	const file = persistentReceivedFiles.find(f => f.fileId === fileId);
+	if (!file) {
+	    console.error("File not found:", fileId);
+	    return;
+  	}
+        // Use normalizePath to strip a leading slash if present.
+        const normalizedFileName = normalizePath(file.fileName.trim());
+  
         // Create an anchor element and trigger download.
         const a = document.createElement('a');
         a.href = file.dataUrl;
-        a.download = file.fileName;
+        a.download = normalizedFileName;
         document.body.appendChild(a);
         a.click();
         document.body.removeChild(a);
-      }
+    }
     function showOverlay(message) {
       const flashMsg = document.createElement('div');
       flashMsg.innerText = message;
