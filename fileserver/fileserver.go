@@ -1223,14 +1223,12 @@ func main() {
 			    }
 			
 			    var content []byte
-			    if strings.EqualFold(fileName, "index.html") {
-			        // Special-case for index.html
-			        content, err = ioutil.ReadFile(cleanPath)
-			        if err != nil {
-			            // If index.html doesn't exist, use default content
-			            content = []byte("<html><body><h3>No site configured here yet. Upload index.html to get started.</h3></body></html>")
-			        }
-			    } else {
+if strings.EqualFold(filepath.Base(fileName), "index.html") {
+    content, err = ioutil.ReadFile(cleanPath)
+    if err != nil {
+        content = []byte("<html><body><h3>No site configured here yet. Upload index.html to get started.</h3></body></html>")
+    }
+} else {
 			        // Regular file: first check that it exists and is not a directory.
 			        info, err := os.Stat(cleanPath)
 			        if err != nil {

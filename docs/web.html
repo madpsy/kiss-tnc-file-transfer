@@ -1203,24 +1203,20 @@ document.getElementById('navForwardBtn').addEventListener('click', () => {
     window.addEventListener('load', () => {
       updateReceivedFilesUI();
     });
-function downloadReceivedFileById(fileId) {
-  const file = persistentReceivedFiles.find(f => f.fileId === fileId);
-  if (!file) {
-    console.error("File not found:", fileId);
-    return;
+  function downloadReceivedFileById(fileId) {
+    const file = persistentReceivedFiles.find(f => f.fileId === fileId);
+    if (!file) {
+      console.error("File not found:", fileId);
+      return;
+    }
+    // Create an anchor element and trigger download.
+    const a = document.createElement('a');
+    a.href = file.dataUrl;
+    a.download = file.fileName;
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
   }
-  // Extract just the filename (basename) from the full path.
-  const filename = file.fileName.split('/').pop();
-  
-  // Create an anchor element and trigger download.
-  const a = document.createElement('a');
-  a.href = file.dataUrl;
-  a.download = filename;
-  document.body.appendChild(a);
-  a.click();
-  document.body.removeChild(a);
-}
-
 function showOverlay(message) {
   const flashMsg = document.createElement('div');
   flashMsg.innerText = message;
