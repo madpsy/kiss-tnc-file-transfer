@@ -803,7 +803,15 @@
         } else {
           decompressed = fullCompressed;
         }
-        const blob = new Blob([decompressed]);
+
+ 	 let fileName = transfer.header.fileName.trim().toLowerCase();
+ 	 let mimeType = fileName.endsWith('.svg') ? 'image/svg+xml' :
+               fileName.endsWith('.css') ? 'text/css' :
+               fileName.endsWith('.js')  ? 'application/javascript' :
+               'application/octet-stream';
+	 console.log('Creating blob for:', fileName, 'with type:', mimeType);
+	 const blob = new Blob([decompressed], { type: mimeType });
+
         // If the file is "index.html", cache it as text for the web view.
         if (transfer.header.fileName.trim() === "index.html") {
       const readerText = new FileReader();
