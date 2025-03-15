@@ -1358,9 +1358,6 @@
       const modalProgressBar = document.getElementById('downloadProgressBar');
       const modalFilename = document.getElementById('downloadFilename');
       
-      console.log("updateModalProgressBar called");
-      console.log("currentPageName:", currentPageName);
-      
       // Log all active transfer file names
       let currentTransfer = null;
       for (let key in activeTransfers) {
@@ -1376,7 +1373,6 @@
       // If no active transfer exactly matches currentPageName,
       // then fall back to the first active transfer (this will catch assets being fetched).
       if (!currentTransfer) {
-        console.log("No active transfer found matching currentPageName. Falling back to first active transfer if any.");
         for (let key in activeTransfers) {
           if (activeTransfers[key].header) {
             currentTransfer = activeTransfers[key];
@@ -1386,7 +1382,6 @@
       }
       
       if (!currentTransfer) {
-        console.log("No active transfers available. Resetting modal progress bar.");
         modalProgressBar.style.width = "0%";
         modalProgressBar.innerText = "0%";
         modalFilename.innerText = "";
