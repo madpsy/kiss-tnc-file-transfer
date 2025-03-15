@@ -151,7 +151,7 @@
         </select>
             </div>
             <button id="serialConnectBtn" class="btn btn-primary">Connect</button>
-            <button id="serialDisconnectBtn" class="btn btn-secondary" style="display: none;">Disconnect Serial</button>
+            <button id="serialDisconnectBtn" class="btn btn-secondary" style="display: none;">Disconnect</button>
         </div>
 
         <!-- Callsign Inputs -->
@@ -1324,6 +1324,11 @@
       const senderInput = document.getElementById('senderCallsign');
       const receiverInput = document.getElementById('receiverCallsign');
       const connectBtn = document.getElementById('viewWebConnectBtn');
+
+      const storedSender = localStorage.getItem('senderCallsign');
+      const storedReceiver = localStorage.getItem('receiverCallsign');
+      if (storedSender) senderInput.value = storedSender;
+      if (storedReceiver) receiverInput.value = storedReceiver;
     
       function updateConnectButtonState() {
         if (senderInput.value.trim() !== "" && receiverInput.value.trim() !== "") {
@@ -1333,9 +1338,17 @@
         }
       }
     
-      // Attach event listeners for user input.
-      senderInput.addEventListener('input', updateConnectButtonState);
-      receiverInput.addEventListener('input', updateConnectButtonState);
+    senderInput.addEventListener('input', function() {
+      this.value = this.value.toUpperCase();
+      localStorage.setItem('senderCallsign', this.value);
+      updateConnectButtonState();
+    });
+    receiverInput.addEventListener('input', function() {
+      this.value = this.value.toUpperCase();
+      localStorage.setItem('receiverCallsign', this.value);
+      updateConnectButtonState();
+    });
+
     
       // Call the function after a short delay to account for autofill.
       setTimeout(updateConnectButtonState, 100);
