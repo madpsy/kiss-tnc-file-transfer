@@ -805,10 +805,26 @@
         }
 
  	 let fileName = transfer.header.fileName.trim().toLowerCase();
- 	 let mimeType = fileName.endsWith('.svg') ? 'image/svg+xml' :
-               fileName.endsWith('.css') ? 'text/css' :
-               fileName.endsWith('.js')  ? 'application/javascript' :
-               'application/octet-stream';
+
+	 const mimeTypes = {
+	   svg: 'image/svg+xml',
+	   css: 'text/css',
+	   js: 'application/javascript',
+	   html: 'text/html',
+	   json: 'application/json',
+	   png: 'image/png',
+	   jpg: 'image/jpeg',
+	   jpeg: 'image/jpeg',
+	   gif: 'image/gif',
+	   ico: 'image/x-icon',
+	   mp3: 'audio/mpeg',
+	   wav: 'audio/wav',
+	   mp4: 'video/mp4',
+	   webm: 'video/webm'
+	 };
+
+	 const ext = fileName.split('.').pop().toLowerCase();
+	 let mimeType = mimeTypes[ext] || 'application/octet-stream';
 	 console.log('Creating blob for:', fileName, 'with type:', mimeType);
 	 const blob = new Blob([decompressed], { type: mimeType });
 
