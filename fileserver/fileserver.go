@@ -1004,17 +1004,16 @@ func sendIDPacket() {
 }
 
 func resetState() {
-	lastDataTime = time.Now()
-	rspCacheLock.Lock()
-	rspCache = make(map[string]cachedResponse)
-	rspCacheLock.Unlock()
-	processingCommandsLock.Lock()
-	processingCommands = make(map[string]chan struct{})
-	processingCommandsLock.Unlock()
-	activeTransfersLock.Lock()
-	activeTransfers = make(map[string]string)
-	activeTransfersLock.Unlock()
-	broadcaster = NewBroadcaster()
+    lastDataTime = time.Now()
+    rspCacheLock.Lock()
+    rspCache = make(map[string]cachedResponse)
+    rspCacheLock.Unlock()
+    processingCommandsLock.Lock()
+    processingCommands = make(map[string]chan struct{})
+    processingCommandsLock.Unlock()
+    activeTransfersLock.Lock()
+    activeTransfers = make(map[string]string)
+    activeTransfersLock.Unlock()
 }
 
 func main() {
