@@ -157,6 +157,22 @@ func setFileConn(newConn KISSConnection) {
 	fileConnLock.Unlock()
 }
 
+func activeTransferExists() bool {
+    active := false
+    runningSender.Range(func(key, value interface{}) bool {
+        active = true
+        return false // exit early once one is found
+    })
+    if active {
+        return true
+    }
+    runningReceiver.Range(func(key, value interface{}) bool {
+        active = true
+        return false
+    })
+    return active
+}
+
 // --- Command-line Arguments Structure ---
 
 type Arguments struct {
@@ -702,6 +718,16 @@ func doFileReconnect() {
 		fileReconnectMux.Unlock()
 		return
 	}
+
+	if activeTransferExists() {
+	    log.Println("Active sender/receiver binary detected; skipping file reconnect.")
+	    fileReconnectMux.Unlock()
+	    return
+	} else {
+	    log.Println("No active sender/receiver binary detected; proceeding with reconnect.")
+	}
+
+
 	fileReconnecting = true
 	fileReconnectMux.Unlock()
 

@@ -1318,12 +1318,12 @@
         const normalizedFileName = normalizePath(file.fileName.trim());
   
         // Create an anchor element and trigger download.
-        const a = document.createElement('a');
-        a.href = file.dataUrl;
-        a.download = normalizedFileName;
-        document.body.appendChild(a);
-        a.click();
-        document.body.removeChild(a);
+        //const a = document.createElement('a');
+        //a.href = file.dataUrl;
+        //a.download = normalizedFileName;
+        //document.body.appendChild(a);
+        //a.click();
+        //document.body.removeChild(a);
     }
     function showOverlay(message) {
       const flashMsg = document.createElement('div');

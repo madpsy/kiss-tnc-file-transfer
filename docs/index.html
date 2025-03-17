@@ -2411,6 +2411,7 @@ document.getElementById('createDirectoryBtn').addEventListener('click', function
                 
 		setInterval(() => { 
 		  updateReceiverProgressUI();
+		  updateSenderProgressUI();
 		  // If the web view modal is open, update its progress bar too.
 		  if (document.getElementById('webViewModal').classList.contains('show')) {
 		    updateModalProgressBar();

@@ -572,6 +572,7 @@ type Transfer struct {
 	BurstBytes       int
 	LastBurstAckTime time.Time
 	EncodingMethod   byte // 0 = binary, 1 = Base64 (set from header)
+	LastCumulativeAck int // New field to track the last acknowledged contiguous seq number
 }
 
 // computeCumulativeAck computes the highest contiguous sequence number received.
@@ -876,30 +877,65 @@ func receiverMain(args *Arguments) {
 			transfer.Packets[seq] = parsed.Payload
 			transfer.BytesReceived += len(parsed.Payload)
 			transfer.BurstBytes += len(parsed.Payload)
-			if transfer.BurstTo != 0 && seq == transfer.BurstTo {
-				now := time.Now()
-				burstDuration := now.Sub(transfer.LastBurstAckTime).Seconds()
-				burstRate := float64(transfer.BurstBytes) / burstDuration
-				overallElapsed := now.Sub(transfer.StartTime).Seconds()
-				overallRate := float64(transfer.BytesReceived) / overallElapsed
-				progress := (float64(transfer.BytesReceived) / float64(transfer.CompSize)) * 100
-				var eta float64
-				if overallRate > 0 {
-					eta = float64(transfer.CompSize-transfer.BytesReceived) / overallRate
-				}
-				log.Printf("--- Stats ---")
-				log.Printf("Previous burst: %d bytes in %.2fs (%.2f bytes/s)", transfer.BurstBytes, burstDuration, burstRate)
-				log.Printf("Overall: %d/%d bytes (%.2f%%), elapsed: %.2fs, ETA: %.2fs", transfer.BytesReceived, transfer.CompSize, progress, overallElapsed, eta)
-				log.Printf("Overall bytes/sec: %.2f bytes/s", overallRate)
-				log.Printf("--------------")
-				ackRange := computeCumulativeAck(transfer)
-				sendAck(conn, args.MyCallsign, sender, fileID, ackRange)
-				transfer.LastAckSent = time.Now()
-				transfer.BurstBytes = 0
-				transfer.LastBurstAckTime = now
-				transfer.RetryCount = 0
-				transfer.RetryInterval = float64(transfer.TimeoutSeconds)
+			// Compute the new cumulative ACK string
+			newCumulativeAckStr := computeCumulativeAck(transfer)
+			// Convert the ACK string to an integer (we assume the format is "0001-XXXX")
+			var newCumulativeAck int
+			if newCumulativeAckStr == "0001" {
+			    newCumulativeAck = 1
+			} else {
+			    // Scanf will parse the XXXX hex value
+			    fmt.Sscanf(newCumulativeAckStr, "0001-%04X", &newCumulativeAck)
 			}
+			
+			// If the contiguous block has grown, update LastCumulativeAck and send a new ACK
+			if newCumulativeAck > transfer.LastCumulativeAck {
+			    transfer.LastCumulativeAck = newCumulativeAck
+			    transfer.RetryCount = 0
+			    transfer.RetryInterval = float64(transfer.TimeoutSeconds)
+			    // Optionally, log that the contiguous block has increased:
+			    log.Printf("Updated cumulative ACK to %s", newCumulativeAckStr)
+			}
+
+if transfer.BurstTo != 0 && seq == transfer.BurstTo {
+    // First, compute the current contiguous (cumulative) ACK.
+    ackRange := computeCumulativeAck(transfer)
+    var contig int
+    if ackRange == "0001" {
+        contig = 1
+    } else {
+        // Parse the hex part of the ACK string.
+        fmt.Sscanf(ackRange, "0001-%04X", &contig)
+    }
+    // Only send an immediate ACK if the contiguous block extends to burst_to.
+    if contig == transfer.BurstTo {
+        now := time.Now()
+        burstDuration := now.Sub(transfer.LastBurstAckTime).Seconds()
+        burstRate := float64(transfer.BurstBytes) / burstDuration
+        overallElapsed := now.Sub(transfer.StartTime).Seconds()
+        overallRate := float64(transfer.BytesReceived) / overallElapsed
+        progress := (float64(transfer.BytesReceived) / float64(transfer.CompSize)) * 100
+        var eta float64
+        if overallRate > 0 {
+            eta = float64(transfer.CompSize-transfer.BytesReceived) / overallRate
+        }
+        log.Printf("--- Stats ---")
+        log.Printf("Previous burst: %d bytes in %.2fs (%.2f bytes/s)", transfer.BurstBytes, burstDuration, burstRate)
+        log.Printf("Overall: %d/%d bytes (%.2f%%), elapsed: %.2fs, ETA: %.2fs", transfer.BytesReceived, transfer.CompSize, progress, overallElapsed, eta)
+        log.Printf("Overall bytes/sec: %.2f bytes/s", overallRate)
+        log.Printf("--------------")
+        sendAck(conn, args.MyCallsign, sender, fileID, ackRange)
+        transfer.LastAckSent = time.Now()
+        transfer.BurstBytes = 0
+        transfer.LastBurstAckTime = now
+        transfer.RetryCount = 0
+        transfer.RetryInterval = float64(transfer.TimeoutSeconds)
+    } else {
+        // Not all contiguous packets are received.
+        log.Printf("Not all contiguous packets are present (contiguous up to %04X, burst_to %04X); waiting for timeout.", contig, transfer.BurstTo)
+    }
+}
+
 			// Check if all expected packets (excluding header) have been received.
 			if transfer.Total > 0 && len(transfer.Packets) == transfer.Total-1 {
 				overallElapsed := time.Since(transfer.StartTime).Seconds()
