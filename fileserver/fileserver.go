@@ -118,6 +118,54 @@ var (
 
 // --- Thread-safe Connection Accessor Functions ---
 
+
+func checkValidCallsign(s string) bool {
+	// Inline ASCII helper functions.
+	isLetter := func(b byte) bool { return (b >= 'A' && b <= 'Z') || (b >= 'a' && b <= 'z') }
+	isDigit := func(b byte) bool { return b >= '0' && b <= '9' }
+	isAlphaNum := func(b byte) bool { return isLetter(b) || isDigit(b) }
+
+	// Process optional SSID if a dash exists (but not at the start).
+	if i := strings.Index(s, "-"); i > 0 {
+		ssid := s[i+1:]
+		if strings.Index(ssid, "-") != -1 || len(ssid) > 2 {
+			return false
+		}
+		for j := 0; j < len(ssid); j++ {
+			if !isAlphaNum(ssid[j]) {
+				return false
+			}
+		}
+		s = s[:i]
+	}
+	n := len(s)
+	if n < 4 || n > 6 {
+		return false
+	}
+	// If callsign is shorter than 6 and follows letter-digit-letter-letter, prepend a space.
+	if n < 6 && isLetter(s[0]) && isDigit(s[1]) && isLetter(s[2]) && isLetter(s[3]) {
+		s = " " + s
+	}
+	// Check key positions: normally index 2 must be a digit and index 3 a letter,
+	// unless a special 'R' exception applies.
+	if !(isDigit(s[2]) && isLetter(s[3])) && (s[0] != 'R' || !isDigit(s[1]) || !isLetter(s[2])) {
+		return false
+	}
+	// Allowed patterns.
+	if !(((s[0] == ' ' || isLetter(s[0]) || isDigit(s[0])) && isLetter(s[1])) ||
+		(isLetter(s[0]) && isDigit(s[1])) ||
+		(s[0] == 'R' && len(s) == 6 && isDigit(s[1]) && isLetter(s[2]) && isLetter(s[3]) && isLetter(s[4]))) {
+		return false
+	}
+	// For callsigns longer than 4, ensure all extra characters are letters.
+	for i := 4; i < len(s); i++ {
+		if !isLetter(s[i]) {
+			return false
+		}
+	}
+	return true
+}
+
 func isFilenameDisallowed(fileName string) bool {
 	for _, disallowed := range disallowedFilenames {
 		if strings.EqualFold(fileName, disallowed) {
@@ -468,29 +516,39 @@ func decodeAX25Address(addr []byte) string {
 }
 
 func parseCommandPacket(packet []byte) (sender, cmdID, command string, ok bool) {
-	if len(packet) < 16 {
-		return "", "", "", false
-	}
-	header := packet[:16]
-	dest := decodeAX25Address(header[0:7])
-	if dest != serverCallsign {
-		log.Printf("Dropping packet: destination %s does not match our callsign %s", dest, serverCallsign)
-		return "", "", "", false
-	}
-	infoField := packet[16:]
-	infoStr := strings.TrimSpace(string(infoField))
-	parts := strings.SplitN(infoStr, ":", 3)
-	if len(parts) != 3 {
-		log.Printf("Invalid CMD format: %s", infoStr)
-		return "", "", "", false
-	}
-	cmdID = parts[0]
-	if strings.ToUpper(parts[1]) != "CMD" {
-		return "", "", "", false
-	}
-	command = parts[2]
-	sender = decodeAX25Address(header[7:14])
-	return sender, cmdID, command, true
+    if len(packet) < 16 {
+        return "", "", "", false
+    }
+    header := packet[:16]
+    dest := decodeAX25Address(header[0:7])
+    // Validate receiver callsign as early as possible.
+    if !checkValidCallsign(dest) {
+        log.Printf("Invalid receiver callsign: %s", dest)
+        return "", "", "", false
+    }
+    if dest != serverCallsign {
+        log.Printf("Dropping packet: destination %s does not match our callsign %s", dest, serverCallsign)
+        return "", "", "", false
+    }
+    infoField := packet[16:]
+    infoStr := strings.TrimSpace(string(infoField))
+    parts := strings.SplitN(infoStr, ":", 3)
+    if len(parts) != 3 {
+        log.Printf("Invalid CMD format: %s", infoStr)
+        return "", "", "", false
+    }
+    cmdID = parts[0]
+    if strings.ToUpper(parts[1]) != "CMD" {
+        return "", "", "", false
+    }
+    command = parts[2]
+    sender = decodeAX25Address(header[7:14])
+    // Validate sender callsign immediately after extraction.
+    if !checkValidCallsign(sender) {
+        log.Printf("Invalid sender callsign: %s", sender)
+        return "", "", "", false
+    }
+    return sender, cmdID, command, true
 }
 
 func createResponsePacket(cmdID string, status int, msg string) []byte {
