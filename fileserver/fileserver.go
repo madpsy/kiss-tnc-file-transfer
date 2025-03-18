@@ -75,8 +75,8 @@ var absSaveDir string
 var runningSender sync.Map
 var runningReceiver sync.Map
 
-var allowedDirName = regexp.MustCompile(`^[A-Za-z0-9._()\-]+$`)
-var allowedFileName = regexp.MustCompile(`^[A-Za-z0-9._()/\-]+$`)
+var allowedDirName = regexp.MustCompile(`^[A-Za-z0-9._()\- ]+$`)
+var allowedFileName = regexp.MustCompile(`^[A-Za-z0-9._()/\- ]+$`)
 
 // --- Duplicate Response Cache ---
 type cachedResponse struct {
@@ -1579,7 +1579,7 @@ if strings.EqualFold(filepath.Base(fileName), "index.html") {
 						continue
 					} else {
 						log.Printf("MKD command from sender %s: directory '%s' already exists", sender, dirName)
-						_, _ = sendResponseWithDetails(sender, cmdID, command, 0, "DIRECTORY ALREADY EXISTS")
+						_, _ = sendResponseWithDetails(sender, cmdID, command, 1, "DIRECTORY ALREADY EXISTS")
 						continue
 					}
 				}
