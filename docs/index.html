@@ -2211,7 +2211,7 @@ document.getElementById('createDirectoryBtn').addEventListener('click', function
           "RSP: " + (rsp.status === 1 ? "Success" : "Failure") + " - " + rsp.message;
         setTimeout(() => {
           closeCmdRspModal();
-        }, 1000);
+        }, 3000);
       })
       .catch(err => {
         document.getElementById('rspResponseCmdRsp').innerText = "Error: " + err;
