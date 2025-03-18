@@ -645,22 +645,21 @@ func (b *Broadcaster) Broadcast(data []byte) {
 }
 
 func startKISSReader(conn KISSConnection, b *Broadcaster) {
-	for {
-		data, err := conn.RecvData(100 * time.Millisecond)
-		if err != nil {
-			if err != io.EOF {
-				log.Printf("Underlying read error: %v", err)
-				go doReconnect()
-			}
-			break
-		}
-		if len(data) == 0 {
-			time.Sleep(50 * time.Millisecond)
-			continue
-		}
-		lastDataTime = time.Now()
-		b.Broadcast(data)
-	}
+    for {
+        data, err := conn.RecvData(100 * time.Millisecond)
+        if err != nil {
+            // Log the error and trigger reconnect on any error (including io.EOF)
+            log.Printf("Underlying read error: %v", err)
+            go doReconnect()
+            break
+        }
+        if len(data) == 0 {
+            time.Sleep(50 * time.Millisecond)
+            continue
+        }
+        lastDataTime = time.Now()
+        b.Broadcast(data)
+    }
 }
 
 func monitorInactivity(timeout time.Duration) {
