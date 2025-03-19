@@ -21,6 +21,19 @@ import (
 	"time"
 	"sort"
 	"encoding/csv"
+
+	"github.com/gorilla/handlers"
+)
+
+// CacheEntry represents a cached file.
+type CacheEntry struct {
+    Content    []byte
+    Expiration time.Time
+}
+
+var (
+    fileCache      = make(map[string]CacheEntry)
+    fileCacheMutex sync.RWMutex
 )
 
 // Global constants for KISS framing.
@@ -220,6 +233,9 @@ type Arguments struct {
 	HTTPServerPort     int    // Optional: if non-zero, run an HTTP server for GET requests.
 	HTTPQueueLimit     int    // Maximum GET requests queued before returning 429 (default 5)
 	NonInteractive     bool   // If true, do not start interactive command interface.
+	HttpLogFile        string // (New) Path to file for HTTP logging (if specified, logs are written there)
+	HTTPMaxRequestTime time.Duration // Maximum time to wait for an HTTP GET request before timing out (default 10 minutes)
+	HTTPCacheTime      int           // Cache time for HTTP responses in minutes (0 disables caching); default 5 minutes
 }
 
 func parseArguments() *Arguments {
@@ -244,6 +260,9 @@ func parseArguments() *Arguments {
 	// New flag: HTTP queue limit.
 	flag.IntVar(&args.HTTPQueueLimit, "http-queue", 5, "Maximum GET requests queued before returning 429")
 	flag.BoolVar(&args.NonInteractive, "non-interactive", false, "Run the program without starting the interactive command interface")
+	flag.StringVar(&args.HttpLogFile, "http-log-file", "", "Path to HTTP log file (if specified, logs will be written there in Apache combined format)")
+	flag.DurationVar(&args.HTTPMaxRequestTime, "http-max-request-time", 10*time.Minute, "Maximum time to wait for an HTTP GET request before timing out")
+	flag.IntVar(&args.HTTPCacheTime, "http-cache-time", 5, "Cache time for HTTP responses in minutes (0 disables caching)")	
 	flag.Parse()
 
 	if args.MyCallsign == "" {
@@ -986,169 +1005,217 @@ func handleCommand(commandLine string, args *Arguments, conn KISSConnection, b *
 }
 
 // startHTTPServer launches an HTTP server on the specified port to handle GET requests.
+
 func startHTTPServer(args *Arguments, conn KISSConnection, b *Broadcaster) {
-	// Define MIME types mapping.
-	mimeTypes := map[string]string{
-		"svg":  "image/svg+xml",
-		"css":  "text/css",
-		"js":   "application/javascript",
-		"html": "text/html",
-		"json": "application/json",
-		"png":  "image/png",
-		"jpg":  "image/jpeg",
-		"jpeg": "image/jpeg",
-		"gif":  "image/gif",
-		"ico":  "image/x-icon",
-		"mp3":  "audio/mpeg",
-		"wav":  "audio/wav",
-		"mp4":  "video/mp4",
-		"webm": "video/webm",
-	}
+    // Define MIME types mapping.
+    mimeTypes := map[string]string{
+        "svg":  "image/svg+xml",
+        "css":  "text/css",
+        "js":   "application/javascript",
+        "html": "text/html",
+        "json": "application/json",
+        "png":  "image/png",
+        "jpg":  "image/jpeg",
+        "jpeg": "image/jpeg",
+        "gif":  "image/gif",
+        "ico":  "image/x-icon",
+        "mp3":  "audio/mpeg",
+        "wav":  "audio/wav",
+        "mp4":  "video/mp4",
+        "webm": "video/webm",
+    }
 
-	// Create a channel to limit the number of queued GET requests.
-	// This channel will hold tokens for waiting requests.
-	getQueue := make(chan struct{}, args.HTTPQueueLimit)
-	// Create a mutex to ensure that only one GET command is processed at a time.
-	var getCmdMutex sync.Mutex
+    // Create a channel to limit the number of queued GET requests.
+    getQueue := make(chan struct{}, args.HTTPQueueLimit)
+    // Create a mutex to ensure that only one GET command is processed at a time.
+    var getCmdMutex sync.Mutex
 
-	http.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
-		if r.Method != http.MethodGet {
-			http.Error(w, "Only GET allowed", http.StatusMethodNotAllowed)
-			return
-		}
+    // Create a new ServeMux and register the GET handler.
+    mux := http.NewServeMux()
+    mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
+        if r.Method != http.MethodGet {
+            http.Error(w, "Only GET allowed", http.StatusMethodNotAllowed)
+            return
+        }
 
-		// Attempt to queue the GET request.
-		select {
-		case getQueue <- struct{}{}:
-			// Got a slot in the queue.
-			defer func() { <-getQueue }()
-		default:
-			queued := len(getQueue)
-			w.WriteHeader(http.StatusTooManyRequests)
-			fmt.Fprintf(w, "Please wait before sending more requests (%d)", queued)
-			return
-		}
+        // Attempt to queue the GET request.
+        select {
+        case getQueue <- struct{}{}:
+            defer func() { <-getQueue }()
+        default:
+            queued := len(getQueue)
+            w.WriteHeader(http.StatusTooManyRequests)
+            fmt.Fprintf(w, "Please wait before sending more requests (%d)", queued)
+            return
+        }
 
-		// Enforce that only one GET command is sent at a time.
-		getCmdMutex.Lock()
-		defer getCmdMutex.Unlock()
+        // Enforce that only one GET command is processed at a time.
+        getCmdMutex.Lock()
+        defer getCmdMutex.Unlock()
 
-		requestedPath := r.URL.Path
-		// Remove leading '/' if present.
-		if strings.HasPrefix(requestedPath, "/") {
-			requestedPath = requestedPath[1:]
-		}
-		// Default to index.html if root or directory.
-		if requestedPath == "" || strings.HasSuffix(requestedPath, "/") {
-			requestedPath = requestedPath + "index.html"
-		}
-		if requestedPath == "" {
-			http.Error(w, "No file specified", http.StatusBadRequest)
-			return
-		}
+        requestedPath := r.URL.Path
+        // Remove leading '/' if present.
+        if strings.HasPrefix(requestedPath, "/") {
+            requestedPath = requestedPath[1:]
+        }
+        // Default to index.html if root or directory.
+        if requestedPath == "" || strings.HasSuffix(requestedPath, "/") {
+            requestedPath = requestedPath + "index.html"
+        }
+        if requestedPath == "" {
+            http.Error(w, "No file specified", http.StatusBadRequest)
+            return
+        }
 
-		// If the requested file is LIST (or LIST.txt), send the LIST command.
-		var commandLine string
-		if strings.EqualFold(requestedPath, "LIST") || strings.EqualFold(requestedPath, "LIST.txt") {
-			commandLine = "LIST"
-			requestedPath = "LIST.txt"
-		} else {
-			commandLine = "GET " + requestedPath
-		}
+        // Check for "Cache-Control: no-cache" header.
+        cacheControl := r.Header.Get("Cache-Control")
+        noCache := strings.Contains(cacheControl, "no-cache")
 
-		// Attempt to send command and wait for response (with retries).
-		const maxRetries = 3
-		var respPayload []byte
-		var err error
-		var cmdID string
-		for attempt := 1; attempt <= maxRetries; attempt++ {
-			var packet []byte
-			packet, cmdID = buildCommandPacket(args.MyCallsign, args.FileServerCallsign, commandLine)
-			frame := buildKISSFrame(packet)
-			err = conn.SendFrame(frame)
-			if err != nil {
-				http.Error(w, "Error sending command: "+err.Error(), http.StatusInternalServerError)
-				return
-			}
-			log.Printf("HTTP GET: sent command '%s' with CMD ID %s (attempt %d)", commandLine, cmdID, attempt)
-			// Wait for the direct response with a 10-second timeout.
-			respPayload, err = waitForResponse(b, 10*time.Second, cmdID)
-			if err == nil {
-				break
-			}
-			log.Printf("Attempt %d: Error waiting for response: %v", attempt, err)
-		}
-		if err != nil {
-			http.Error(w, "Error waiting for response after retries: "+err.Error(), http.StatusGatewayTimeout)
-			return
-		}
-		_, status, msg, ok := parseResponsePacket(respPayload)
-		// If the command response indicates failure, return 404.
-		if !ok || status != 1 {
-			http.Error(w, "Command failed: "+msg, http.StatusNotFound)
-			return
-		}
+        // Attempt to serve from cache if allowed.
+        if !noCache {
+            fileCacheMutex.RLock()
+            entry, exists := fileCache[requestedPath]
+            fileCacheMutex.RUnlock()
+            if exists && time.Now().Before(entry.Expiration) {
+                log.Printf("Serving %s from cache", requestedPath)
+                // Set headers based on file extension.
+                ext := strings.TrimPrefix(strings.ToLower(filepath.Ext(requestedPath)), ".")
+                if mime, exists := mimeTypes[ext]; exists {
+                    w.Header().Set("Content-Type", mime)
+                    w.Header().Set("Content-Disposition", "inline; filename=\""+filepath.Base(requestedPath)+"\"")
+                } else {
+                    w.Header().Set("Content-Type", "application/octet-stream")
+                    w.Header().Set("Content-Disposition", "attachment; filename=\""+filepath.Base(requestedPath)+"\"")
+                }
+                // Optionally, add client caching headers.
+                w.Header().Set("Cache-Control", "public, max-age=86400")
+                w.Header().Set("Expires", time.Now().Add(24*time.Hour).Format(http.TimeFormat))
+                w.Write(entry.Content)
+                return
+            }
+        }
 
-		// Spawn the receiver process to fetch the file.
-		type receiverResult struct {
-			output   []byte
-			exitCode int
-			err      error
-		}
-		resultCh := make(chan receiverResult, 1)
-		go func() {
-			output, exitCode, procErr := spawnReceiverProcess(args, cmdID, requestedPath)
-			resultCh <- receiverResult{output: output, exitCode: exitCode, err: procErr}
-		}()
+        // If the requested file is LIST (or LIST.txt), send the LIST command.
+        var commandLine string
+        if strings.EqualFold(requestedPath, "LIST") || strings.EqualFold(requestedPath, "LIST.txt") {
+            commandLine = "LIST"
+            requestedPath = "LIST.txt"
+        } else {
+            commandLine = "GET " + requestedPath
+        }
 
-		// Use a 10-minute overall timeout for the receiver process.
-		select {
-		case res := <-resultCh:
-			if res.exitCode != 0 {
-				http.Error(w, "Error retrieving file: "+res.err.Error(), http.StatusInternalServerError)
-				return
-			}
+        // Attempt to send command and wait for response (with retries).
+        const maxRetries = 3
+        var respPayload []byte
+        var err error
+        var cmdID string
+        for attempt := 1; attempt <= maxRetries; attempt++ {
+            var packet []byte
+            packet, cmdID = buildCommandPacket(args.MyCallsign, args.FileServerCallsign, commandLine)
+            frame := buildKISSFrame(packet)
+            err = conn.SendFrame(frame)
+            if err != nil {
+                http.Error(w, "Error sending command: "+err.Error(), http.StatusInternalServerError)
+                return
+            }
+            log.Printf("HTTP GET: sent command '%s' with CMD ID %s (attempt %d)", commandLine, cmdID, attempt)
+            // Wait for the direct response with a 10-second timeout.
+            respPayload, err = waitForResponse(b, 10*time.Second, cmdID)
+            if err == nil {
+                break
+            }
+            log.Printf("Attempt %d: Error waiting for response: %v", attempt, err)
+        }
+        if err != nil {
+            http.Error(w, "Error waiting for response after retries: "+err.Error(), http.StatusGatewayTimeout)
+            return
+        }
+        _, status, msg, ok := parseResponsePacket(respPayload)
+        // If the command response indicates failure, return 404.
+        if !ok || status != 1 {
+            http.Error(w, "Command failed: "+msg, http.StatusNotFound)
+            return
+        }
 
-			// If this is a LIST command, convert CSV to an HTML table with anchor links.
-			if commandLine == "LIST" {
-				htmlTable, err := csvToHTML(string(res.output))
-				if err != nil {
-					log.Printf("Error converting CSV to HTML: %v", err)
-					w.Header().Set("Content-Type", "text/plain")
-					w.Write(res.output)
-				} else {
-					w.Header().Set("Content-Type", "text/html")
-					w.Write([]byte(htmlTable))
-				}
-			} else {
-				// Set the Content-Type header based on file extension.
-				ext := strings.TrimPrefix(strings.ToLower(filepath.Ext(requestedPath)), ".")
-				if mime, exists := mimeTypes[ext]; exists {
-					w.Header().Set("Content-Type", mime)
-					// Use inline disposition so that the browser displays the file if possible.
-					w.Header().Set("Content-Disposition", "inline; filename=\""+filepath.Base(requestedPath)+"\"")
-				} else {
-					// Fallback headers.
-					w.Header().Set("Content-Type", "application/octet-stream")
-					w.Header().Set("Content-Disposition", "attachment; filename=\""+filepath.Base(requestedPath)+"\"")
-				}
-				// Set caching headers: cache for 24 hours.
-				w.Header().Set("Cache-Control", "public, max-age=86400")
-				w.Header().Set("Expires", time.Now().Add(24*time.Hour).Format(http.TimeFormat))
-				_, _ = w.Write(res.output)
-			}
+        // Spawn the receiver process to fetch the file.
+        type receiverResult struct {
+            output   []byte
+            exitCode int
+            err      error
+        }
+        resultCh := make(chan receiverResult, 1)
+        go func() {
+            output, exitCode, procErr := spawnReceiverProcess(args, cmdID, requestedPath)
+            resultCh <- receiverResult{output: output, exitCode: exitCode, err: procErr}
+        }()
 
-		case <-time.After(10 * time.Minute):
-			http.Error(w, "Receiver process timed out", http.StatusGatewayTimeout)
-			return
-		}
-	})
+        // Use a 10-minute overall timeout for the receiver process.
+        select {
+        case res := <-resultCh:
+            if res.exitCode != 0 {
+                http.Error(w, "Error retrieving file: "+res.err.Error(), http.StatusInternalServerError)
+                return
+            }
 
-	addr := fmt.Sprintf(":%d", args.HTTPServerPort)
-	log.Printf("HTTP server listening on %s", addr)
-	if err := http.ListenAndServe(addr, nil); err != nil {
-		log.Fatalf("HTTP server error: %v", err)
-	}
+            // For LIST command, convert CSV to an HTML table with anchor links.
+            if commandLine == "LIST" {
+                htmlTable, err := csvToHTML(string(res.output))
+                if err != nil {
+                    log.Printf("Error converting CSV to HTML: %v", err)
+                    w.Header().Set("Content-Type", "text/plain")
+                    w.Write(res.output)
+                } else {
+                    w.Header().Set("Content-Type", "text/html")
+                    w.Write([]byte(htmlTable))
+                }
+            } else {
+                // Set the Content-Type header based on file extension.
+                ext := strings.TrimPrefix(strings.ToLower(filepath.Ext(requestedPath)), ".")
+                if mime, exists := mimeTypes[ext]; exists {
+                    w.Header().Set("Content-Type", mime)
+                    w.Header().Set("Content-Disposition", "inline; filename=\""+filepath.Base(requestedPath)+"\"")
+                } else {
+                    // Fallback headers.
+                    w.Header().Set("Content-Type", "application/octet-stream")
+                    w.Header().Set("Content-Disposition", "attachment; filename=\""+filepath.Base(requestedPath)+"\"")
+                }
+                // Set caching headers: cache for 24 hours.
+                w.Header().Set("Cache-Control", "public, max-age=86400")
+                w.Header().Set("Expires", time.Now().Add(24*time.Hour).Format(http.TimeFormat))
+                w.Write(res.output)
+            }
+
+            // Cache the result if caching is allowed (and not a LIST command).
+	    if !noCache && commandLine != "LIST" && args.HTTPCacheTime > 0 {
+	        fileCacheMutex.Lock()
+	        fileCache[requestedPath] = CacheEntry{
+	            Content:    res.output,
+	            Expiration: time.Now().Add(time.Duration(args.HTTPCacheTime) * time.Minute),
+	        }
+	        fileCacheMutex.Unlock()
+	    }
+        case <-time.After(args.HTTPMaxRequestTime):
+            http.Error(w, "Receiver process timed out", http.StatusGatewayTimeout)
+            return
+        }
+    })
+
+    addr := fmt.Sprintf(":%d", args.HTTPServerPort)
+    log.Printf("HTTP server listening on %s", addr)
+    if args.HttpLogFile != "" {
+        logFile, err := os.OpenFile(args.HttpLogFile, os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0644)
+        if err != nil {
+            log.Fatalf("Error opening HTTP log file: %v", err)
+        }
+        defer logFile.Close()
+        if err := http.ListenAndServe(addr, handlers.CombinedLoggingHandler(logFile, mux)); err != nil {
+            log.Fatalf("HTTP server error: %v", err)
+        }
+    } else {
+        if err := http.ListenAndServe(addr, mux); err != nil {
+            log.Fatalf("HTTP server error: %v", err)
+        }
+    }
 }
 
 // ------------------ Main ------------------
