@@ -92,6 +92,43 @@ func csvToPretty(csvText string) (string, error) {
 	return sb.String(), nil
 }
 
+// csvToHTML converts CSV text into an HTML table where the first column's value is an anchor link.
+func csvToHTML(csvText string) (string, error) {
+	r := csv.NewReader(strings.NewReader(csvText))
+	records, err := r.ReadAll()
+	if err != nil {
+		return "", err
+	}
+	if len(records) == 0 {
+		return "", fmt.Errorf("no CSV data found")
+	}
+	var sb strings.Builder
+	sb.WriteString("<html><head><title>File List</title></head><body>\n")
+	sb.WriteString("<table border='1'>\n")
+	// Header row.
+	sb.WriteString("<tr>")
+	for _, cell := range records[0] {
+		sb.WriteString("<th>" + cell + "</th>")
+	}
+	sb.WriteString("</tr>\n")
+	// Data rows.
+	for _, row := range records[1:] {
+		sb.WriteString("<tr>")
+		if len(row) > 0 {
+			fileName := row[0]
+			link := fmt.Sprintf("<a href=\"/%s\">%s</a>", fileName, fileName)
+			sb.WriteString("<td>" + link + "</td>")
+		}
+		for i := 1; i < len(row); i++ {
+			sb.WriteString("<td>" + row[i] + "</td>")
+		}
+		sb.WriteString("</tr>\n")
+	}
+	sb.WriteString("</table>\n")
+	sb.WriteString("</body></html>")
+	return sb.String(), nil
+}
+
 // toInterfaceSlice converts a slice of strings into a slice of empty interfaces.
 func toInterfaceSlice(strs []string) []interface{} {
 	out := make([]interface{}, len(strs))
@@ -405,7 +442,6 @@ func buildCommandPacket(myCallsign, fileServerCallsign, commandText string) ([]b
 	return packet, cmdID
 }
 
-
 func parseResponsePacket(payload []byte) (cmdID string, status int, msg string, ok bool) {
 	str := strings.TrimSpace(string(payload))
 	// Expected format: "cmdID:RSP:<status>:<msg>"
@@ -425,7 +461,6 @@ func parseResponsePacket(payload []byte) (cmdID string, status int, msg string, 
 	msg = parts[3]
 	return cmdID, status, msg, true
 }
-
 
 // ------------------ Broadcaster ------------------
 
@@ -916,6 +951,7 @@ func handleCommand(commandLine string, args *Arguments, conn KISSConnection, b *
 		output, exitCode, procErr := spawnReceiverProcess(args, cmdID, expectedFile)
 		if exitCode == 0 {
 			if cmdType == "LIST" {
+				// For CLI, keep the plain text pretty table.
 				pretty, err := csvToPretty(string(output))
 				if err != nil {
 					log.Printf("Error converting CSV to table: %v", err)
@@ -942,7 +978,6 @@ func handleCommand(commandLine string, args *Arguments, conn KISSConnection, b *
 		}
 	}
 }
-
 
 // startHTTPServer launches an HTTP server on the specified port to handle GET requests.
 func startHTTPServer(args *Arguments, conn KISSConnection, b *Broadcaster) {
@@ -988,37 +1023,45 @@ func startHTTPServer(args *Arguments, conn KISSConnection, b *Broadcaster) {
 			return
 		}
 
-		// Attempt to send GET command and wait for response (with retries).
+		// If the requested file is LIST (or LIST.txt), send the LIST command.
+		var commandLine string
+		if strings.EqualFold(requestedPath, "LIST") || strings.EqualFold(requestedPath, "LIST.txt") {
+			commandLine = "LIST"
+			requestedPath = "LIST.txt"
+		} else {
+			commandLine = "GET " + requestedPath
+		}
+
+		// Attempt to send command and wait for response (with retries).
 		const maxRetries = 3
 		var respPayload []byte
 		var err error
 		var cmdID string
 		for attempt := 1; attempt <= maxRetries; attempt++ {
-			commandLine := "GET " + requestedPath
 			var packet []byte
 			packet, cmdID = buildCommandPacket(args.MyCallsign, args.FileServerCallsign, commandLine)
 			frame := buildKISSFrame(packet)
 			err = conn.SendFrame(frame)
 			if err != nil {
-				http.Error(w, "Error sending GET command: "+err.Error(), http.StatusInternalServerError)
+				http.Error(w, "Error sending command: "+err.Error(), http.StatusInternalServerError)
 				return
 			}
-			log.Printf("HTTP GET: sent command for file '%s' with CMD ID %s (attempt %d)", requestedPath, cmdID, attempt)
+			log.Printf("HTTP GET: sent command '%s' with CMD ID %s (attempt %d)", commandLine, cmdID, attempt)
 			// Wait for the direct response with a 10-second timeout.
 			respPayload, err = waitForResponse(b, 10*time.Second, cmdID)
 			if err == nil {
 				break
 			}
-			log.Printf("Attempt %d: Error waiting for GET response: %v", attempt, err)
+			log.Printf("Attempt %d: Error waiting for response: %v", attempt, err)
 		}
 		if err != nil {
-			http.Error(w, "Error waiting for GET response after retries: "+err.Error(), http.StatusGatewayTimeout)
+			http.Error(w, "Error waiting for response after retries: "+err.Error(), http.StatusGatewayTimeout)
 			return
 		}
 		_, status, msg, ok := parseResponsePacket(respPayload)
 		// If the command response indicates failure, return 404.
 		if !ok || status != 1 {
-			http.Error(w, "GET command failed: "+msg, http.StatusNotFound)
+			http.Error(w, "Command failed: "+msg, http.StatusNotFound)
 			return
 		}
 
@@ -1042,23 +1085,34 @@ func startHTTPServer(args *Arguments, conn KISSConnection, b *Broadcaster) {
 				return
 			}
 
-			// Set the Content-Type header based on file extension.
-			ext := strings.TrimPrefix(strings.ToLower(filepath.Ext(requestedPath)), ".")
-			if mime, exists := mimeTypes[ext]; exists {
-				w.Header().Set("Content-Type", mime)
-				// Use inline disposition so that the browser displays the file if possible.
-				w.Header().Set("Content-Disposition", "inline; filename=\""+filepath.Base(requestedPath)+"\"")
+			// If this is a LIST command, convert CSV to an HTML table with anchor links.
+			if commandLine == "LIST" {
+				htmlTable, err := csvToHTML(string(res.output))
+				if err != nil {
+					log.Printf("Error converting CSV to HTML: %v", err)
+					w.Header().Set("Content-Type", "text/plain")
+					w.Write(res.output)
+				} else {
+					w.Header().Set("Content-Type", "text/html")
+					w.Write([]byte(htmlTable))
+				}
 			} else {
-				// Fallback headers.
-				w.Header().Set("Content-Type", "application/octet-stream")
-				w.Header().Set("Content-Disposition", "attachment; filename=\""+filepath.Base(requestedPath)+"\"")
+				// Set the Content-Type header based on file extension.
+				ext := strings.TrimPrefix(strings.ToLower(filepath.Ext(requestedPath)), ".")
+				if mime, exists := mimeTypes[ext]; exists {
+					w.Header().Set("Content-Type", mime)
+					// Use inline disposition so that the browser displays the file if possible.
+					w.Header().Set("Content-Disposition", "inline; filename=\""+filepath.Base(requestedPath)+"\"")
+				} else {
+					// Fallback headers.
+					w.Header().Set("Content-Type", "application/octet-stream")
+					w.Header().Set("Content-Disposition", "attachment; filename=\""+filepath.Base(requestedPath)+"\"")
+				}
+				// Set caching headers: cache for 24 hours.
+				w.Header().Set("Cache-Control", "public, max-age=86400")
+				w.Header().Set("Expires", time.Now().Add(24*time.Hour).Format(http.TimeFormat))
+				_, _ = w.Write(res.output)
 			}
-
-			// Set caching headers: cache for 24 hours.
-			w.Header().Set("Cache-Control", "public, max-age=86400")
-			w.Header().Set("Expires", time.Now().Add(24*time.Hour).Format(http.TimeFormat))
-
-			_, _ = w.Write(res.output)
 
 		case <-time.After(10 * time.Minute):
 			http.Error(w, "Receiver process timed out", http.StatusGatewayTimeout)
