@@ -1239,361 +1239,494 @@ func main() {
 				ch := make(chan struct{})
 				processingCommands[cacheKey] = ch
 				processingCommandsLock.Unlock()
-				defer func(key string, ch chan struct{}) {
-					processingCommandsLock.Lock()
-					close(ch)
-					delete(processingCommands, key)
-					processingCommandsLock.Unlock()
-				}(cacheKey, ch)
-			}
 
-			upperCmd := strings.ToUpper(command)
-			var baseDir string
-			if globalArgs.PerCallsignDir != "" {
-				baseDir = filepath.Join(absPerCallsignDir, sender)
-				os.MkdirAll(baseDir, 0755)
-				readmePath := filepath.Join(baseDir, "README.txt")
-				if _, err := os.Stat(readmePath); os.IsNotExist(err) {
-					readmeContent := fmt.Sprintf("Welcome %s to your personal file store!\n\nYou have full permissions to all files here.\n\nHave fun!", sender)
-					if err := ioutil.WriteFile(readmePath, []byte(readmeContent), 0644); err != nil {
-						log.Printf("Error creating README.txt: %v", err)
-					}
-				}
-			}
-
-			if strings.HasPrefix(upperCmd, "GET ") {
-			    if globalArgs.PerCallsignDir == "" && !callsignAllowedForGet(sender) {
-			        log.Printf("Dropping GET command from sender %s: not allowed.", sender)
-			        activeTransfersLock.Lock()
-			        delete(activeTransfers, sender)
-			        activeTransfersLock.Unlock()
-			        _, _ = sendResponseWithDetails(sender, cmdID, command, 0, "CALLSIGN NOT ALLOWED")
-			        continue
-			    }
-			    activeTransfersLock.Lock()
-			    if _, exists := activeTransfers[sender]; !exists && len(activeTransfers) >= globalArgs.MaxConcurrency {
-			        activeTransfersLock.Unlock()
-			        sendResponseWithDetails(sender, cmdID, command, 0, "TRANSFER ALREADY IN PROGRESS. PLEASE WAIT.")
-			        continue
-			    }
-			    activeTransfers[sender] = cmdID
-			    activeTransfersLock.Unlock()
-			
-			    fileName := strings.TrimSpace(command[4:])
-			    if len(fileName) > maxFileNameLen {
-			        log.Printf("GET command from sender %s: file name '%s' too long", sender, fileName)
-			        _, _ = sendResponseWithDetails(sender, cmdID, command, 0, "FILE NAME TOO LONG")
-			        continue
-			    }
-			    if isFilenameDisallowed(fileName) {
-			        log.Printf("GET command from sender %s: access to file '%s' is forbidden", sender, fileName)
-			        _, _ = sendResponseWithDetails(sender, cmdID, command, 0, "FILE NAME NOT ALLOWED")
-			        continue
-			    }
-			    var dir string
-			    if globalArgs.PerCallsignDir != "" {
-			        dir = baseDir
-			    } else {
-			        dir = absServeDir
-			    }
-			    requestedPath := filepath.Join(dir, fileName)
-			    cleanPath := filepath.Clean(requestedPath)
-			    if !strings.HasPrefix(cleanPath, dir) {
-			        log.Printf("GET command from sender %s: attempted directory traversal in '%s'", sender, fileName)
-			        _, _ = sendResponseWithDetails(sender, cmdID, command, 0, "INVALID FILE PATH")
-			        continue
-			    }
-			
-			    var content []byte
-if strings.EqualFold(filepath.Base(fileName), "index.html") {
-    content, err = ioutil.ReadFile(cleanPath)
-    if err != nil {
-        content = []byte("<html><body><h3>No site configured here yet. Upload index.html to get started.</h3></body></html>")
-    }
-} else {
-			        // Regular file: first check that it exists and is not a directory.
-			        info, err := os.Stat(cleanPath)
-			        if err != nil {
-			            log.Printf("GET command from sender %s: error stating '%s': %v", sender, fileName, err)
-			            _, _ = sendResponseWithDetails(sender, cmdID, command, 0, "CANNOT FIND/READ FILE")
-			            continue
-			        }
-			        if info.IsDir() {
-			            log.Printf("GET command from sender %s: '%s' is a directory", sender, fileName)
-			            _, _ = sendResponseWithDetails(sender, cmdID, command, 0, "CANNOT GET DIRECTORY")
-			            continue
-			        }
-			        content, err = ioutil.ReadFile(cleanPath)
-			        if err != nil {
-			            log.Printf("GET command from sender %s: error reading '%s': %v", sender, fileName, err)
-			            _, _ = sendResponseWithDetails(sender, cmdID, command, 0, "CANNOT FIND/READ FILE")
-			            continue
-			        }
-			    }
-			    _, _ = sendResponseWithDetails(sender, cmdID, command, 1, "GET OK")
-			    go invokeSenderBinary(globalArgs, sender, fileName, string(content), cmdID)
-			} else if strings.HasPrefix(upperCmd, "LIST") {
+				// Process the command
+				upperCmd := strings.ToUpper(command)
+				var baseDir string
 				if globalArgs.PerCallsignDir != "" {
 					baseDir = filepath.Join(absPerCallsignDir, sender)
-				} else {
-					baseDir = absServeDir
+					os.MkdirAll(baseDir, 0755)
+					readmePath := filepath.Join(baseDir, "README.txt")
+					if _, err := os.Stat(readmePath); os.IsNotExist(err) {
+						readmeContent := fmt.Sprintf("Welcome %s to your personal file store!\n\nYou have full permissions to all files here.\n\nHave fun!", sender)
+						if err := ioutil.WriteFile(readmePath, []byte(readmeContent), 0644); err != nil {
+							log.Printf("Error creating README.txt: %v", err)
+						}
+					}
 				}
-				listing, err := listFiles(baseDir)
-				if err != nil {
-					log.Printf("LIST command from sender %s: error listing files: %v", sender, err)
-					_, _ = sendResponseWithDetails(sender, cmdID, command, 0, "LIST CANNOT READ")
-					continue
-				}
-				_, _ = sendResponseWithDetails(sender, cmdID, command, 1, "LIST OK")
-				go invokeSenderBinary(args, sender, "LIST.txt", listing, cmdID)
-			} else if strings.HasPrefix(upperCmd, "PUT ") {
-  			  if globalArgs.PerCallsignDir == "" && !callsignAllowedForPut(sender) {
-			        log.Printf("PUT command from sender %s not allowed.", sender)
-			        activeTransfersLock.Lock()
-			        delete(activeTransfers, sender)
-			        activeTransfersLock.Unlock()
-			        _, _ = sendResponseWithDetails(sender, cmdID, command, 0, "CALLSIGN NOT ALLOWED")
-			        continue
-			    }
-			    activeTransfersLock.Lock()
-			    if _, exists := activeTransfers[sender]; !exists && len(activeTransfers) >= globalArgs.MaxConcurrency {
-			        activeTransfersLock.Unlock()
-			        sendResponseWithDetails(sender, cmdID, command, 0, "TRANSFER ALREADY IN PROGRESS. PLEASE WAIT.")
-			        continue
-			    }
-			    activeTransfers[sender] = cmdID
-			    activeTransfersLock.Unlock()
-			
-			    fileName := strings.TrimSpace(command[4:])
-			    if len(fileName) > maxFileNameLen {
-			        log.Printf("PUT command from sender %s: file name '%s' too long", sender, fileName)
-			        _, _ = sendResponseWithDetails(sender, cmdID, command, 0, "FILE NAME TOO LONG")
-			        continue
-			    }
-			    if !allowedFileName.MatchString(fileName) {
-				log.Printf("PUT command from sender %s: file name '%s' contains invalid characters", sender, fileName)
-				_, _ = sendResponseWithDetails(sender, cmdID, command, 0, "INVALID FILE NAME CHARACTERS")
-				continue
-			    }
-			    if isFilenameDisallowed(fileName) {
-			        log.Printf("PUT command from sender %s: access to file '%s' is forbidden", sender, fileName)
-			        _, _ = sendResponseWithDetails(sender, cmdID, command, 0, "FILE NAME NOT ALLOWED")
-			        continue
-			    }
-			    var dir string
-			    if globalArgs.PerCallsignDir != "" {
-			        dir = baseDir
-			    } else {
-			        dir = absSaveDir
-			    }
-			    // Check if the base target directory exists.
-			    if _, err := os.Stat(dir); os.IsNotExist(err) {
-			        log.Printf("PUT command from sender %s: target directory '%s' does not exist", sender, dir)
-			        _, _ = sendResponseWithDetails(sender, cmdID, command, 0, "DIRECTORY DOES NOT EXIST")
-			        continue
-			    }
-			    savePath := filepath.Join(dir, fileName)
-			    cleanSavePath := filepath.Clean(savePath)
-			    if !strings.HasPrefix(cleanSavePath, dir) {
-			        log.Printf("PUT command from sender %s: attempted directory traversal in '%s'", sender, fileName)
-			        _, _ = sendResponseWithDetails(sender, cmdID, command, 0, "INVALID FILE PATH")
-			        continue
-			    }
-			    // NEW: If the fileName includes directory components, ensure that the target directory exists.
-			    if strings.Contains(fileName, string(os.PathSeparator)) {
-			        targetDir := filepath.Dir(cleanSavePath)
-			        if _, err := os.Stat(targetDir); os.IsNotExist(err) {
-			            log.Printf("PUT command from sender %s: directory '%s' does not exist", sender, targetDir)
-			            _, _ = sendResponseWithDetails(sender, cmdID, command, 0, "DIRECTORY NOT FOUND. CREATE PATH FIRST.")
-			            continue
-			        }
-			    }
-			    err := invokeReceiverBinary(args, sender, fileName, cmdID, dir)
-			    if err != nil {
-			        log.Printf("PUT command from sender %s: receiver binary error: %v", sender, err)
-			        _, _ = sendResponseWithDetails(sender, cmdID, command, 0, "PUT FAILED: CANNOT START RECEIVER")
-			    } else {
-			        _, _ = sendResponseWithDetails(sender, cmdID, command, 1, "PUT OK - WAITING FOR FILE")
-			    }
-			} else if strings.HasPrefix(upperCmd, "DEL ") {
-				if globalArgs.PerCallsignDir == "" && !callsignAllowedForAdmin(sender) {
-					log.Printf("Admin command DEL from sender %s not allowed.", sender)
-					_, _ = sendResponseWithDetails(sender, cmdID, command, 0, "CALLSIGN NOT ALLOWED")
-					continue
-				}
-				fileName := strings.TrimSpace(command[4:])
-				if len(fileName) > maxFileNameLen {
-					log.Printf("DEL command from sender %s: file name '%s' too long", sender, fileName)
-					_, _ = sendResponseWithDetails(sender, cmdID, command, 0, "FILE NAME TOO LONG")
-					continue
-				}
-				if isFilenameDisallowed(fileName) {
-					log.Printf("DEL command from sender %s: access to file '%s' is forbidden", sender, fileName)
-					_, _ = sendResponseWithDetails(sender, cmdID, command, 0, "FILE NAME NOT ALLOWED")
-					continue
-				}
-				var dir string
-				if globalArgs.PerCallsignDir != "" {
-					dir = baseDir
-				} else {
-					dir = absServeDir
-				}
-				fullPath := filepath.Join(dir, fileName)
-				cleanPath := filepath.Clean(fullPath)
-				if !strings.HasPrefix(cleanPath, dir) {
-					log.Printf("DEL command from sender %s: attempted directory traversal in '%s'", sender, fileName)
-					_, _ = sendResponseWithDetails(sender, cmdID, command, 0, "INVALID FILE PATH")
-					continue
-				}
-				if _, err := os.Stat(cleanPath); os.IsNotExist(err) {
-					log.Printf("DEL command from sender %s: file/directory '%s' does not exist", sender, fileName)
-					_, _ = sendResponseWithDetails(sender, cmdID, command, 0, "FILE DOES NOT EXIST")
-					continue
-				}
-				// If it's a directory, remove it recursively; otherwise, remove the file.
-				info, err := os.Stat(cleanPath)
-				if err != nil {
-					log.Printf("DEL command from sender %s: error stating '%s': %v", sender, fileName, err)
-					_, _ = sendResponseWithDetails(sender, cmdID, command, 0, "DEL FAILED")
-					continue
-				}
-				if info.IsDir() {
-					err = os.RemoveAll(cleanPath)
-				} else {
-					err = os.Remove(cleanPath)
-				}
-				if err != nil {
-					log.Printf("DEL command from sender %s: error deleting '%s': %v", sender, fileName, err)
-					_, _ = sendResponseWithDetails(sender, cmdID, command, 0, "DEL FAILED")
-				} else {
-					log.Printf("DEL command from sender %s: '%s' deleted successfully", sender, fileName)
-					_, _ = sendResponseWithDetails(sender, cmdID, command, 1, "DEL OK")
-				}
-			} else if strings.HasPrefix(upperCmd, "REN ") {
-				if globalArgs.PerCallsignDir == "" && !callsignAllowedForAdmin(sender) {
-					log.Printf("Admin command REN from sender %s not allowed.", sender)
-					_, _ = sendResponseWithDetails(sender, cmdID, command, 0, "CALLSIGN NOT ALLOWED")
-					continue
-				}
-				params := strings.TrimSpace(command[4:])
-				parts := strings.SplitN(params, "|", 2)
-				if len(parts) != 2 || strings.TrimSpace(parts[1]) == "" {
-					log.Printf("REN command from sender %s: new filename not specified in '%s'", sender, params)
-					_, _ = sendResponseWithDetails(sender, cmdID, command, 0, "NEW FILENAME NOT SPECIFIED")
-					continue
-				}
-				currentFile := strings.TrimSpace(parts[0])
-				newFile := strings.TrimSpace(parts[1])
-				if len(currentFile) > maxFileNameLen || len(newFile) > maxFileNameLen {
-					log.Printf("REN command from sender %s: one or both filenames ('%s', '%s') are too long", sender, currentFile, newFile)
-					_, _ = sendResponseWithDetails(sender, cmdID, command, 0, "FILE NAME TOO LONG")
-					continue
-				}
-				if isFilenameDisallowed(currentFile) || isFilenameDisallowed(newFile) {
-					log.Printf("REN command from sender %s: renaming of '%s' or '%s' is forbidden", sender, currentFile, newFile)
-					_, _ = sendResponseWithDetails(sender, cmdID, command, 0, "FILE NAME NOT ALLOWED")
-					continue
-				}
-				var dir string
-				if globalArgs.PerCallsignDir != "" {
-					dir = baseDir
-				} else {
-					dir = absServeDir
-				}
-				currentPath := filepath.Join(dir, currentFile)
-				newPath := filepath.Join(dir, newFile)
-				cleanCurrent := filepath.Clean(currentPath)
-				cleanNew := filepath.Clean(newPath)
-				if !strings.HasPrefix(cleanCurrent, dir) || !strings.HasPrefix(cleanNew, dir) {
-					log.Printf("REN command from sender %s: attempted directory traversal with '%s' or '%s'", sender, currentFile, newFile)
-					_, _ = sendResponseWithDetails(sender, cmdID, command, 0, "INVALID FILE PATH")
-					continue
-				}
-				if _, err := os.Stat(cleanCurrent); os.IsNotExist(err) {
-					log.Printf("REN command from sender %s: '%s' does not exist", sender, currentFile)
-					_, _ = sendResponseWithDetails(sender, cmdID, command, 0, "CURRENT FILE DOES NOT EXIST")
-					continue
-				}
-				if _, err := os.Stat(cleanNew); err == nil {
-					log.Printf("REN command from sender %s: '%s' already exists", sender, newFile)
-					_, _ = sendResponseWithDetails(sender, cmdID, command, 0, "NEW FILE ALREADY EXISTS")
-					continue
-				}
-				err := os.Rename(cleanCurrent, cleanNew)
-				if err != nil {
-					log.Printf("REN command from sender %s: error renaming '%s' to '%s': %v", sender, currentFile, newFile, err)
-					_, _ = sendResponseWithDetails(sender, cmdID, command, 0, "REN FAILED")
-				} else {
-					log.Printf("REN command from sender %s: '%s' renamed to '%s' successfully", sender, currentFile, newFile)
-					_, _ = sendResponseWithDetails(sender, cmdID, command, 1, "REN OK")
-				}
-			} else if strings.HasPrefix(upperCmd, "MKD ") {
-				// New command: Make Directory (MKD)
-				if globalArgs.PerCallsignDir == "" && !callsignAllowedForAdmin(sender) {
-					log.Printf("MKD command from sender %s not allowed.", sender)
-					_, _ = sendResponseWithDetails(sender, cmdID, command, 0, "CALLSIGN NOT ALLOWED")
-					continue
-				}
-				dirName := strings.TrimSpace(command[4:])
-				// Check each component of the directory name (split by "/")
-				parts := strings.Split(dirName, "/")
-				invalid := false
-				for _, part := range parts {
-					if part == "" {
+
+				if strings.HasPrefix(upperCmd, "GET ") {
+					if globalArgs.PerCallsignDir == "" && !callsignAllowedForGet(sender) {
+						log.Printf("Dropping GET command from sender %s: not allowed.", sender)
+						activeTransfersLock.Lock()
+						delete(activeTransfers, sender)
+						activeTransfersLock.Unlock()
+						_, _ = sendResponseWithDetails(sender, cmdID, command, 0, "CALLSIGN NOT ALLOWED")
+						processingCommandsLock.Lock()
+						close(ch)
+						delete(processingCommands, cacheKey)
+						processingCommandsLock.Unlock()
 						continue
 					}
-					if len(part) > 15 {
-						log.Printf("MKD command from sender %s: directory component '%s' exceeds 15 characters", sender, part)
-						_, _ = sendResponseWithDetails(sender, cmdID, command, 0, "DIRECTORY NAME COMPONENT TOO LONG")
-						invalid = true
-						break
-					}
-					if !allowedDirName.MatchString(part) {
-						log.Printf("MKD command from sender %s: directory component '%s' contains invalid characters", sender, part)
-						_, _ = sendResponseWithDetails(sender, cmdID, command, 0, "INVALID DIRECTORY NAME CHARACTERS")
-						invalid = true
-						break
-					}
-				}
-				if invalid {
-					continue
-				}
-				var base string
-				if globalArgs.PerCallsignDir != "" {
-					base = baseDir
-				} else {
-					base = absServeDir
-				}
-				targetPath := filepath.Join(base, dirName)
-				cleanPath := filepath.Clean(targetPath)
-				if !strings.HasPrefix(cleanPath, base) {
-					log.Printf("MKD command from sender %s: attempted directory traversal in '%s'", sender, dirName)
-					_, _ = sendResponseWithDetails(sender, cmdID, command, 0, "INVALID DIRECTORY PATH")
-					continue
-				}
-				// If a file (not directory) exists with the same name, return error.
-				if info, err := os.Stat(cleanPath); err == nil {
-					if !info.IsDir() {
-						log.Printf("MKD command from sender %s: a file named '%s' already exists", sender, dirName)
-						_, _ = sendResponseWithDetails(sender, cmdID, command, 0, "FILE ALREADY EXISTS")
+					activeTransfersLock.Lock()
+					if _, exists := activeTransfers[sender]; !exists && len(activeTransfers) >= globalArgs.MaxConcurrency {
+						activeTransfersLock.Unlock()
+						sendResponseWithDetails(sender, cmdID, command, 0, "TRANSFER ALREADY IN PROGRESS. PLEASE WAIT.")
+						processingCommandsLock.Lock()
+						close(ch)
+						delete(processingCommands, cacheKey)
+						processingCommandsLock.Unlock()
 						continue
+					}
+					activeTransfers[sender] = cmdID
+					activeTransfersLock.Unlock()
+
+					fileName := strings.TrimSpace(command[4:])
+					if len(fileName) > maxFileNameLen {
+						log.Printf("GET command from sender %s: file name '%s' too long", sender, fileName)
+						_, _ = sendResponseWithDetails(sender, cmdID, command, 0, "FILE NAME TOO LONG")
+						processingCommandsLock.Lock()
+						close(ch)
+						delete(processingCommands, cacheKey)
+						processingCommandsLock.Unlock()
+						continue
+					}
+					if isFilenameDisallowed(fileName) {
+						log.Printf("GET command from sender %s: access to file '%s' is forbidden", sender, fileName)
+						_, _ = sendResponseWithDetails(sender, cmdID, command, 0, "FILE NAME NOT ALLOWED")
+						processingCommandsLock.Lock()
+						close(ch)
+						delete(processingCommands, cacheKey)
+						processingCommandsLock.Unlock()
+						continue
+					}
+					var dir string
+					if globalArgs.PerCallsignDir != "" {
+						dir = baseDir
 					} else {
-						log.Printf("MKD command from sender %s: directory '%s' already exists", sender, dirName)
-						_, _ = sendResponseWithDetails(sender, cmdID, command, 1, "DIRECTORY ALREADY EXISTS")
+						dir = absServeDir
+					}
+					requestedPath := filepath.Join(dir, fileName)
+					cleanPath := filepath.Clean(requestedPath)
+					if !strings.HasPrefix(cleanPath, dir) {
+						log.Printf("GET command from sender %s: attempted directory traversal in '%s'", sender, fileName)
+						_, _ = sendResponseWithDetails(sender, cmdID, command, 0, "INVALID FILE PATH")
+						processingCommandsLock.Lock()
+						close(ch)
+						delete(processingCommands, cacheKey)
+						processingCommandsLock.Unlock()
 						continue
 					}
-				}
-				// Create the directory (supporting multiple depths)
-				if err := os.MkdirAll(cleanPath, 0755); err != nil {
-					log.Printf("MKD command from sender %s: error creating directory '%s': %v", sender, dirName, err)
-					_, _ = sendResponseWithDetails(sender, cmdID, command, 0, "MKD FAILED")
+
+					var content []byte
+					if strings.EqualFold(filepath.Base(fileName), "index.html") {
+						content, err = ioutil.ReadFile(cleanPath)
+						if err != nil {
+							content = []byte("<html><body><h3>No site configured here yet. Upload index.html to get started.</h3></body></html>")
+						}
+					} else {
+						info, err := os.Stat(cleanPath)
+						if err != nil {
+							log.Printf("GET command from sender %s: error stating '%s': %v", sender, fileName, err)
+							_, _ = sendResponseWithDetails(sender, cmdID, command, 0, "CANNOT FIND/READ FILE")
+							processingCommandsLock.Lock()
+							close(ch)
+							delete(processingCommands, cacheKey)
+							processingCommandsLock.Unlock()
+							continue
+						}
+						if info.IsDir() {
+							log.Printf("GET command from sender %s: '%s' is a directory", sender, fileName)
+							_, _ = sendResponseWithDetails(sender, cmdID, command, 0, "CANNOT GET DIRECTORY")
+							processingCommandsLock.Lock()
+							close(ch)
+							delete(processingCommands, cacheKey)
+							processingCommandsLock.Unlock()
+							continue
+						}
+						content, err = ioutil.ReadFile(cleanPath)
+						if err != nil {
+							log.Printf("GET command from sender %s: error reading '%s': %v", sender, fileName, err)
+							_, _ = sendResponseWithDetails(sender, cmdID, command, 0, "CANNOT FIND/READ FILE")
+							processingCommandsLock.Lock()
+							close(ch)
+							delete(processingCommands, cacheKey)
+							processingCommandsLock.Unlock()
+							continue
+						}
+					}
+					_, _ = sendResponseWithDetails(sender, cmdID, command, 1, "GET OK")
+					go invokeSenderBinary(globalArgs, sender, fileName, string(content), cmdID)
+				} else if strings.HasPrefix(upperCmd, "LIST") {
+					if globalArgs.PerCallsignDir != "" {
+						baseDir = filepath.Join(absPerCallsignDir, sender)
+					} else {
+						baseDir = absServeDir
+					}
+					listing, err := listFiles(baseDir)
+					if err != nil {
+						log.Printf("LIST command from sender %s: error listing files: %v", sender, err)
+						_, _ = sendResponseWithDetails(sender, cmdID, command, 0, "LIST CANNOT READ")
+						processingCommandsLock.Lock()
+						close(ch)
+						delete(processingCommands, cacheKey)
+						processingCommandsLock.Unlock()
+						continue
+					}
+					_, _ = sendResponseWithDetails(sender, cmdID, command, 1, "LIST OK")
+					go invokeSenderBinary(globalArgs, sender, "LIST.txt", listing, cmdID)
+				} else if strings.HasPrefix(upperCmd, "PUT ") {
+					if globalArgs.PerCallsignDir == "" && !callsignAllowedForPut(sender) {
+						log.Printf("PUT command from sender %s not allowed.", sender)
+						activeTransfersLock.Lock()
+						delete(activeTransfers, sender)
+						activeTransfersLock.Unlock()
+						_, _ = sendResponseWithDetails(sender, cmdID, command, 0, "CALLSIGN NOT ALLOWED")
+						processingCommandsLock.Lock()
+						close(ch)
+						delete(processingCommands, cacheKey)
+						processingCommandsLock.Unlock()
+						continue
+					}
+					activeTransfersLock.Lock()
+					if _, exists := activeTransfers[sender]; !exists && len(activeTransfers) >= globalArgs.MaxConcurrency {
+						activeTransfersLock.Unlock()
+						sendResponseWithDetails(sender, cmdID, command, 0, "TRANSFER ALREADY IN PROGRESS. PLEASE WAIT.")
+						processingCommandsLock.Lock()
+						close(ch)
+						delete(processingCommands, cacheKey)
+						processingCommandsLock.Unlock()
+						continue
+					}
+					activeTransfers[sender] = cmdID
+					activeTransfersLock.Unlock()
+
+					fileName := strings.TrimSpace(command[4:])
+					if len(fileName) > maxFileNameLen {
+						log.Printf("PUT command from sender %s: file name '%s' too long", sender, fileName)
+						_, _ = sendResponseWithDetails(sender, cmdID, command, 0, "FILE NAME TOO LONG")
+						processingCommandsLock.Lock()
+						close(ch)
+						delete(processingCommands, cacheKey)
+						processingCommandsLock.Unlock()
+						continue
+					}
+					if !allowedFileName.MatchString(fileName) {
+						log.Printf("PUT command from sender %s: file name '%s' contains invalid characters", sender, fileName)
+						_, _ = sendResponseWithDetails(sender, cmdID, command, 0, "INVALID FILE NAME CHARACTERS")
+						processingCommandsLock.Lock()
+						close(ch)
+						delete(processingCommands, cacheKey)
+						processingCommandsLock.Unlock()
+						continue
+					}
+					if isFilenameDisallowed(fileName) {
+						log.Printf("PUT command from sender %s: access to file '%s' is forbidden", sender, fileName)
+						_, _ = sendResponseWithDetails(sender, cmdID, command, 0, "FILE NAME NOT ALLOWED")
+						processingCommandsLock.Lock()
+						close(ch)
+						delete(processingCommands, cacheKey)
+						processingCommandsLock.Unlock()
+						continue
+					}
+					var dir string
+					if globalArgs.PerCallsignDir != "" {
+						dir = baseDir
+					} else {
+						dir = absSaveDir
+					}
+					if _, err := os.Stat(dir); os.IsNotExist(err) {
+						log.Printf("PUT command from sender %s: target directory '%s' does not exist", sender, dir)
+						_, _ = sendResponseWithDetails(sender, cmdID, command, 0, "DIRECTORY DOES NOT EXIST")
+						processingCommandsLock.Lock()
+						close(ch)
+						delete(processingCommands, cacheKey)
+						processingCommandsLock.Unlock()
+						continue
+					}
+					savePath := filepath.Join(dir, fileName)
+					cleanSavePath := filepath.Clean(savePath)
+					if !strings.HasPrefix(cleanSavePath, dir) {
+						log.Printf("PUT command from sender %s: attempted directory traversal in '%s'", sender, fileName)
+						_, _ = sendResponseWithDetails(sender, cmdID, command, 0, "INVALID FILE PATH")
+						processingCommandsLock.Lock()
+						close(ch)
+						delete(processingCommands, cacheKey)
+						processingCommandsLock.Unlock()
+						continue
+					}
+					if strings.Contains(fileName, string(os.PathSeparator)) {
+						targetDir := filepath.Dir(cleanSavePath)
+						if _, err := os.Stat(targetDir); os.IsNotExist(err) {
+							log.Printf("PUT command from sender %s: directory '%s' does not exist", sender, targetDir)
+							_, _ = sendResponseWithDetails(sender, cmdID, command, 0, "DIRECTORY NOT FOUND. CREATE PATH FIRST.")
+							processingCommandsLock.Lock()
+							close(ch)
+							delete(processingCommands, cacheKey)
+							processingCommandsLock.Unlock()
+							continue
+						}
+					}
+					err := invokeReceiverBinary(globalArgs, sender, fileName, cmdID, dir)
+					if err != nil {
+						log.Printf("PUT command from sender %s: receiver binary error: %v", sender, err)
+						_, _ = sendResponseWithDetails(sender, cmdID, command, 0, "PUT FAILED: CANNOT START RECEIVER")
+					} else {
+						_, _ = sendResponseWithDetails(sender, cmdID, command, 1, "PUT OK - WAITING FOR FILE")
+					}
+				} else if strings.HasPrefix(upperCmd, "DEL ") {
+					if globalArgs.PerCallsignDir == "" && !callsignAllowedForAdmin(sender) {
+						log.Printf("Admin command DEL from sender %s not allowed.", sender)
+						_, _ = sendResponseWithDetails(sender, cmdID, command, 0, "CALLSIGN NOT ALLOWED")
+						processingCommandsLock.Lock()
+						close(ch)
+						delete(processingCommands, cacheKey)
+						processingCommandsLock.Unlock()
+						continue
+					}
+					fileName := strings.TrimSpace(command[4:])
+					if len(fileName) > maxFileNameLen {
+						log.Printf("DEL command from sender %s: file name '%s' too long", sender, fileName)
+						_, _ = sendResponseWithDetails(sender, cmdID, command, 0, "FILE NAME TOO LONG")
+						processingCommandsLock.Lock()
+						close(ch)
+						delete(processingCommands, cacheKey)
+						processingCommandsLock.Unlock()
+						continue
+					}
+					if isFilenameDisallowed(fileName) {
+						log.Printf("DEL command from sender %s: access to file '%s' is forbidden", sender, fileName)
+						_, _ = sendResponseWithDetails(sender, cmdID, command, 0, "FILE NAME NOT ALLOWED")
+						processingCommandsLock.Lock()
+						close(ch)
+						delete(processingCommands, cacheKey)
+						processingCommandsLock.Unlock()
+						continue
+					}
+					var dir string
+					if globalArgs.PerCallsignDir != "" {
+						dir = baseDir
+					} else {
+						dir = absServeDir
+					}
+					fullPath := filepath.Join(dir, fileName)
+					cleanPath := filepath.Clean(fullPath)
+					if !strings.HasPrefix(cleanPath, dir) {
+						log.Printf("DEL command from sender %s: attempted directory traversal in '%s'", sender, fileName)
+						_, _ = sendResponseWithDetails(sender, cmdID, command, 0, "INVALID FILE PATH")
+						processingCommandsLock.Lock()
+						close(ch)
+						delete(processingCommands, cacheKey)
+						processingCommandsLock.Unlock()
+						continue
+					}
+					if _, err := os.Stat(cleanPath); os.IsNotExist(err) {
+						log.Printf("DEL command from sender %s: file/directory '%s' does not exist", sender, fileName)
+						_, _ = sendResponseWithDetails(sender, cmdID, command, 0, "FILE DOES NOT EXIST")
+						processingCommandsLock.Lock()
+						close(ch)
+						delete(processingCommands, cacheKey)
+						processingCommandsLock.Unlock()
+						continue
+					}
+					info, err := os.Stat(cleanPath)
+					if err != nil {
+						log.Printf("DEL command from sender %s: error stating '%s': %v", sender, fileName, err)
+						_, _ = sendResponseWithDetails(sender, cmdID, command, 0, "DEL FAILED")
+						processingCommandsLock.Lock()
+						close(ch)
+						delete(processingCommands, cacheKey)
+						processingCommandsLock.Unlock()
+						continue
+					}
+					if info.IsDir() {
+						err = os.RemoveAll(cleanPath)
+					} else {
+						err = os.Remove(cleanPath)
+					}
+					if err != nil {
+						log.Printf("DEL command from sender %s: error deleting '%s': %v", sender, fileName, err)
+						_, _ = sendResponseWithDetails(sender, cmdID, command, 0, "DEL FAILED")
+					} else {
+						log.Printf("DEL command from sender %s: '%s' deleted successfully", sender, fileName)
+						_, _ = sendResponseWithDetails(sender, cmdID, command, 1, "DEL OK")
+					}
+				} else if strings.HasPrefix(upperCmd, "REN ") {
+					if globalArgs.PerCallsignDir == "" && !callsignAllowedForAdmin(sender) {
+						log.Printf("Admin command REN from sender %s not allowed.", sender)
+						_, _ = sendResponseWithDetails(sender, cmdID, command, 0, "CALLSIGN NOT ALLOWED")
+						processingCommandsLock.Lock()
+						close(ch)
+						delete(processingCommands, cacheKey)
+						processingCommandsLock.Unlock()
+						continue
+					}
+					params := strings.TrimSpace(command[4:])
+					parts := strings.SplitN(params, "|", 2)
+					if len(parts) != 2 || strings.TrimSpace(parts[1]) == "" {
+						log.Printf("REN command from sender %s: new filename not specified in '%s'", sender, params)
+						_, _ = sendResponseWithDetails(sender, cmdID, command, 0, "NEW FILENAME NOT SPECIFIED")
+						processingCommandsLock.Lock()
+						close(ch)
+						delete(processingCommands, cacheKey)
+						processingCommandsLock.Unlock()
+						continue
+					}
+					currentFile := strings.TrimSpace(parts[0])
+					newFile := strings.TrimSpace(parts[1])
+					if len(currentFile) > maxFileNameLen || len(newFile) > maxFileNameLen {
+						log.Printf("REN command from sender %s: one or both filenames ('%s', '%s') are too long", sender, currentFile, newFile)
+						_, _ = sendResponseWithDetails(sender, cmdID, command, 0, "FILE NAME TOO LONG")
+						processingCommandsLock.Lock()
+						close(ch)
+						delete(processingCommands, cacheKey)
+						processingCommandsLock.Unlock()
+						continue
+					}
+					if isFilenameDisallowed(currentFile) || isFilenameDisallowed(newFile) {
+						log.Printf("REN command from sender %s: renaming of '%s' or '%s' is forbidden", sender, currentFile, newFile)
+						_, _ = sendResponseWithDetails(sender, cmdID, command, 0, "FILE NAME NOT ALLOWED")
+						processingCommandsLock.Lock()
+						close(ch)
+						delete(processingCommands, cacheKey)
+						processingCommandsLock.Unlock()
+						continue
+					}
+					var dir string
+					if globalArgs.PerCallsignDir != "" {
+						dir = baseDir
+					} else {
+						dir = absServeDir
+					}
+					currentPath := filepath.Join(dir, currentFile)
+					newPath := filepath.Join(dir, newFile)
+					cleanCurrent := filepath.Clean(currentPath)
+					cleanNew := filepath.Clean(newPath)
+					if !strings.HasPrefix(cleanCurrent, dir) || !strings.HasPrefix(cleanNew, dir) {
+						log.Printf("REN command from sender %s: attempted directory traversal with '%s' or '%s'", sender, currentFile, newFile)
+						_, _ = sendResponseWithDetails(sender, cmdID, command, 0, "INVALID FILE PATH")
+						processingCommandsLock.Lock()
+						close(ch)
+						delete(processingCommands, cacheKey)
+						processingCommandsLock.Unlock()
+						continue
+					}
+					if _, err := os.Stat(cleanCurrent); os.IsNotExist(err) {
+						log.Printf("REN command from sender %s: '%s' does not exist", sender, currentFile)
+						_, _ = sendResponseWithDetails(sender, cmdID, command, 0, "CURRENT FILE DOES NOT EXIST")
+						processingCommandsLock.Lock()
+						close(ch)
+						delete(processingCommands, cacheKey)
+						processingCommandsLock.Unlock()
+						continue
+					}
+					if _, err := os.Stat(cleanNew); err == nil {
+						log.Printf("REN command from sender %s: '%s' already exists", sender, newFile)
+						_, _ = sendResponseWithDetails(sender, cmdID, command, 0, "NEW FILE ALREADY EXISTS")
+						processingCommandsLock.Lock()
+						close(ch)
+						delete(processingCommands, cacheKey)
+						processingCommandsLock.Unlock()
+						continue
+					}
+					err := os.Rename(cleanCurrent, cleanNew)
+					if err != nil {
+						log.Printf("REN command from sender %s: error renaming '%s' to '%s': %v", sender, currentFile, newFile, err)
+						_, _ = sendResponseWithDetails(sender, cmdID, command, 0, "REN FAILED")
+					} else {
+						log.Printf("REN command from sender %s: '%s' renamed to '%s' successfully", sender, currentFile, newFile)
+						_, _ = sendResponseWithDetails(sender, cmdID, command, 1, "REN OK")
+					}
+				} else if strings.HasPrefix(upperCmd, "MKD ") {
+					if globalArgs.PerCallsignDir == "" && !callsignAllowedForAdmin(sender) {
+						log.Printf("MKD command from sender %s not allowed.", sender)
+						_, _ = sendResponseWithDetails(sender, cmdID, command, 0, "CALLSIGN NOT ALLOWED")
+						processingCommandsLock.Lock()
+						close(ch)
+						delete(processingCommands, cacheKey)
+						processingCommandsLock.Unlock()
+						continue
+					}
+					dirName := strings.TrimSpace(command[4:])
+					parts := strings.Split(dirName, "/")
+					invalid := false
+					for _, part := range parts {
+						if part == "" {
+							continue
+						}
+						if len(part) > 15 {
+							log.Printf("MKD command from sender %s: directory component '%s' exceeds 15 characters", sender, part)
+							_, _ = sendResponseWithDetails(sender, cmdID, command, 0, "DIRECTORY NAME COMPONENT TOO LONG")
+							invalid = true
+							break
+						}
+						if !allowedDirName.MatchString(part) {
+							log.Printf("MKD command from sender %s: directory component '%s' contains invalid characters", sender, part)
+							_, _ = sendResponseWithDetails(sender, cmdID, command, 0, "INVALID DIRECTORY NAME CHARACTERS")
+							invalid = true
+							break
+						}
+					}
+					if invalid {
+						processingCommandsLock.Lock()
+						close(ch)
+						delete(processingCommands, cacheKey)
+						processingCommandsLock.Unlock()
+						continue
+					}
+					var base string
+					if globalArgs.PerCallsignDir != "" {
+						base = baseDir
+					} else {
+						base = absServeDir
+					}
+					targetPath := filepath.Join(base, dirName)
+					cleanPath := filepath.Clean(targetPath)
+					if !strings.HasPrefix(cleanPath, base) {
+						log.Printf("MKD command from sender %s: attempted directory traversal in '%s'", sender, dirName)
+						_, _ = sendResponseWithDetails(sender, cmdID, command, 0, "INVALID DIRECTORY PATH")
+						processingCommandsLock.Lock()
+						close(ch)
+						delete(processingCommands, cacheKey)
+						processingCommandsLock.Unlock()
+						continue
+					}
+					if info, err := os.Stat(cleanPath); err == nil {
+						if !info.IsDir() {
+							log.Printf("MKD command from sender %s: a file named '%s' already exists", sender, dirName)
+							_, _ = sendResponseWithDetails(sender, cmdID, command, 0, "FILE ALREADY EXISTS")
+							processingCommandsLock.Lock()
+							close(ch)
+							delete(processingCommands, cacheKey)
+							processingCommandsLock.Unlock()
+							continue
+						} else {
+							log.Printf("MKD command from sender %s: directory '%s' already exists", sender, dirName)
+							_, _ = sendResponseWithDetails(sender, cmdID, command, 1, "DIRECTORY ALREADY EXISTS")
+							processingCommandsLock.Lock()
+							close(ch)
+							delete(processingCommands, cacheKey)
+							processingCommandsLock.Unlock()
+							continue
+						}
+					}
+					if err := os.MkdirAll(cleanPath, 0755); err != nil {
+						log.Printf("MKD command from sender %s: error creating directory '%s': %v", sender, dirName, err)
+						_, _ = sendResponseWithDetails(sender, cmdID, command, 0, "MKD FAILED")
+					} else {
+						log.Printf("MKD command from sender %s: directory '%s' created successfully", sender, dirName)
+						_, _ = sendResponseWithDetails(sender, cmdID, command, 1, "MKD OK")
+					}
 				} else {
-					log.Printf("MKD command from sender %s: directory '%s' created successfully", sender, dirName)
-					_, _ = sendResponseWithDetails(sender, cmdID, command, 1, "MKD OK")
+					log.Printf("Unrecognized command from sender %s: %s", sender, command)
+					_, _ = sendResponseWithDetails(sender, cmdID, command, 0, "AVAILABLE: LIST, GET [FILE], PUT [FILE], DEL [FILE/DIR], REN [CUR]|[NEW], MKD [DIR]")
 				}
-			} else {
-				log.Printf("Unrecognized command from sender %s: %s", sender, command)
-				_, _ = sendResponseWithDetails(sender, cmdID, command, 0, "AVAILABLE: LIST, GET [FILE], PUT [FILE], DEL [FILE/DIR], REN [CUR]|[NEW], MKD [DIR]")
+
+				// Explicit cleanup of the processing entry.
+				processingCommandsLock.Lock()
+				close(ch)
+				delete(processingCommands, cacheKey)
+				processingCommandsLock.Unlock()
 			}
 		}
 	}
