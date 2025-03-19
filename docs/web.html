@@ -75,16 +75,17 @@
 
   /* Adjust modal dialog so it’s centered vertically and has a margin */
   .modal-dialog {
-    max-width: calc(100% - 40px); /* Horizontal margin: 20px on each side */
-    max-height: calc(100vh - 40px); /* Vertical margin: 20px on top and bottom */
+    width: 100%; /* Horizontal margin: 20px on each side */
+    max-width: 100%; /* Vertical margin: 20px on top and bottom */
     margin: 20px auto;            /* Center the modal vertically and horizontally */
+    height: 100%;
   }
 
   /* Responsive adjustments for small screens */
   @media (max-width: 576px) {
     .modal-dialog {
       margin: 10px auto; /* Ensure left/right margins are auto to center the modal */
-      width: calc(100% - 20px);
+      width: 100%;
     }
   }
 
