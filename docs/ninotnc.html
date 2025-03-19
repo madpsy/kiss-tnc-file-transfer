@@ -1,0 +1,352 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <title>NinoTNC Mode Setter</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <!-- Socket.IO (ensure this is available locally or via CDN) -->
+  <script src="socket.io.min.js"></script>
+  <style>
+    body { font-family: sans-serif; padding: 20px; }
+    .hidden { display: none; }
+    table { border-collapse: collapse; margin-bottom: 1rem; }
+    table, th, td { border: 1px solid #aaa; padding: 5px; text-align: center; }
+    th { background-color: #eee; }
+    label { margin: 0.5rem 0; }
+    .inlineCheckbox { display: inline-flex; align-items: center; }
+    button { margin-top: 10px; }
+    h2 { margin-top: 2rem; }
+    .modeTable { margin-bottom: 1rem; }
+    /* Style for the scrolling log */
+    #status {
+      margin-top: 30px;
+      height: 200px;
+      overflow-y: auto;
+      border: 1px solid #ccc;
+      padding: 5px;
+      background-color: #f7f7f7;
+      font-family: monospace;
+    }
+  </style>
+</head>
+<body>
+  <h1>NinoTNC Mode Setter</h1>
+
+  <!-- Connection Type Options -->
+  <label for="connectionType">Connection Type:</label>
+  <select id="connectionType">
+    <option value="websockets" selected>Websockets</option>
+    <option value="serial">Serial</option>
+  </select>
+
+  <!-- Serial Settings (fixed to 57600 baud) -->
+  <div id="serialSettings" class="hidden">
+    <p><strong>Baud Rate:</strong> 57600</p>
+    <button id="serialConnectBtn">Connect Serial</button>
+    <button id="serialDisconnectBtn" class="hidden">Disconnect Serial</button>
+  </div>
+
+  <!-- TNC Mode Setting Section -->
+  <h2>TNC Mode</h2>
+  <!-- Write to memory checkbox displayed inline -->
+  <label class="inlineCheckbox">
+    <input type="checkbox" id="writeToMemory">
+    <span>Write to memory</span>
+  </label>
+
+  <!-- Modern Modes Table -->
+  <h3>Modern Modes</h3>
+  <table class="modeTable">
+    <tr>
+      <th>Select</th><th>Mode</th><th>DIP</th><th>Baud</th><th>bps</th>
+      <th>Mod</th><th>Proto</th><th>Usage</th><th>BW</th>
+    </tr>
+    <tr>
+      <td><input type="radio" name="modeRadio" value="1"></td>
+      <td>1</td><td>0001</td><td>19200</td><td>19200</td>
+      <td>4FSK</td><td>IL2Pc</td><td>FM</td><td>25k</td>
+    </tr>
+    <tr>
+      <td><input type="radio" name="modeRadio" value="3"></td>
+      <td>3</td><td>0011</td><td>9600</td><td>9600</td>
+      <td>4FSK</td><td>IL2Pc</td><td>FM</td><td>12.5k</td>
+    </tr>
+    <tr>
+      <td><input type="radio" name="modeRadio" value="2"></td>
+      <td>2</td><td>0010</td><td>9600</td><td>9600</td>
+      <td>GFSK</td><td>IL2Pc</td><td>FM</td><td>25k</td>
+    </tr>
+    <tr>
+      <td><input type="radio" name="modeRadio" value="5"></td>
+      <td>5</td><td>0101</td><td>3600</td><td>3600</td>
+      <td>QPSK</td><td>IL2Pc</td><td>FM</td><td>12.5k</td>
+    </tr>
+    <tr>
+      <td><input type="radio" name="modeRadio" value="11"></td>
+      <td>11</td><td>1011</td><td>1200</td><td>2400</td>
+      <td>QPSK</td><td>IL2Pc</td><td>SSB/FM</td><td>2.4kHz</td>
+    </tr>
+    <tr>
+      <td><input type="radio" name="modeRadio" value="10"></td>
+      <td>10</td><td>1010</td><td>1200</td><td>1200</td>
+      <td>BPSK</td><td>IL2Pc</td><td>SSB/FM</td><td>2.4kHz</td>
+    </tr>
+    <tr>
+      <td><input type="radio" name="modeRadio" value="9"></td>
+      <td>9</td><td>1001</td><td>300</td><td>600</td>
+      <td>QPSK</td><td>IL2Pc</td><td>SSB</td><td>500Hz</td>
+    </tr>
+    <tr>
+      <td><input type="radio" name="modeRadio" value="8"></td>
+      <td>8</td><td>1000</td><td>300</td><td>300</td>
+      <td>BPSK</td><td>IL2Pc</td><td>SSB</td><td>500Hz</td>
+    </tr>
+    <tr>
+      <td><input type="radio" name="modeRadio" value="14"></td>
+      <td>14</td><td>1110</td><td>300</td><td>300</td>
+      <td>AFSK</td><td>IL2Pc</td><td>SSB</td><td>500Hz</td>
+    </tr>
+  </table>
+
+  <!-- Legacy Modes Table -->
+  <h3>Legacy Modes</h3>
+  <table class="modeTable">
+    <tr>
+      <th>Select</th><th>Mode</th><th>DIP</th><th>Baud</th><th>bps</th>
+      <th>Mod</th><th>Proto</th><th>Superseded by</th><th>Usage</th><th>BW</th>
+    </tr>
+    <tr>
+      <td><input type="radio" name="modeRadio" value="0"></td>
+      <td>0</td><td>0000</td><td>9600</td><td>9600</td>
+      <td>GFSK</td><td>AX.25</td><td>9600 GFSK IL2P</td><td>FM</td><td>25k</td>
+    </tr>
+    <tr>
+      <td><input type="radio" name="modeRadio" value="4"></td>
+      <td>4</td><td>0100</td><td>4800</td><td>4800</td>
+      <td>GFSK</td><td>IL2Pc</td><td>9600 4FSK IL2Pc</td><td>FM</td><td>12.5k</td>
+    </tr>
+    <tr>
+      <td><input type="radio" name="modeRadio" value="7"></td>
+      <td>7</td><td>0111</td><td>1200</td><td>1200</td>
+      <td>AFSK</td><td>IL2P</td><td>4800 GFSK IL2Pc</td><td>FM</td><td>12.5k</td>
+    </tr>
+    <tr>
+      <td><input type="radio" name="modeRadio" value="6"></td>
+      <td>6</td><td>0110</td><td>1200</td><td>1200</td>
+      <td>AFSK</td><td>AX.25</td><td>1200 AFSK IL2P</td><td>FM</td><td>12.5k</td>
+    </tr>
+    <tr>
+      <td><input type="radio" name="modeRadio" value="12"></td>
+      <td>12</td><td>1100</td><td>300</td><td>300</td>
+      <td>AFSK</td><td>AX.25</td><td>300 AFSK IL2P</td><td>SSB</td><td>500Hz</td>
+    </tr>
+    <tr>
+      <td><input type="radio" name="modeRadio" value="13"></td>
+      <td>13</td><td>1101</td><td>300</td><td>300</td>
+      <td>AFSK</td><td>IL2P</td><td>300 AFSK IL2Pc</td><td>SSB</td><td>500Hz</td>
+    </tr>
+  </table>
+
+  <button id="setModeBtn">Set Mode</button>
+
+  <!-- Scrolling log display -->
+  <div id="status"></div>
+
+  <script>
+    /***********************
+     * Global Variables & Connection Handling (Serial Only)
+     ***********************/
+    let serialPort = null, serialWriter = null;
+    let serialConnected = false;
+
+    document.getElementById('connectionType').addEventListener('change', function() {
+      const type = this.value;
+      if (type === 'serial') {
+        document.getElementById('serialSettings').classList.remove('hidden');
+      } else {
+        document.getElementById('serialSettings').classList.add('hidden');
+      }
+    });
+
+    // Serial connect (fixed to 57600 baud)
+    document.getElementById('serialConnectBtn').addEventListener('click', async () => {
+      if ("serial" in navigator) {
+        try {
+          serialPort = await navigator.serial.requestPort();
+          await serialPort.open({ baudRate: 57600 });
+          serialConnected = true;
+          serialWriter = serialPort.writable.getWriter();
+          addLogEntry("Serial port connected at 57600 baud.", "info");
+          document.getElementById('serialConnectBtn').classList.add('hidden');
+          document.getElementById('serialDisconnectBtn').classList.remove('hidden');
+        } catch (error) {
+          console.error("Error opening serial port:", error);
+          addErrorLogEntry("Failed to open serial port: " + error);
+        }
+      } else {
+        alert("Web Serial API not supported. Use a compatible browser (e.g., Chrome).");
+      }
+    });
+
+    // Serial disconnect
+    document.getElementById('serialDisconnectBtn').addEventListener('click', async () => {
+      if (serialPort) {
+        try {
+          await serialPort.close();
+          serialPort = null;
+          serialConnected = false;
+          addLogEntry("Serial port disconnected.", "info");
+          document.getElementById('serialConnectBtn').classList.remove('hidden');
+          document.getElementById('serialDisconnectBtn').classList.add('hidden');
+        } catch (err) {
+          console.error("Error closing serial port:", err);
+          addErrorLogEntry("Error closing serial port: " + err);
+        }
+      }
+    });
+
+    /***********************
+     * KISS Framing Functions
+     ***********************/
+    function escapeKissData(data) {
+      let output = [];
+      for (let i = 0; i < data.length; i++) {
+        let byte = data[i];
+        if (byte === 0xC0) output.push(0xDB, 0xDC);
+        else if (byte === 0xDB) output.push(0xDB, 0xDD);
+        else output.push(byte);
+      }
+      return new Uint8Array(output);
+    }
+
+    // Build a KISS frame using a specified command (for mode setting, use 0x06)
+    function buildKissFrameCmd(cmd, payload) {
+      const escaped = escapeKissData(payload);
+      const KISS_FLAG = 0xC0;
+      let frame = new Uint8Array(1 + 1 + escaped.length + 1);
+      frame[0] = KISS_FLAG;
+      frame[1] = cmd;
+      frame.set(escaped, 2);
+      frame[frame.length - 1] = KISS_FLAG;
+      return frame;
+    }
+
+    /***********************
+     * Utility: Hex Conversion & Log Management
+     ***********************/
+    // Convert Uint8Array to hex string
+    function toHexString(byteArray) {
+      return Array.from(byteArray, byte => {
+        return ('0' + (byte & 0xFF).toString(16)).slice(-2);
+      }).join(' ');
+    }
+
+    // Append a log entry with timestamp and message.
+    // type can be "info" (default) or "error"
+    function addLogEntry(message, type = "info") {
+      const statusDiv = document.getElementById('status');
+      const timestamp = new Date().toLocaleTimeString();
+      const logEntry = document.createElement('div');
+      if(type === "error") {
+        logEntry.style.color = 'red';
+        logEntry.innerText = `[${timestamp}] Error: ${message}`;
+      } else {
+        logEntry.innerText = `[${timestamp}] ${message}`;
+      }
+      statusDiv.appendChild(logEntry);
+
+      // Limit log to 10 lines
+      while (statusDiv.childNodes.length > 10) {
+        statusDiv.removeChild(statusDiv.firstChild);
+      }
+      // Scroll to the bottom
+      statusDiv.scrollTop = statusDiv.scrollHeight;
+    }
+
+    // Helper to log packet transmissions
+    function addPacketLogEntry(packet, method) {
+      const hexStr = toHexString(packet);
+      addLogEntry(`Packet: ${hexStr} sent via ${method}`);
+    }
+
+    // Helper to log errors (wrapper for addLogEntry with error type)
+    function addErrorLogEntry(msg) {
+      addLogEntry(msg, "error");
+    }
+
+    /***********************
+     * Packet Sending Function
+     ***********************/
+    async function sendPacket(packet) {
+      const connType = document.getElementById('connectionType').value;
+      if (connType === 'serial') {
+        if (serialConnected && serialWriter) {
+          try {
+            await serialWriter.write(packet);
+            addPacketLogEntry(packet, "serial");
+          } catch (err) {
+            console.error("Error writing to serial port:", err);
+            addErrorLogEntry("Error sending packet over serial: " + err);
+          }
+        } else {
+          addErrorLogEntry("Serial port not connected.");
+        }
+      } else { // websockets ephemeral connection
+        const tempSocket = io({ forceNew: true });
+        tempSocket.on('connect', () => {
+          tempSocket.emit('raw_kiss_frame', packet);
+          addPacketLogEntry(packet, "websockets");
+          // Wait 500ms before disconnecting
+          setTimeout(() => {
+            tempSocket.disconnect();
+          }, 500);
+        });
+        tempSocket.on('connect_error', (err) => {
+          addErrorLogEntry("Websocket connection error: " + err);
+          console.error("Websocket connection error:", err);
+          tempSocket.disconnect();
+        });
+      }
+    }
+
+    /***********************
+     * Mode Setting Logic
+     ***********************/
+    document.getElementById('setModeBtn').addEventListener('click', () => {
+      const selectedRadio = document.querySelector('input[name="modeRadio"]:checked');
+      if (!selectedRadio) {
+        addErrorLogEntry("Please select a mode first.");
+        return;
+      }
+      let modeVal = parseInt(selectedRadio.value, 10);
+      const writeMem = document.getElementById('writeToMemory').checked;
+      if (!writeMem) {
+        modeVal = modeVal + 16;
+      }
+      const packet = buildKissFrameCmd(0x06, new Uint8Array([modeVal]));
+      sendPacket(packet);
+      localStorage.setItem("selectedMode", selectedRadio.value);
+    });
+
+    /***********************
+     * Mode Selection Persistence
+     ***********************/
+    window.addEventListener('load', () => {
+      const storedMode = localStorage.getItem("selectedMode");
+      if (storedMode) {
+        const radio = document.querySelector('input[name="modeRadio"][value="' + storedMode + '"]');
+        if (radio) {
+          radio.checked = true;
+        }
+      } else {
+        const defaultRadio = document.querySelector('input[name="modeRadio"]');
+        if (defaultRadio) {
+          defaultRadio.checked = true;
+          localStorage.setItem("selectedMode", defaultRadio.value);
+        }
+      }
+      addLogEntry("Ready");
+    });
+  </script>
+</body>
+</html>
