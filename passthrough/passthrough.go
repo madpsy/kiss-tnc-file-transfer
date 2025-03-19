@@ -8,10 +8,13 @@ import (
 	"io"
 	"log"
 	"net"
+	"net/http"
 	"sync"
 	"time"
 
 	"go.bug.st/serial"
+	"github.com/zishang520/engine.io/v2/types"
+	"github.com/zishang520/socket.io/v2/socket"
 )
 
 // -----------------------------------------------------------------------------
@@ -82,6 +85,7 @@ func (t *TCPTNCConnection) Send(data []byte) error {
 	}
 	// Broadcast the frame that was sent to the TNC.
 	broadcastToBroadcastClients(data)
+	broadcastToWSClients(data)
 	return nil
 }
 
@@ -128,6 +132,7 @@ func (s *SerialTNCConnection) Send(data []byte) error {
 	}
 	// Broadcast the frame that was sent to the TNC.
 	broadcastToBroadcastClients(data)
+	broadcastToWSClients(data)
 	return nil
 }
 
@@ -162,9 +167,13 @@ var (
 	clients     []net.Conn
 	clientsLock sync.Mutex
 
-	// Global list of connected broadcast clients (if --tcp-broadcast-port is set)
+	// Global list of connected broadcast clients.
 	broadcastClients     []net.Conn
 	broadcastClientsLock sync.Mutex
+
+	// Global list of connected websocket clients.
+	wsClients     []*socket.Socket
+	wsClientsLock sync.Mutex
 
 	// Global variable to track the last time a complete frame was received from the TNC.
 	lastTNCRecv      time.Time
@@ -176,7 +185,7 @@ var (
 	// Application-level timeout for inactivity (applies only for TCP TNC connections).
 	tcpReadDeadline time.Duration
 
-	// Optional TCP broadcast port (if non‑zero, we also send all frames to clients connected here)
+	// Optional TCP broadcast port (if --tcp-broadcast-port is set)
 	tcpBroadcastPort int
 )
 
@@ -192,7 +201,7 @@ func getTNCConnection() TNCConnection {
 	return tncConn
 }
 
-// broadcastToClients sends data to every connected client. If a client errors out,
+// broadcastToClients sends data to every connected TCP client. If a client errors out,
 // it is removed from the list.
 func broadcastToClients(data []byte) {
 	clientsLock.Lock()
@@ -221,6 +230,21 @@ func broadcastToBroadcastClients(data []byte) {
 			bc.Close()
 			broadcastClients = append(broadcastClients[:i], broadcastClients[i+1:]...)
 		}
+	}
+}
+
+// broadcastToWSClients sends data to every connected websocket client.
+// If writing fails, that client is removed.
+func broadcastToWSClients(data []byte) {
+	wsClientsLock.Lock()
+	defer wsClientsLock.Unlock()
+	for i := len(wsClients) - 1; i >= 0; i-- {
+		client := wsClients[i]
+		go func(c *socket.Socket, d []byte) {
+			if err := c.Emit("raw_kiss_frame", d); err != nil {
+				log.Printf("Error broadcasting to websocket client %s: %v", c.Id(), err)
+			}
+		}(client, data)
 	}
 }
 
@@ -261,8 +285,8 @@ func startTCPBroadcastListener(port int) {
 // -----------------------------------------------------------------------------
 
 // handleTNCRead continuously reads from the TNC and broadcasts any received
-// complete KISS frames to all connected clients and broadcast clients. It also updates the lastTNCRecv timestamp.
-// (The inactivity timeout is now handled by a separate goroutine.)
+// complete KISS frames to all connected clients, broadcast clients, and websocket clients.
+// It also updates the lastTNCRecv timestamp.
 func handleTNCRead(conn TNCConnection) {
 	var buffer []byte
 
@@ -270,7 +294,6 @@ func handleTNCRead(conn TNCConnection) {
 		// Attempt to read data with a short timeout.
 		data, err := conn.Recv(1 * time.Second)
 		if err != nil {
-			// If the error is not a timeout, log it and exit.
 			log.Printf("Error reading from TNC: %v", err)
 			return
 		}
@@ -281,14 +304,16 @@ func handleTNCRead(conn TNCConnection) {
 			frames, remaining := extractKISSFrames(buffer)
 			buffer = remaining
 			for _, frame := range frames {
-				// Update the timestamp regardless of connection type.
+				// Update the timestamp.
 				lastTNCRecvMutex.Lock()
 				lastTNCRecv = time.Now()
 				lastTNCRecvMutex.Unlock()
-				// Send the frame to normal clients.
+				// Send the frame to TCP clients.
 				broadcastToClients(frame)
-				// Broadcast the frame to broadcast clients (monitoring the TNC).
+				// Send the frame to broadcast clients.
 				broadcastToBroadcastClients(frame)
+				// Send the frame to websocket clients.
+				broadcastToWSClients(frame)
 			}
 		}
 	}
@@ -348,8 +373,6 @@ func waitForTurnaroundDelay() {
 
 // handleClientConnection reads from a TCP client and sends any complete KISS frame
 // it receives to the TNC (if connected), applying the turnaround delay if needed.
-// Note: We no longer broadcast here because the broadcast monitor should only reflect
-// the actual TNC traffic.
 func handleClientConnection(client net.Conn) {
 	defer client.Close()
 	var clientBuffer []byte
@@ -379,7 +402,6 @@ func handleClientConnection(client net.Conn) {
 				} else {
 					log.Printf("No TNC connection available. Dropping data from client %s", client.RemoteAddr())
 				}
-				// Note: We do not broadcast here.
 			}
 		}
 	}
@@ -422,29 +444,30 @@ func startClientListener(listenPort int) {
 }
 
 // -----------------------------------------------------------------------------
-// Main: Command‑Line Parsing and Auto‑Reconnection Loop
+// Main: Command‑Line Parsing, Websocket/Static File Server, and Auto‑Reconnection Loop
 // -----------------------------------------------------------------------------
 
 func main() {
-	// Command‑line arguments
+	// Command‑line arguments.
 	tncConnType := flag.String("tnc-connection-type", "tcp", "TNC connection type: tcp or serial")
 	tncHost := flag.String("tnc-host", "127.0.0.1", "TNC TCP host (if tcp connection)")
 	tncPort := flag.Int("tnc-port", 9001, "TNC TCP port (if tcp connection)")
 	tncSerialPort := flag.String("tnc-serial-port", "", "TNC serial port (if serial connection)")
 	tncBaud := flag.Int("tnc-baud", 115200, "TNC serial baud rate (if serial connection)")
 	clientListenPort := flag.Int("client-listen-port", 5010, "TCP port to listen for client connections")
-	sendDelayFlag := flag.Int("send-delay", 0, "Delay in milliseconds before sending frames to the TNC if we have just received a frame from it (a.k.a. turnaround). It specifies the minimum time which must have passed before we start sending frames.")
+	sendDelayFlag := flag.Int("send-delay", 0, "Delay in milliseconds before sending frames to the TNC after receiving a frame (turnaround delay)")
 	tcpReadDeadlineFlag := flag.Int("tcp-read-deadline", 600, "TCP read deadline in seconds for the TNC connection (applies only if tnc-connection-type is tcp)")
-	// New flag for TCP broadcast port. No default value is provided.
-	tcpBroadcastPortFlag := flag.Int("tcp-broadcast-port", 0, "TCP port to broadcast all TNC frames (one-way; clients connecting here will only receive data)")
+	tcpBroadcastPortFlag := flag.Int("tcp-broadcast-port", 0, "TCP port to broadcast all TNC frames (one‑way; clients connecting here only receive data)")
+	// New flag for websocket listener port.
+	wsListenPort := flag.Int("ws-listen-port", 5000, "TCP port to listen for websocket clients (endpoint /socket.io/)")
+	// New flag for the web root directory.
+	webRoot := flag.String("web-root", ".", "Root directory for web files (default: current directory)")
 	flag.Parse()
 
 	// Convert the send delay from milliseconds to a time.Duration.
 	sendDelay = time.Duration(*sendDelayFlag) * time.Millisecond
-
-	// Set the TCP read deadline from the flag.
+	// Set the TCP read deadline.
 	tcpReadDeadline = time.Duration(*tcpReadDeadlineFlag) * time.Second
-
 	// Set the global tcpBroadcastPort variable.
 	tcpBroadcastPort = *tcpBroadcastPortFlag
 
@@ -453,10 +476,88 @@ func main() {
 		go startTCPBroadcastListener(tcpBroadcastPort)
 	}
 
-	// Start the client listener (this runs independently)
+	// Start the TCP client listener.
 	go startClientListener(*clientListenPort)
 
-	// Main loop: (re)connect to the TNC and run the bridge
+	// ----------------------------
+	// Websocket and Static File Server Setup
+	// ----------------------------
+	// Create an Engine.IO server and a Socket.IO server on top of it.
+	engineServer := types.CreateServer(nil)
+	ioServer := socket.NewServer(engineServer, nil)
+	// Handle Socket.IO client connections.
+	ioServer.On("connection", func(args ...any) {
+		client := args[0].(*socket.Socket)
+		log.Printf("New websocket client connected: %s", client.Id())
+		wsClientsLock.Lock()
+		wsClients = append(wsClients, client)
+		wsClientsLock.Unlock()
+
+		// Listen for KISS frames from the websocket client.
+		client.On("raw_kiss_frame", func(datas ...any) {
+			if len(datas) == 0 {
+				return
+			}
+			var msg []byte
+			switch v := datas[0].(type) {
+			case []byte:
+			    msg = v
+			case string:
+			    msg = []byte(v)
+			case interface{ Bytes() []byte }:
+			    msg = v.Bytes()
+			default:
+			    log.Printf("Unexpected data type from websocket client: %T", v)
+			    return
+			}
+			waitForTurnaroundDelay()
+			conn := getTNCConnection()
+			if conn != nil {
+				if err := conn.Send(msg); err != nil {
+					log.Printf("Error sending data to TNC from websocket client: %v", err)
+				} else {
+					log.Printf("Queued %d bytes from websocket client for TNC", len(msg))
+				}
+			} else {
+				log.Printf("No TNC connection available. Dropping data from websocket client")
+			}
+		})
+
+		client.On("disconnect", func(datas ...any) {
+			log.Printf("Websocket client disconnected: %s", client.Id())
+			wsClientsLock.Lock()
+			for i, c := range wsClients {
+				if c == client {
+					wsClients = append(wsClients[:i], wsClients[i+1:]...)
+					break
+				}
+			}
+			wsClientsLock.Unlock()
+		})
+	})
+
+	// Create an HTTP mux that serves both websockets and static files.
+	mux := http.NewServeMux()
+	mux.Handle("/socket.io/", engineServer)
+	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
+		// Redirect to include a connection parameter if none is provided.
+		if r.URL.Path == "/" && r.URL.Query().Get("connection") == "" {
+			http.Redirect(w, r, "/?connection=websockets", http.StatusFound)
+			return
+		}
+		// Serve static files from the specified web root.
+		http.FileServer(http.Dir(*webRoot)).ServeHTTP(w, r)
+	})
+	wsAddr := fmt.Sprintf("0.0.0.0:%d", *wsListenPort)
+	go func() {
+		log.Printf("Websocket and static file server started on %s", wsAddr)
+		if err := http.ListenAndServe(wsAddr, mux); err != nil {
+			log.Fatalf("Web server error: %v", err)
+		}
+	}()
+	// ----------------------------
+
+	// Main loop: (re)connect to the TNC and run the bridge.
 	for {
 		var conn TNCConnection
 		var err error
@@ -481,7 +582,7 @@ func main() {
 		setTNCConnection(conn)
 		log.Printf("TNC connection established.")
 
-		// Initialize the last received timestamp for both connection types.
+		// Initialize the last received timestamp.
 		lastTNCRecvMutex.Lock()
 		lastTNCRecv = time.Now()
 		lastTNCRecvMutex.Unlock()

@@ -11,6 +11,7 @@ import (
 	"io"
 	"log"
 	"net"
+	"net/http"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -30,6 +31,8 @@ const (
 
 // Global debug flag.
 var debugEnabled bool
+
+var getQueueMutex sync.Mutex
 
 // Global command counter for generating 2-character command IDs.
 var cmdCounter int
@@ -176,6 +179,7 @@ type Arguments struct {
 	SaveDirectory      string // directory to save files (formerly -directory)
 	ServeDirectory     string // directory to send files from for sender logic
 	RunCommand         string // Optional: run a single command non-interactively and exit.
+	HTTPServerPort     int    // Optional: if non-zero, run an HTTP server for GET requests.
 }
 
 func parseArguments() *Arguments {
@@ -195,6 +199,8 @@ func parseArguments() *Arguments {
 	flag.StringVar(&args.ServeDirectory, "serve-directory", ".", "Directory to send files from for sender logic")
 	// New optional flag to run a single command and exit.
 	flag.StringVar(&args.RunCommand, "run-command", "", "Run a single command non-interactively (e.g., \"PUT my-file.txt\") and exit")
+	// New flag: HTTP server port.
+	flag.IntVar(&args.HTTPServerPort, "http-server-port", 0, "If set, start an HTTP server on the specified port for GET requests")
 	flag.Parse()
 
 	if args.MyCallsign == "" {
@@ -391,33 +397,33 @@ func buildAX25Header(source, destination string) []byte {
 }
 
 func buildCommandPacket(myCallsign, fileServerCallsign, commandText string) ([]byte, string) {
-    header := buildAX25Header(myCallsign, fileServerCallsign)
-    cmdID := generateCmdID() // Randomized CMD ID.
-    // New format: "cmdID:CMD:<cmd text>"
-    info := fmt.Sprintf("%s:CMD:%s", cmdID, commandText)
-    packet := append(header, []byte(info)...)
-    return packet, cmdID
+	header := buildAX25Header(myCallsign, fileServerCallsign)
+	cmdID := generateCmdID() // Randomized CMD ID.
+	// New format: "cmdID:CMD:<cmd text>"
+	info := fmt.Sprintf("%s:CMD:%s", cmdID, commandText)
+	packet := append(header, []byte(info)...)
+	return packet, cmdID
 }
 
 
 func parseResponsePacket(payload []byte) (cmdID string, status int, msg string, ok bool) {
-    str := strings.TrimSpace(string(payload))
-    // Expected format: "cmdID:RSP:<status>:<msg>"
-    parts := strings.SplitN(str, ":", 4)
-    if len(parts) != 4 {
-        return "", 0, "", false
-    }
-    cmdID = parts[0]
-    if strings.ToUpper(parts[1]) != "RSP" {
-        return "", 0, "", false
-    }
-    st, err := strconv.Atoi(parts[2])
-    if err != nil {
-        return "", 0, "", false
-    }
-    status = st
-    msg = parts[3]
-    return cmdID, status, msg, true
+	str := strings.TrimSpace(string(payload))
+	// Expected format: "cmdID:RSP:<status>:<msg>"
+	parts := strings.SplitN(str, ":", 4)
+	if len(parts) != 4 {
+		return "", 0, "", false
+	}
+	cmdID = parts[0]
+	if strings.ToUpper(parts[1]) != "RSP" {
+		return "", 0, "", false
+	}
+	st, err := strconv.Atoi(parts[2])
+	if err != nil {
+		return "", 0, "", false
+	}
+	status = st
+	msg = parts[3]
+	return cmdID, status, msg, true
 }
 
 
@@ -546,46 +552,46 @@ func startUnderlyingReader(underlying io.Reader, b *Broadcaster) {
 
 // waitForResponse waits for a complete KISS frame from the broadcaster that contains a response.
 func waitForResponse(b *Broadcaster, timeout time.Duration, expectedCmdID string) ([]byte, error) {
-    sub := b.Subscribe()
-    defer b.Unsubscribe(sub)
-    timeoutTimer := time.NewTimer(timeout)
-    defer timeoutTimer.Stop()
-    var buffer []byte
-    for {
-        select {
-        case data := <-sub:
-            buffer = append(buffer, data...)
-            frames, remaining := extractKISSFrames(buffer)
-            buffer = remaining
-            for _, frame := range frames {
-                if len(frame) < 2 || frame[0] != KISS_FLAG || frame[len(frame)-1] != KISS_FLAG {
-                    continue
-                }
-                inner := frame[2 : len(frame)-1]
-                payload := unescapeData(inner)
-                if len(payload) <= 16 {
-                    continue
-                }
-                info := payload[16:] // Extract info field after the 16-byte header.
-                respCmdID, _, _, ok := parseResponsePacket(info)
-                if !ok {
-                    if debugEnabled {
-                        log.Printf("Malformed RSP info field")
-                    }
-                    continue
-                }
-                if respCmdID != expectedCmdID {
-                    if debugEnabled {
-                        log.Printf("Ignoring response with mismatched CMD ID: got %s, expected %s", respCmdID, expectedCmdID)
-                    }
-                    continue
-                }
-                return info, nil
-            }
-        case <-timeoutTimer.C:
-            return nil, fmt.Errorf("timeout waiting for response with CMD ID %s", expectedCmdID)
-        }
-    }
+	sub := b.Subscribe()
+	defer b.Unsubscribe(sub)
+	timeoutTimer := time.NewTimer(timeout)
+	defer timeoutTimer.Stop()
+	var buffer []byte
+	for {
+		select {
+		case data := <-sub:
+			buffer = append(buffer, data...)
+			frames, remaining := extractKISSFrames(buffer)
+			buffer = remaining
+			for _, frame := range frames {
+				if len(frame) < 2 || frame[0] != KISS_FLAG || frame[len(frame)-1] != KISS_FLAG {
+					continue
+				}
+				inner := frame[2 : len(frame)-1]
+				payload := unescapeData(inner)
+				if len(payload) <= 16 {
+					continue
+				}
+				info := payload[16:] // Extract info field after the 16-byte header.
+				respCmdID, _, _, ok := parseResponsePacket(info)
+				if !ok {
+					if debugEnabled {
+						log.Printf("Malformed RSP info field")
+					}
+					continue
+				}
+				if respCmdID != expectedCmdID {
+					if debugEnabled {
+						log.Printf("Ignoring response with mismatched CMD ID: got %s, expected %s", respCmdID, expectedCmdID)
+					}
+					continue
+				}
+				return info, nil
+			}
+		case <-timeoutTimer.C:
+			return nil, fmt.Errorf("timeout waiting for response with CMD ID %s", expectedCmdID)
+		}
+	}
 }
 
 // extractKISSFrames extracts complete KISS frames from a buffer.
@@ -937,6 +943,136 @@ func handleCommand(commandLine string, args *Arguments, conn KISSConnection, b *
 	}
 }
 
+
+// startHTTPServer launches an HTTP server on the specified port to handle GET requests.
+func startHTTPServer(args *Arguments, conn KISSConnection, b *Broadcaster) {
+	// Define MIME types mapping.
+	mimeTypes := map[string]string{
+		"svg":  "image/svg+xml",
+		"css":  "text/css",
+		"js":   "application/javascript",
+		"html": "text/html",
+		"json": "application/json",
+		"png":  "image/png",
+		"jpg":  "image/jpeg",
+		"jpeg": "image/jpeg",
+		"gif":  "image/gif",
+		"ico":  "image/x-icon",
+		"mp3":  "audio/mpeg",
+		"wav":  "audio/wav",
+		"mp4":  "video/mp4",
+		"webm": "video/webm",
+	}
+
+	http.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodGet {
+			http.Error(w, "Only GET allowed", http.StatusMethodNotAllowed)
+			return
+		}
+
+		// Serialize GET requests.
+		getQueueMutex.Lock()
+		defer getQueueMutex.Unlock()
+
+		requestedPath := r.URL.Path
+		// Remove leading '/' if present.
+		if strings.HasPrefix(requestedPath, "/") {
+			requestedPath = requestedPath[1:]
+		}
+		// Default to index.html if root or directory.
+		if requestedPath == "" || strings.HasSuffix(requestedPath, "/") {
+			requestedPath = requestedPath + "index.html"
+		}
+		if requestedPath == "" {
+			http.Error(w, "No file specified", http.StatusBadRequest)
+			return
+		}
+
+		// Attempt to send GET command and wait for response (with retries).
+		const maxRetries = 3
+		var respPayload []byte
+		var err error
+		var cmdID string
+		for attempt := 1; attempt <= maxRetries; attempt++ {
+			commandLine := "GET " + requestedPath
+			var packet []byte
+			packet, cmdID = buildCommandPacket(args.MyCallsign, args.FileServerCallsign, commandLine)
+			frame := buildKISSFrame(packet)
+			err = conn.SendFrame(frame)
+			if err != nil {
+				http.Error(w, "Error sending GET command: "+err.Error(), http.StatusInternalServerError)
+				return
+			}
+			log.Printf("HTTP GET: sent command for file '%s' with CMD ID %s (attempt %d)", requestedPath, cmdID, attempt)
+			// Wait for the direct response with a 10-second timeout.
+			respPayload, err = waitForResponse(b, 10*time.Second, cmdID)
+			if err == nil {
+				break
+			}
+			log.Printf("Attempt %d: Error waiting for GET response: %v", attempt, err)
+		}
+		if err != nil {
+			http.Error(w, "Error waiting for GET response after retries: "+err.Error(), http.StatusGatewayTimeout)
+			return
+		}
+		_, status, msg, ok := parseResponsePacket(respPayload)
+		// If the command response indicates failure, return 404.
+		if !ok || status != 1 {
+			http.Error(w, "GET command failed: "+msg, http.StatusNotFound)
+			return
+		}
+
+		// Wrap spawnReceiverProcess in a goroutine so we can apply an overall timeout.
+		type receiverResult struct {
+			output   []byte
+			exitCode int
+			err      error
+		}
+		resultCh := make(chan receiverResult, 1)
+		go func() {
+			output, exitCode, procErr := spawnReceiverProcess(args, cmdID, requestedPath)
+			resultCh <- receiverResult{output: output, exitCode: exitCode, err: procErr}
+		}()
+
+		// Use a 10-minute overall timeout for the receiver process.
+		select {
+		case res := <-resultCh:
+			if res.exitCode != 0 {
+				http.Error(w, "Error retrieving file: "+res.err.Error(), http.StatusInternalServerError)
+				return
+			}
+
+			// Set the Content-Type header based on file extension.
+			ext := strings.TrimPrefix(strings.ToLower(filepath.Ext(requestedPath)), ".")
+			if mime, exists := mimeTypes[ext]; exists {
+				w.Header().Set("Content-Type", mime)
+				// Use inline disposition so that the browser displays the file if possible.
+				w.Header().Set("Content-Disposition", "inline; filename=\""+filepath.Base(requestedPath)+"\"")
+			} else {
+				// Fallback headers.
+				w.Header().Set("Content-Type", "application/octet-stream")
+				w.Header().Set("Content-Disposition", "attachment; filename=\""+filepath.Base(requestedPath)+"\"")
+			}
+
+			// Set caching headers: cache for 24 hours.
+			w.Header().Set("Cache-Control", "public, max-age=86400")
+			w.Header().Set("Expires", time.Now().Add(24*time.Hour).Format(http.TimeFormat))
+
+			_, _ = w.Write(res.output)
+
+		case <-time.After(10 * time.Minute):
+			http.Error(w, "Receiver process timed out", http.StatusGatewayTimeout)
+			return
+		}
+	})
+
+	addr := fmt.Sprintf(":%d", args.HTTPServerPort)
+	log.Printf("HTTP server listening on %s", addr)
+	if err := http.ListenAndServe(addr, nil); err != nil {
+		log.Fatalf("HTTP server error: %v", err)
+	}
+}
+
 // ------------------ Main ------------------
 
 func main() {
@@ -989,6 +1125,11 @@ func main() {
 			go handleReceiverConnection(remoteConn, broadcaster, conn)
 		}
 	}()
+
+	// If HTTP server port is set, start the HTTP server in a goroutine.
+	if args.HTTPServerPort != 0 {
+		go startHTTPServer(args, conn, broadcaster)
+	}
 
 	log.Printf("Command Client started. My callsign: %s, File Server callsign: %s",
 		strings.ToUpper(args.MyCallsign), strings.ToUpper(args.FileServerCallsign))

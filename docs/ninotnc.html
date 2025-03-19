@@ -4,7 +4,6 @@
   <meta charset="UTF-8">
   <title>NinoTNC Mode Setter</title>
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <!-- Socket.IO (ensure this is available locally or via CDN) -->
   <script src="socket.io.min.js"></script>
   <style>
     body { font-family: sans-serif; padding: 20px; }
@@ -38,6 +37,12 @@
     <option value="websockets" selected>Websockets</option>
     <option value="serial">Serial</option>
   </select>
+
+  <!-- Websocket Settings -->
+  <div id="wsSettings">
+    <label for="wsHost">Websocket Server IP/Host:</label>
+    <input type="text" id="wsHost" placeholder="Enter Websocket Server IP or host">
+  </div>
 
   <!-- Serial Settings (fixed to 57600 baud) -->
   <div id="serialSettings" class="hidden">
@@ -163,9 +168,17 @@
       const type = this.value;
       if (type === 'serial') {
         document.getElementById('serialSettings').classList.remove('hidden');
+        document.getElementById('wsSettings').classList.add('hidden');
       } else {
         document.getElementById('serialSettings').classList.add('hidden');
+        document.getElementById('wsSettings').classList.remove('hidden');
       }
+    });
+
+    // Set default websocket host to current domain/ip (including port if applicable)
+    window.addEventListener('load', () => {
+      document.getElementById('wsHost').value =
+        window.location.hostname + (window.location.port ? ':' + window.location.port : '');
     });
 
     // Serial connect (fixed to 57600 baud)
@@ -292,7 +305,9 @@
           addErrorLogEntry("Serial port not connected.");
         }
       } else { // websockets ephemeral connection
-        const tempSocket = io({ forceNew: true });
+        const wsHost = document.getElementById('wsHost').value;
+        const protocol = window.location.protocol === "https:" ? "https://" : "http://";
+        const tempSocket = io(protocol + wsHost, { forceNew: true });
         tempSocket.on('connect', () => {
           tempSocket.emit('raw_kiss_frame', packet);
           addPacketLogEntry(packet, "websockets");

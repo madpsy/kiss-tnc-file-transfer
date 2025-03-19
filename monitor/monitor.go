@@ -6,9 +6,11 @@ import (
 	"crypto/tls"
 	"flag"
 	"fmt"
+	"io/ioutil"
 	"log"
 	"math"
 	"net"
+	"net/http"
 	"os"
 	"os/signal"
 	"strconv"
@@ -16,6 +18,10 @@ import (
 	"time"
 
 	mqtt "github.com/eclipse/paho.mqtt.golang"
+
+	"github.com/prometheus/client_golang/prometheus"
+	"github.com/prometheus/client_golang/prometheus/promhttp"
+	"github.com/prometheus/common/expfmt"
 )
 
 // KISS constants
@@ -59,6 +65,55 @@ func removeKISSFrame(frame []byte) []byte {
 var asciiOutput bool
 var decodeFileTransfer bool
 var decodeAx25 bool
+
+// Global Prometheus metrics.
+var (
+	totalFramesCounter = prometheus.NewCounter(prometheus.CounterOpts{
+		Name: "frames_total",
+		Help: "Total number of frames processed",
+	})
+	totalBytesCounter = prometheus.NewCounter(prometheus.CounterOpts{
+		Name: "bytes_total",
+		Help: "Total number of bytes processed",
+	})
+	// Using linear buckets from 0 to 256 bytes with step 16.
+	packetSizeHistogram = prometheus.NewHistogram(prometheus.HistogramOpts{
+		Name:    "packet_size_bytes",
+		Help:    "Distribution of packet sizes (max 255 bytes for AX.25 packets)",
+		Buckets: prometheus.LinearBuckets(0, 16, 17),
+	})
+	packetIntervalHistogram = prometheus.NewHistogram(prometheus.HistogramOpts{
+		Name:    "packet_interval_seconds",
+		Help:    "Distribution of intervals between packets",
+		Buckets: prometheus.DefBuckets,
+	})
+	// Total counter grouping by both src and dest.
+	packetCounter = prometheus.NewCounterVec(prometheus.CounterOpts{
+		Name: "packets_by_callsign_total",
+		Help: "Number of packets grouped by source, destination, and packet type",
+	}, []string{"src", "dest", "packet_type"})
+	// New metric: packets sent, by source callsign.
+	packetsSentCounter = prometheus.NewCounterVec(prometheus.CounterOpts{
+		Name: "packets_sent_total",
+		Help: "Total number of packets sent by a given source callsign",
+	}, []string{"src", "packet_type"})
+	// New metric: packets received, by destination callsign.
+	packetsReceivedCounter = prometheus.NewCounterVec(prometheus.CounterOpts{
+		Name: "packets_received_total",
+		Help: "Total number of packets received by a given destination callsign",
+	}, []string{"dest", "packet_type"})
+)
+
+func init() {
+	// Register all Prometheus metrics.
+	prometheus.MustRegister(totalFramesCounter)
+	prometheus.MustRegister(totalBytesCounter)
+	prometheus.MustRegister(packetSizeHistogram)
+	prometheus.MustRegister(packetIntervalHistogram)
+	prometheus.MustRegister(packetCounter)
+	prometheus.MustRegister(packetsSentCounter)
+	prometheus.MustRegister(packetsReceivedCounter)
+}
 
 // decodeFileTransferPacket attempts to decode a file-transfer packet,
 // and now also CMD/RSP packets.
@@ -112,7 +167,6 @@ func decodeFileTransferPacket(packet []byte) string {
 		}
 
 		// If the info field doesn’t match CMD/RSP formats, assume it’s a file-transfer packet.
-		// (The file-transfer packet logic remains largely unchanged.)
 		infoAndPayload := infoField
 		if len(infoAndPayload) == 0 {
 			return ""
@@ -305,6 +359,13 @@ func main() {
 	mqttTLS := flag.Bool("mqtt-tls", false, "Use TLS for MQTT")
 	mqttTopic := flag.String("mqtt-topic", "", "MQTT topic to publish frames")
 
+	// Optional Prometheus port.
+	prometheusPort := flag.Int("prometheus-port", 2112, "Port for Prometheus metrics endpoint (default 2112)")
+
+	// Optional file-dump options for Prometheus metrics.
+	prometheusFile := flag.String("prometheus-file", "", "File path to dump Prometheus metrics (default: metrics.txt in current directory)")
+	prometheusPeriod := flag.Int("prometheus-period", 300, "Period (in seconds) to dump metrics to file (default 300 seconds)")
+
 	// Flag for ascii output (for raw frames).
 	flag.BoolVar(&asciiOutput, "ascii", false, "Print frames as ASCII text instead of hexadecimal")
 	// Flag to attempt to decode file transfer packets.
@@ -363,9 +424,50 @@ func main() {
 		log.Printf("Connected to MQTT broker at %s", mqttAddr)
 	}
 
-	// --- Metrics variables ---
-	var totalFrames int
-	var totalBytes int
+	// Start Prometheus metrics HTTP server on the specified port.
+	go func() {
+		http.Handle("/metrics", promhttp.Handler())
+		addr := fmt.Sprintf(":%d", *prometheusPort)
+		log.Fatal(http.ListenAndServe(addr, nil))
+	}()
+
+	// If either prometheus-file or prometheus-period are set (non-empty or > 0),
+	// launch a goroutine that dumps the metrics to file periodically.
+	if *prometheusFile != "" || *prometheusPeriod != 0 {
+		// Set a default file if not provided.
+		filePath := *prometheusFile
+		if filePath == "" {
+			filePath = "metrics.txt"
+		}
+		period := time.Duration(*prometheusPeriod) * time.Second
+		go func() {
+			ticker := time.NewTicker(period)
+			defer ticker.Stop()
+			for range ticker.C {
+				// Gather metrics.
+				mfs, err := prometheus.DefaultGatherer.Gather()
+				if err != nil {
+					log.Printf("Error gathering metrics: %v", err)
+					continue
+				}
+				var buf bytes.Buffer
+				encoder := expfmt.NewEncoder(&buf, expfmt.FmtText)
+				for _, mf := range mfs {
+					if err := encoder.Encode(mf); err != nil {
+						log.Printf("Error encoding metric family: %v", err)
+					}
+				}
+				// Write to file.
+				if err := ioutil.WriteFile(filePath, buf.Bytes(), 0644); err != nil {
+					log.Printf("Error writing metrics to file %s: %v", filePath, err)
+				} else {
+					log.Printf("Dumped metrics to file %s", filePath)
+				}
+			}
+		}()
+	}
+
+	// --- Local metrics variables for computation ---
 	var minDelta int64 = math.MaxInt64
 	var maxDelta int64
 	var lastPacketTime time.Time
@@ -377,9 +479,9 @@ func main() {
 		<-sigChan
 		// When Ctrl-C is caught, print the summary and exit.
 		log.Printf("\n--- Summary ---")
-		log.Printf("Total frames seen: %d", totalFrames)
-		log.Printf("Total bytes seen: %d", totalBytes)
-		if totalFrames > 1 {
+		log.Printf("Total frames seen: %v", totalFramesCounter)
+		log.Printf("Total bytes seen: %v", totalBytesCounter)
+		if totalFramesCounter != nil {
 			log.Printf("Minimum time between packets: %d ms", minDelta)
 			log.Printf("Maximum time between packets: %d ms", maxDelta)
 		} else {
@@ -392,17 +494,17 @@ func main() {
 	buf := make([]byte, 4096)
 	var dataBuffer []byte
 
-	addr := fmt.Sprintf("%s:%d", *host, *port)
+	addrStr := fmt.Sprintf("%s:%d", *host, *port)
 
 	// Outer loop: attempt to (re)connect to the broadcast server.
 	for {
-		conn, err := net.Dial("tcp", addr)
+		conn, err := net.Dial("tcp", addrStr)
 		if err != nil {
-			log.Printf("Error connecting to broadcast server at %s: %v. Retrying in 5 seconds...", addr, err)
+			log.Printf("Error connecting to broadcast server at %s: %v. Retrying in 5 seconds...", addrStr, err)
 			time.Sleep(5 * time.Second)
 			continue
 		}
-		log.Printf("Connected to broadcast server at %s", addr)
+		log.Printf("Connected to broadcast server at %s", addrStr)
 		dataBuffer = nil // reset buffer for new connection
 
 		// Inner loop: read data until an error occurs.
@@ -433,11 +535,18 @@ func main() {
 						continue
 					}
 
-					// Update metrics.
-					totalFrames++
-					totalBytes += len(payload)
+					// Update global metrics.
+					totalFramesCounter.Inc()
+					totalBytesCounter.Add(float64(len(payload)))
+					packetSizeHistogram.Observe(float64(len(payload)))
 
 					now := time.Now()
+					if !lastPacketTime.IsZero() {
+						d := now.Sub(lastPacketTime)
+						packetIntervalHistogram.Observe(d.Seconds())
+					}
+					lastPacketTime = now
+
 					var deltaStr string
 					if !lastPacketTime.IsZero() {
 						d := now.Sub(lastPacketTime)
@@ -448,20 +557,12 @@ func main() {
 						} else {
 							deltaStr = fmt.Sprintf("+%dms", deltaMs)
 						}
-						// Update the min/max metrics in ms.
-						if deltaMs < minDelta {
-							minDelta = deltaMs
-						}
-						if deltaMs > maxDelta {
-							maxDelta = deltaMs
-						}
 					} else {
 						deltaStr = ""
 					}
-					lastPacketTime = now
 					timeStamp := fmt.Sprintf("[%s %s]", now.Format(time.RFC3339Nano), deltaStr)
 
-					// Always publish raw packet to MQTT if enabled.
+					// Publish raw packet to MQTT if enabled.
 					if mqttEnabled {
 						token := mqttClient.Publish(*mqttTopic, 0, false, payload)
 						token.Wait()
@@ -470,23 +571,48 @@ func main() {
 						}
 					}
 
-					// Determine which decoding/output mode to use.
+					// Determine packet type and extract callsigns.
+					var src, dest, packetType string
 					if decodeAx25 {
+						// For AX.25 decoding, extract callsigns from payload:
+						if len(payload) >= 15 {
+							// payload[0] is kiss cmd; addresses follow.
+							dest = decodeAX25Address(payload[1:8])
+							src = decodeAX25Address(payload[8:15])
+						}
+						packetType = "ax25"
 						decoded := decodeAX25Packet(payload)
 						log.Printf("%s\n%s", timeStamp, decoded)
 					} else if decodeFileTransfer {
+						// For file transfer, the first 16 bytes after the kiss cmd form the header.
+						if len(payload) >= 17 {
+							header := payload[1:17]
+							dest = decodeAX25Address(header[0:7])
+							src = decodeAX25Address(header[7:14])
+						}
+						packetType = "file_transfer"
 						decoded := decodeFileTransferPacket(payload)
 						if decoded != "" {
 							log.Printf("%s\n%s", timeStamp, decoded)
 						}
 					} else {
-						// Otherwise, print raw frame in ASCII or hex.
+						// For raw packets, mark as such.
+						packetType = "raw"
+						src = "unknown"
+						dest = "unknown"
 						if asciiOutput {
 							log.Printf("%s %s", timeStamp, string(payload))
 						} else {
 							log.Printf("%s % X", timeStamp, payload)
 						}
 					}
+
+					// Update the total per-callsign packet counter.
+					packetCounter.WithLabelValues(src, dest, packetType).Inc()
+
+					// Update the sent and received metrics.
+					packetsSentCounter.WithLabelValues(src, packetType).Inc()
+					packetsReceivedCounter.WithLabelValues(dest, packetType).Inc()
 				}
 			}
 		}
