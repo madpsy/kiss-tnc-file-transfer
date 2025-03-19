@@ -217,6 +217,7 @@ type Arguments struct {
 	ServeDirectory     string // directory to send files from for sender logic
 	RunCommand         string // Optional: run a single command non-interactively and exit.
 	HTTPServerPort     int    // Optional: if non-zero, run an HTTP server for GET requests.
+	NonInteractive     bool   // If true, do not start interactive command interface.
 }
 
 func parseArguments() *Arguments {
@@ -238,6 +239,7 @@ func parseArguments() *Arguments {
 	flag.StringVar(&args.RunCommand, "run-command", "", "Run a single command non-interactively (e.g., \"PUT my-file.txt\") and exit")
 	// New flag: HTTP server port.
 	flag.IntVar(&args.HTTPServerPort, "http-server-port", 0, "If set, start an HTTP server on the specified port for GET requests")
+	flag.BoolVar(&args.NonInteractive, "non-interactive", false, "Run the program without starting the interactive command interface")	
 	flag.Parse()
 
 	if args.MyCallsign == "" {
@@ -1195,6 +1197,14 @@ func main() {
 		exitCode := handleCommand(args.RunCommand, args, conn, broadcaster)
 		os.Exit(exitCode)
 	}
+
+        // If non-interactive mode is enabled, do not start the interactive command loop.
+        if args.NonInteractive {
+            log.Println("Running in non-interactive mode. Interactive command input is disabled.")
+            // Block indefinitely to keep background services running.
+            select {}
+        }
+
 
 	// Otherwise, enter the interactive command loop.
 	scanner := bufio.NewScanner(os.Stdin)
