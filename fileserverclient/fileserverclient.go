@@ -32,7 +32,8 @@ const (
 // Global debug flag.
 var debugEnabled bool
 
-var getQueueMutex sync.Mutex
+// (Note: getQueueMutex is no longer used for GET request queuing.)
+// var getQueueMutex sync.Mutex
 
 // Global command counter for generating 2-character command IDs.
 var cmdCounter int
@@ -217,6 +218,7 @@ type Arguments struct {
 	ServeDirectory     string // directory to send files from for sender logic
 	RunCommand         string // Optional: run a single command non-interactively and exit.
 	HTTPServerPort     int    // Optional: if non-zero, run an HTTP server for GET requests.
+	HTTPQueueLimit     int    // Maximum GET requests queued before returning 429 (default 5)
 	NonInteractive     bool   // If true, do not start interactive command interface.
 }
 
@@ -239,7 +241,9 @@ func parseArguments() *Arguments {
 	flag.StringVar(&args.RunCommand, "run-command", "", "Run a single command non-interactively (e.g., \"PUT my-file.txt\") and exit")
 	// New flag: HTTP server port.
 	flag.IntVar(&args.HTTPServerPort, "http-server-port", 0, "If set, start an HTTP server on the specified port for GET requests")
-	flag.BoolVar(&args.NonInteractive, "non-interactive", false, "Run the program without starting the interactive command interface")	
+	// New flag: HTTP queue limit.
+	flag.IntVar(&args.HTTPQueueLimit, "http-queue", 5, "Maximum GET requests queued before returning 429")
+	flag.BoolVar(&args.NonInteractive, "non-interactive", false, "Run the program without starting the interactive command interface")
 	flag.Parse()
 
 	if args.MyCallsign == "" {
@@ -1001,15 +1005,33 @@ func startHTTPServer(args *Arguments, conn KISSConnection, b *Broadcaster) {
 		"webm": "video/webm",
 	}
 
+	// Create a channel to limit the number of queued GET requests.
+	// This channel will hold tokens for waiting requests.
+	getQueue := make(chan struct{}, args.HTTPQueueLimit)
+	// Create a mutex to ensure that only one GET command is processed at a time.
+	var getCmdMutex sync.Mutex
+
 	http.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodGet {
 			http.Error(w, "Only GET allowed", http.StatusMethodNotAllowed)
 			return
 		}
 
-		// Serialize GET requests.
-		getQueueMutex.Lock()
-		defer getQueueMutex.Unlock()
+		// Attempt to queue the GET request.
+		select {
+		case getQueue <- struct{}{}:
+			// Got a slot in the queue.
+			defer func() { <-getQueue }()
+		default:
+			queued := len(getQueue)
+			w.WriteHeader(http.StatusTooManyRequests)
+			fmt.Fprintf(w, "Please wait before sending more requests (%d)", queued)
+			return
+		}
+
+		// Enforce that only one GET command is sent at a time.
+		getCmdMutex.Lock()
+		defer getCmdMutex.Unlock()
 
 		requestedPath := r.URL.Path
 		// Remove leading '/' if present.
@@ -1067,7 +1089,7 @@ func startHTTPServer(args *Arguments, conn KISSConnection, b *Broadcaster) {
 			return
 		}
 
-		// Wrap spawnReceiverProcess in a goroutine so we can apply an overall timeout.
+		// Spawn the receiver process to fetch the file.
 		type receiverResult struct {
 			output   []byte
 			exitCode int
@@ -1198,13 +1220,12 @@ func main() {
 		os.Exit(exitCode)
 	}
 
-        // If non-interactive mode is enabled, do not start the interactive command loop.
-        if args.NonInteractive {
-            log.Println("Running in non-interactive mode. Interactive command input is disabled.")
-            // Block indefinitely to keep background services running.
-            select {}
-        }
-
+	// If non-interactive mode is enabled, do not start the interactive command loop.
+	if args.NonInteractive {
+		log.Println("Running in non-interactive mode. Interactive command input is disabled.")
+		// Block indefinitely to keep background services running.
+		select {}
+	}
 
 	// Otherwise, enter the interactive command loop.
 	scanner := bufio.NewScanner(os.Stdin)
