@@ -363,7 +363,7 @@ func main() {
 	prometheusPort := flag.Int("prometheus-port", 2112, "Port for Prometheus metrics endpoint (default 2112)")
 
 	// Optional file-dump options for Prometheus metrics.
-	prometheusFile := flag.String("prometheus-file", "", "File path to dump Prometheus metrics (default: metrics.txt in current directory)")
+	prometheusFile := flag.String("prometheus-file", "", "File path to dump Prometheus metrics")
 	prometheusPeriod := flag.Int("prometheus-period", 300, "Period (in seconds) to dump metrics to file (default 300 seconds)")
 
 	// Flag for ascii output (for raw frames).
@@ -433,38 +433,33 @@ func main() {
 
 	// If either prometheus-file or prometheus-period are set (non-empty or > 0),
 	// launch a goroutine that dumps the metrics to file periodically.
-	if *prometheusFile != "" || *prometheusPeriod != 0 {
-		// Set a default file if not provided.
-		filePath := *prometheusFile
-		if filePath == "" {
-			filePath = "metrics.txt"
-		}
-		period := time.Duration(*prometheusPeriod) * time.Second
-		go func() {
-			ticker := time.NewTicker(period)
-			defer ticker.Stop()
-			for range ticker.C {
-				// Gather metrics.
-				mfs, err := prometheus.DefaultGatherer.Gather()
-				if err != nil {
-					log.Printf("Error gathering metrics: %v", err)
-					continue
-				}
-				var buf bytes.Buffer
-				encoder := expfmt.NewEncoder(&buf, expfmt.FmtText)
-				for _, mf := range mfs {
-					if err := encoder.Encode(mf); err != nil {
-						log.Printf("Error encoding metric family: %v", err)
-					}
-				}
-				// Write to file.
-				if err := ioutil.WriteFile(filePath, buf.Bytes(), 0644); err != nil {
-					log.Printf("Error writing metrics to file %s: %v", filePath, err)
-				} else {
-					log.Printf("Dumped metrics to file %s", filePath)
-				}
-			}
-		}()
+	if *prometheusFile != "" {
+  	  period := time.Duration(*prometheusPeriod) * time.Second
+  	  go func() {
+	        ticker := time.NewTicker(period)
+	        defer ticker.Stop()
+	        for range ticker.C {
+	            // Gather metrics.
+	            mfs, err := prometheus.DefaultGatherer.Gather()
+	            if err != nil {
+	                log.Printf("Error gathering metrics: %v", err)
+	                continue
+	            }
+	            var buf bytes.Buffer
+	            encoder := expfmt.NewEncoder(&buf, expfmt.FmtText)
+	            for _, mf := range mfs {
+	                if err := encoder.Encode(mf); err != nil {
+	                    log.Printf("Error encoding metric family: %v", err)
+	                }
+	            }
+	            // Write to file.
+	            if err := ioutil.WriteFile(*prometheusFile, buf.Bytes(), 0644); err != nil {
+	                log.Printf("Error writing metrics to file %s: %v", *prometheusFile, err)
+	            } else {
+	                log.Printf("Dumped metrics to file %s", *prometheusFile)
+	            }
+	        }
+	    }()
 	}
 
 	// --- Local metrics variables for computation ---
