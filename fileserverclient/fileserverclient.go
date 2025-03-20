@@ -1172,7 +1172,7 @@ func startHTTPServer(args *Arguments, conn KISSConnection, b *Broadcaster) {
             username, _, ok := r.BasicAuth()
             if !ok || !checkValidCallsign(username) {
                 w.Header().Set("WWW-Authenticate", `Basic realm="Enter a valid amateur radio callsign"`)
-                http.Error(w, "Unauthorised - use your amateur radio callsign as the username (password not required)", http.StatusUnauthorized)
+                http.Error(w, "Unauthorised - use your callsign as the username (password not required)", http.StatusUnauthorized)
                 return
             }
         }
