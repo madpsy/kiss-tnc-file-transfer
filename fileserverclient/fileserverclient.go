@@ -21,6 +21,7 @@ import (
 	"time"
 	"sort"
 	"encoding/csv"
+	"encoding/base64"
 
 	"github.com/gorilla/handlers"
 )
@@ -419,6 +420,48 @@ func (s *SerialKISSConnection) Write(b []byte) (int, error) {
 
 func (s *SerialKISSConnection) Close() error {
 	return s.ser.Close()
+}
+
+func myLogFormatter(writer io.Writer, params handlers.LogFormatterParams) {
+    // Get the client IP from the remote address.
+    ip, _, err := net.SplitHostPort(params.Request.RemoteAddr)
+    if err != nil {
+        ip = params.Request.RemoteAddr
+    }
+
+    // Retrieve the X-Forwarded-For header.
+    xfwd := params.Request.Header.Get("X-Forwarded-For")
+    if xfwd == "" {
+        xfwd = "-"
+    }
+
+    username := "-"
+    authHeader := params.Request.Header.Get("Authorization")
+    if strings.HasPrefix(authHeader, "Basic ") {
+        // Remove the "Basic " prefix and decode the credentials.
+        decoded, err := base64.StdEncoding.DecodeString(strings.TrimPrefix(authHeader, "Basic "))
+        if err == nil {
+            // The decoded string is in the format "username:password"
+            parts := strings.SplitN(string(decoded), ":", 2)
+            if len(parts) > 0 && parts[0] != "" {
+                username = parts[0]
+            }
+        }
+    }
+    
+    fmt.Fprintf(writer, "%s %s %s [%s] \"%s %s %s\" %d %d \"%s\" \"%s\"\n",
+        ip,
+        xfwd,
+        username,
+        params.TimeStamp.Format("02/Jan/2006:15:04:05 -0700"),
+        params.Request.Method,
+        params.Request.RequestURI,
+        params.Request.Proto,
+        params.StatusCode,
+        params.Size,
+        params.Request.Referer(),
+        params.Request.UserAgent(),
+    )
 }
 
 func getUniqueFilePath(dir, filename string) string {
@@ -1349,7 +1392,7 @@ func startHTTPServer(args *Arguments, conn KISSConnection, b *Broadcaster) {
             log.Fatalf("Error opening HTTP log file: %v", err)
         }
         defer logFile.Close()
-        if err := http.ListenAndServe(addr, handlers.CombinedLoggingHandler(logFile, mux)); err != nil {
+        if err := http.ListenAndServe(addr, handlers.CustomLoggingHandler(logFile, mux, myLogFormatter)); err != nil {
             log.Fatalf("HTTP server error: %v", err)
         }
     } else {
