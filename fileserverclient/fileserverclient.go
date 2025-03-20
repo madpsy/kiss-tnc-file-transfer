@@ -1307,7 +1307,7 @@ func startHTTPServer(args *Arguments, conn KISSConnection, b *Broadcaster) {
         _, status, msg, ok := parseResponsePacket(respPayload)
         // If the command response indicates failure, optionally cache negative responses.
         if !ok || status != 1 {
-            if args.HTTPNegativeCache && !noCache && args.HTTPCacheTime > 0 {
+            if args.HTTPNegativeCache && !noCache && args.HTTPCacheTime > 0 && !strings.Contains(msg, "TRANSFER ALREADY IN PROGRESS") {
                 fileCacheMutex.Lock()
                 fileCache[requestedPath] = CacheEntry{
                     Content:    []byte("Command failed: " + msg),

@@ -1268,18 +1268,6 @@ func main() {
 						processingCommandsLock.Unlock()
 						continue
 					}
-					activeTransfersLock.Lock()
-					if _, exists := activeTransfers[sender]; !exists && len(activeTransfers) >= globalArgs.MaxConcurrency {
-						activeTransfersLock.Unlock()
-						sendResponseWithDetails(sender, cmdID, command, 0, "TRANSFER ALREADY IN PROGRESS. PLEASE WAIT.")
-						processingCommandsLock.Lock()
-						close(ch)
-						delete(processingCommands, cacheKey)
-						processingCommandsLock.Unlock()
-						continue
-					}
-					activeTransfers[sender] = cmdID
-					activeTransfersLock.Unlock()
 
 					fileName := strings.TrimSpace(command[4:])
 					if len(fileName) > maxFileNameLen {
@@ -1300,6 +1288,19 @@ func main() {
 						processingCommandsLock.Unlock()
 						continue
 					}
+					activeTransfersLock.Lock()
+					if _, exists := activeTransfers[sender]; !exists && len(activeTransfers) >= globalArgs.MaxConcurrency {
+						activeTransfersLock.Unlock()
+						sendResponseWithDetails(sender, cmdID, command, 0, "TRANSFER ALREADY IN PROGRESS. PLEASE WAIT.")
+						processingCommandsLock.Lock()
+						close(ch)
+						delete(processingCommands, cacheKey)
+						processingCommandsLock.Unlock()
+						continue
+					}
+					activeTransfers[sender] = cmdID
+					activeTransfersLock.Unlock()
+
 					var dir string
 					if globalArgs.PerCallsignDir != "" {
 						dir = baseDir
@@ -1388,18 +1389,6 @@ func main() {
 						processingCommandsLock.Unlock()
 						continue
 					}
-					activeTransfersLock.Lock()
-					if _, exists := activeTransfers[sender]; !exists && len(activeTransfers) >= globalArgs.MaxConcurrency {
-						activeTransfersLock.Unlock()
-						sendResponseWithDetails(sender, cmdID, command, 0, "TRANSFER ALREADY IN PROGRESS. PLEASE WAIT.")
-						processingCommandsLock.Lock()
-						close(ch)
-						delete(processingCommands, cacheKey)
-						processingCommandsLock.Unlock()
-						continue
-					}
-					activeTransfers[sender] = cmdID
-					activeTransfersLock.Unlock()
 
 					fileName := strings.TrimSpace(command[4:])
 					if len(fileName) > maxFileNameLen {
@@ -1429,6 +1418,19 @@ func main() {
 						processingCommandsLock.Unlock()
 						continue
 					}
+					activeTransfersLock.Lock()
+					if _, exists := activeTransfers[sender]; !exists && len(activeTransfers) >= globalArgs.MaxConcurrency {
+						activeTransfersLock.Unlock()
+						sendResponseWithDetails(sender, cmdID, command, 0, "TRANSFER ALREADY IN PROGRESS. PLEASE WAIT.")
+						processingCommandsLock.Lock()
+						close(ch)
+						delete(processingCommands, cacheKey)
+						processingCommandsLock.Unlock()
+						continue
+					}
+					activeTransfers[sender] = cmdID
+					activeTransfersLock.Unlock()
+
 					var dir string
 					if globalArgs.PerCallsignDir != "" {
 						dir = baseDir
