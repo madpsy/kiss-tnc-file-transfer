@@ -1109,7 +1109,6 @@ func handleCommand(commandLine string, args *Arguments, conn KISSConnection, b *
 }
 
 // startHTTPServer launches an HTTP server on the specified port to handle GET requests.
-
 func startHTTPServer(args *Arguments, conn KISSConnection, b *Broadcaster) {
     // Define MIME types mapping.
     mimeTypes := map[string]string{
@@ -1238,6 +1237,11 @@ func startHTTPServer(args *Arguments, conn KISSConnection, b *Broadcaster) {
             fileCacheMutex.RUnlock()
             if exists && time.Now().Before(entry.Expiration) {
                 log.Printf("Serving %s from cache", requestedPath)
+                // Check if the cache entry is negative; if so, return a 404.
+                if entry.Negative {
+                    http.Error(w, string(entry.Content), http.StatusNotFound)
+                    return
+                }
                 // For a LIST request, force HTML content.
                 if strings.EqualFold(requestedPath, "LIST.txt") {
                     w.Header().Set("Content-Type", "text/html")
