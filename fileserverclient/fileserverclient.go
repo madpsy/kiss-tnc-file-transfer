@@ -29,6 +29,7 @@ import (
 type CacheEntry struct {
     Content    []byte
     Expiration time.Time
+    Negative   bool
 }
 
 var (
@@ -59,6 +60,53 @@ var (
 	globalConn      KISSConnection // The current active connection.
 	broadcaster     *Broadcaster   // Global broadcaster for connection data.
 )
+
+func checkValidCallsign(s string) bool {
+	// Inline ASCII helper functions.
+	isLetter := func(b byte) bool { return (b >= 'A' && b <= 'Z') || (b >= 'a' && b <= 'z') }
+	isDigit := func(b byte) bool { return b >= '0' && b <= '9' }
+	isAlphaNum := func(b byte) bool { return isLetter(b) || isDigit(b) }
+
+	// Process optional SSID if a dash exists (but not at the start).
+	if i := strings.Index(s, "-"); i > 0 {
+		ssid := s[i+1:]
+		if strings.Index(ssid, "-") != -1 || len(ssid) > 2 {
+			return false
+		}
+		for j := 0; j < len(ssid); j++ {
+			if !isAlphaNum(ssid[j]) {
+				return false
+			}
+		}
+		s = s[:i]
+	}
+	n := len(s)
+	if n < 4 || n > 6 {
+		return false
+	}
+	// If callsign is shorter than 6 and follows letter-digit-letter-letter, prepend a space.
+	if n < 6 && isLetter(s[0]) && isDigit(s[1]) && isLetter(s[2]) && isLetter(s[3]) {
+		s = " " + s
+	}
+	// Check key positions: normally index 2 must be a digit and index 3 a letter,
+	// unless a special 'R' exception applies.
+	if !(isDigit(s[2]) && isLetter(s[3])) && (s[0] != 'R' || !isDigit(s[1]) || !isLetter(s[2])) {
+		return false
+	}
+	// Allowed patterns.
+	if !(((s[0] == ' ' || isLetter(s[0]) || isDigit(s[0])) && isLetter(s[1])) ||
+		(isLetter(s[0]) && isDigit(s[1])) ||
+		(s[0] == 'R' && len(s) == 6 && isDigit(s[1]) && isLetter(s[2]) && isLetter(s[3]) && isLetter(s[4]))) {
+		return false
+	}
+	// For callsigns longer than 4, ensure all extra characters are letters.
+	for i := 4; i < len(s); i++ {
+		if !isLetter(s[i]) {
+			return false
+		}
+	}
+	return true
+}
 
 // csvToPretty converts CSV text into a pretty-printed table.
 func csvToPretty(csvText string) (string, error) {
@@ -236,6 +284,12 @@ type Arguments struct {
 	HttpLogFile        string // (New) Path to file for HTTP logging (if specified, logs are written there)
 	HTTPMaxRequestTime time.Duration // Maximum time to wait for an HTTP GET request before timing out (default 10 minutes)
 	HTTPCacheTime      int           // Cache time for HTTP responses in minutes (0 disables caching); default 5 minutes
+	HTTPNegativeCache  bool          // New: Cache negative GET responses; default false
+	HTTPFavicon404     bool          // New: if true, favicon.ico requests always return a 404
+	HTTPRobotsDisallow bool          // New: if true, robots.txt request returns fixed disallow content
+	HTTPCallsignAuth   bool          // New: if true, require basic auth with valid callsign username for HTTP requests
+	HTTPCacheList      bool          // New: cache the response for HTTP "LIST" requests (default false)
+	HTTPIgnoreCacheControl bool     // New: if true, serve files from cache even if the browser sends a no-cache header
 }
 
 func parseArguments() *Arguments {
@@ -262,7 +316,14 @@ func parseArguments() *Arguments {
 	flag.BoolVar(&args.NonInteractive, "non-interactive", false, "Run the program without starting the interactive command interface")
 	flag.StringVar(&args.HttpLogFile, "http-log-file", "", "Path to HTTP log file (if specified, logs will be written there in Apache combined format)")
 	flag.DurationVar(&args.HTTPMaxRequestTime, "http-max-request-time", 10*time.Minute, "Maximum time to wait for an HTTP GET request before timing out")
-	flag.IntVar(&args.HTTPCacheTime, "http-cache-time", 5, "Cache time for HTTP responses in minutes (0 disables caching)")	
+	flag.IntVar(&args.HTTPCacheTime, "http-cache-time", 5, "Cache time for HTTP responses in minutes (0 disables caching)")
+	flag.BoolVar(&args.HTTPNegativeCache, "http-negative-cache", false, "Cache negative GET responses (default false)")
+	flag.BoolVar(&args.HTTPFavicon404, "http-favicon-404", false, "If set, HTTP server returns 404 for favicon.ico requests")
+	flag.BoolVar(&args.HTTPRobotsDisallow, "http-robots-disallow", false, "If set, robots.txt returns fixed disallow content (default false)")
+	// New flag: require basic auth with callsign username for HTTP requests.
+	flag.BoolVar(&args.HTTPCallsignAuth, "http-callsign-auth", false, "Require basic auth with valid callsign username for HTTP requests")
+	flag.BoolVar(&args.HTTPCacheList, "http-cache-list", false, "Cache HTTP response for LIST requests (default false)")
+	flag.BoolVar(&args.HTTPIgnoreCacheControl, "http-ignore-cache-control", false, "If set, serve files from cache even if the browser sends a no-cache header")
 	flag.Parse()
 
 	if args.MyCallsign == "" {
@@ -1009,20 +1070,46 @@ func handleCommand(commandLine string, args *Arguments, conn KISSConnection, b *
 func startHTTPServer(args *Arguments, conn KISSConnection, b *Broadcaster) {
     // Define MIME types mapping.
     mimeTypes := map[string]string{
-        "svg":  "image/svg+xml",
-        "css":  "text/css",
-        "js":   "application/javascript",
-        "html": "text/html",
-        "json": "application/json",
-        "png":  "image/png",
-        "jpg":  "image/jpeg",
-        "jpeg": "image/jpeg",
-        "gif":  "image/gif",
-        "ico":  "image/x-icon",
-        "mp3":  "audio/mpeg",
-        "wav":  "audio/wav",
-        "mp4":  "video/mp4",
-        "webm": "video/webm",
+        "svg":   "image/svg+xml",
+        "css":   "text/css",
+        "js":    "application/javascript",
+        "html":  "text/html",
+        "json":  "application/json",
+        "png":   "image/png",
+        "jpg":   "image/jpeg",
+        "jpeg":  "image/jpeg",
+        "gif":   "image/gif",
+        "ico":   "image/x-icon",
+        "mp3":   "audio/mpeg",
+        "wav":   "audio/wav",
+        "mp4":   "video/mp4",
+        "webm":  "video/webm",
+        "txt":   "text/plain",
+        "csv":   "text/csv",
+        "xml":   "application/xml",
+        "pdf":   "application/pdf",
+        "zip":   "application/zip",
+        "tar":   "application/x-tar",
+        "gz":    "application/gzip",
+        "doc":   "application/msword",
+        "docx":  "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+        "xls":   "application/vnd.ms-excel",
+        "xlsx":  "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        "ppt":   "application/vnd.ms-powerpoint",
+        "pptx":  "application/vnd.openxmlformats-officedocument.presentationml.presentation",
+        "rtf":   "application/rtf",
+        "7z":    "application/x-7z-compressed",
+        "mpg":   "video/mpeg",
+        "mpeg":  "video/mpeg",
+        "avi":   "video/x-msvideo",
+        "flac":  "audio/flac",
+        "ogg":   "audio/ogg",
+        "webp":  "image/webp",
+        "woff":  "font/woff",
+        "woff2": "font/woff2",
+        "ttf":   "font/ttf",
+        "otf":   "font/otf",
+        "eot":   "application/vnd.ms-fontobject",
     }
 
     // Create a channel to limit the number of queued GET requests.
@@ -1036,6 +1123,16 @@ func startHTTPServer(args *Arguments, conn KISSConnection, b *Broadcaster) {
         if r.Method != http.MethodGet {
             http.Error(w, "Only GET allowed", http.StatusMethodNotAllowed)
             return
+        }
+
+        // If HTTPCallsignAuth is enabled, require Basic Auth with a valid callsign as username.
+        if args.HTTPCallsignAuth {
+            username, _, ok := r.BasicAuth()
+            if !ok || !checkValidCallsign(username) {
+                w.Header().Set("WWW-Authenticate", `Basic realm="Enter a valid amateur radio callsign"`)
+                http.Error(w, "Unauthorised", http.StatusUnauthorized)
+                return
+            }
         }
 
         // Attempt to queue the GET request.
@@ -1058,6 +1155,21 @@ func startHTTPServer(args *Arguments, conn KISSConnection, b *Broadcaster) {
         if strings.HasPrefix(requestedPath, "/") {
             requestedPath = requestedPath[1:]
         }
+        // Normalize the requested path for list requests.
+        if strings.EqualFold(requestedPath, "list") || strings.EqualFold(requestedPath, "list.txt") {
+            requestedPath = "LIST.txt"
+        }
+        // If favicon.ico is requested and the option is enabled, immediately return a 404.
+        if args.HTTPFavicon404 && strings.EqualFold(requestedPath, "favicon.ico") {
+            http.Error(w, "Not Found", http.StatusNotFound)
+            return
+        }
+        if args.HTTPRobotsDisallow && strings.EqualFold(requestedPath, "robots.txt") {
+            w.Header().Set("Content-Type", "text/plain; charset=utf-8")
+            w.WriteHeader(http.StatusOK)
+            w.Write([]byte("User-agent: *\nDisallow: /"))
+            return
+        }
         // Default to index.html if root or directory.
         if requestedPath == "" || strings.HasSuffix(requestedPath, "/") {
             requestedPath = requestedPath + "index.html"
@@ -1071,6 +1183,11 @@ func startHTTPServer(args *Arguments, conn KISSConnection, b *Broadcaster) {
         cacheControl := r.Header.Get("Cache-Control")
         noCache := strings.Contains(cacheControl, "no-cache")
 
+        // If the http-ignore-cache-control flag is set, ignore the browser's no-cache header.
+        if args.HTTPIgnoreCacheControl {
+            noCache = false
+        }
+
         // Attempt to serve from cache if allowed.
         if !noCache {
             fileCacheMutex.RLock()
@@ -1078,16 +1195,20 @@ func startHTTPServer(args *Arguments, conn KISSConnection, b *Broadcaster) {
             fileCacheMutex.RUnlock()
             if exists && time.Now().Before(entry.Expiration) {
                 log.Printf("Serving %s from cache", requestedPath)
-                // Set headers based on file extension.
-                ext := strings.TrimPrefix(strings.ToLower(filepath.Ext(requestedPath)), ".")
-                if mime, exists := mimeTypes[ext]; exists {
-                    w.Header().Set("Content-Type", mime)
-                    w.Header().Set("Content-Disposition", "inline; filename=\""+filepath.Base(requestedPath)+"\"")
+                // For a LIST request, force HTML content.
+                if strings.EqualFold(requestedPath, "LIST.txt") {
+                    w.Header().Set("Content-Type", "text/html")
+                    w.Header().Set("Content-Disposition", "inline; filename=\"LIST.html\"")
                 } else {
-                    w.Header().Set("Content-Type", "application/octet-stream")
-                    w.Header().Set("Content-Disposition", "attachment; filename=\""+filepath.Base(requestedPath)+"\"")
+                    ext := strings.TrimPrefix(strings.ToLower(filepath.Ext(requestedPath)), ".")
+                    if mime, exists := mimeTypes[ext]; exists {
+                        w.Header().Set("Content-Type", mime)
+                        w.Header().Set("Content-Disposition", "inline; filename=\""+filepath.Base(requestedPath)+"\"")
+                    } else {
+                        w.Header().Set("Content-Type", "application/octet-stream")
+                        w.Header().Set("Content-Disposition", "attachment; filename=\""+filepath.Base(requestedPath)+"\"")
+                    }
                 }
-                // Optionally, add client caching headers.
                 w.Header().Set("Cache-Control", "public, max-age=86400")
                 w.Header().Set("Expires", time.Now().Add(24*time.Hour).Format(http.TimeFormat))
                 w.Write(entry.Content)
@@ -1095,11 +1216,10 @@ func startHTTPServer(args *Arguments, conn KISSConnection, b *Broadcaster) {
             }
         }
 
-        // If the requested file is LIST (or LIST.txt), send the LIST command.
+        // Determine the command to send.
         var commandLine string
-        if strings.EqualFold(requestedPath, "LIST") || strings.EqualFold(requestedPath, "LIST.txt") {
+        if requestedPath == "LIST.txt" {
             commandLine = "LIST"
-            requestedPath = "LIST.txt"
         } else {
             commandLine = "GET " + requestedPath
         }
@@ -1131,8 +1251,17 @@ func startHTTPServer(args *Arguments, conn KISSConnection, b *Broadcaster) {
             return
         }
         _, status, msg, ok := parseResponsePacket(respPayload)
-        // If the command response indicates failure, return 404.
+        // If the command response indicates failure, optionally cache negative responses.
         if !ok || status != 1 {
+            if args.HTTPNegativeCache && !noCache && args.HTTPCacheTime > 0 {
+                fileCacheMutex.Lock()
+                fileCache[requestedPath] = CacheEntry{
+                    Content:    []byte("Command failed: " + msg),
+                    Expiration: time.Now().Add(time.Duration(args.HTTPCacheTime) * time.Minute),
+                    Negative:   true,
+                }
+                fileCacheMutex.Unlock()
+            }
             http.Error(w, "Command failed: "+msg, http.StatusNotFound)
             return
         }
@@ -1157,43 +1286,55 @@ func startHTTPServer(args *Arguments, conn KISSConnection, b *Broadcaster) {
                 return
             }
 
-            // For LIST command, convert CSV to an HTML table with anchor links.
+            var contentToServe []byte
+            // For a LIST command, convert the CSV to HTML.
             if commandLine == "LIST" {
                 htmlTable, err := csvToHTML(string(res.output))
                 if err != nil {
                     log.Printf("Error converting CSV to HTML: %v", err)
-                    w.Header().Set("Content-Type", "text/plain")
-                    w.Write(res.output)
+                    contentToServe = res.output
                 } else {
+                    contentToServe = []byte(htmlTable)
                     w.Header().Set("Content-Type", "text/html")
-                    w.Write([]byte(htmlTable))
+                    w.Header().Set("Content-Disposition", "inline; filename=\"LIST.html\"")
                 }
             } else {
-                // Set the Content-Type header based on file extension.
+                contentToServe = res.output
                 ext := strings.TrimPrefix(strings.ToLower(filepath.Ext(requestedPath)), ".")
                 if mime, exists := mimeTypes[ext]; exists {
                     w.Header().Set("Content-Type", mime)
                     w.Header().Set("Content-Disposition", "inline; filename=\""+filepath.Base(requestedPath)+"\"")
                 } else {
-                    // Fallback headers.
                     w.Header().Set("Content-Type", "application/octet-stream")
                     w.Header().Set("Content-Disposition", "attachment; filename=\""+filepath.Base(requestedPath)+"\"")
                 }
-                // Set caching headers: cache for 24 hours.
-                w.Header().Set("Cache-Control", "public, max-age=86400")
-                w.Header().Set("Expires", time.Now().Add(24*time.Hour).Format(http.TimeFormat))
-                w.Write(res.output)
             }
+            w.Header().Set("Cache-Control", "public, max-age=86400")
+            w.Header().Set("Expires", time.Now().Add(24*time.Hour).Format(http.TimeFormat))
+            w.Write(contentToServe)
 
-            // Cache the result if caching is allowed (and not a LIST command).
-	    if !noCache && commandLine != "LIST" && args.HTTPCacheTime > 0 {
-	        fileCacheMutex.Lock()
-	        fileCache[requestedPath] = CacheEntry{
-	            Content:    res.output,
-	            Expiration: time.Now().Add(time.Duration(args.HTTPCacheTime) * time.Minute),
-	        }
-	        fileCacheMutex.Unlock()
-	    }
+            // Cache the result if caching is allowed.
+            if !noCache && args.HTTPCacheTime > 0 && (commandLine != "LIST" || (commandLine == "LIST" && args.HTTPCacheList)) {
+                var contentToCache []byte
+                if commandLine == "LIST" {
+                    // Store the HTML version in the cache.
+                    htmlTable, err := csvToHTML(string(res.output))
+                    if err != nil {
+                        contentToCache = res.output
+                    } else {
+                        contentToCache = []byte(htmlTable)
+                    }
+                } else {
+                    contentToCache = res.output
+                }
+                fileCacheMutex.Lock()
+                fileCache[requestedPath] = CacheEntry{
+                    Content:    contentToCache,
+                    Expiration: time.Now().Add(time.Duration(args.HTTPCacheTime) * time.Minute),
+                    Negative:   false,
+                }
+                fileCacheMutex.Unlock()
+            }
         case <-time.After(args.HTTPMaxRequestTime):
             http.Error(w, "Receiver process timed out", http.StatusGatewayTimeout)
             return
