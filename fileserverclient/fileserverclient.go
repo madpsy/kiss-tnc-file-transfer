@@ -1197,6 +1197,13 @@ func startHTTPServer(args *Arguments, conn KISSConnection, b *Broadcaster) {
         if strings.HasPrefix(requestedPath, "/") {
             requestedPath = requestedPath[1:]
         }
+
+	// Check if the requested path is too long.
+	if len(requestedPath) > 58 {
+	    http.Error(w, "Error: Requested path too long", http.StatusNotFound)
+	    return
+	}
+
         // Normalize the requested path for list requests.
         if strings.EqualFold(requestedPath, "list") || strings.EqualFold(requestedPath, "list.txt") {
             requestedPath = "LIST.txt"
